@@ -8,6 +8,21 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let hotKey: HotKey
     private let doubleTap: DoubleTapMonitor
     private let ocr: OCRService
+    private let clipboardHotKey: HotKey
+    private let clipboardMonitor: ClipboardMonitor
+    private let onClipboardSettingsChange: () -> Void
+
+    private let clipEnabledCheckbox = NSButton(checkboxWithTitle: "记录剪贴板历史（文字、图片、文件）", target: nil, action: nil)
+    private let clipRecorder = ShortcutRecorderButton()
+    private let clipShortcutNote = NSTextField(labelWithString: "")
+    private let clipRetentionPopup = NSPopUpButton()
+    private let clipCountPopup = NSPopUpButton()
+    private let autoPasteCheckbox = NSButton(checkboxWithTitle: "选中后直接粘贴到原来的应用（需要“辅助功能”权限）", target: nil, action: nil)
+    private let accessibilityButton = NSButton(title: "授予“辅助功能”权限…", target: nil, action: nil)
+    private let clipOCRCheckbox = NSButton(checkboxWithTitle: "识别复制的图片中的文字（可搜索，⇧↩ 粘贴文字）", target: nil, action: nil)
+    private let clipStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private static let retentionChoices = [(7, "7 天"), (30, "30 天"), (90, "90 天"), (365, "1 年"), (0, "永久")]
+    private static let countChoices = [100, 300, 1000, 2000]
     private let onIndexSettingsChange: () -> Void
     private let onRebuild: () -> Void
     private let indexStatus: () -> String
@@ -36,10 +51,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let ocrPauseButton = NSButton(title: "暂停", target: nil, action: nil)
     private static let pageLimits = [50, 200, 500, 1000]
 
-    init(hotKey: HotKey, doubleTap: DoubleTapMonitor, ocr: OCRService, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String) {
+    init(hotKey: HotKey, doubleTap: DoubleTapMonitor, ocr: OCRService, clipboardHotKey: HotKey, clipboardMonitor: ClipboardMonitor,
+         onClipboardSettingsChange: @escaping () -> Void, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String) {
         self.hotKey = hotKey
         self.doubleTap = doubleTap
         self.ocr = ocr
+        self.clipboardHotKey = clipboardHotKey
+        self.clipboardMonitor = clipboardMonitor
+        self.onClipboardSettingsChange = onClipboardSettingsChange
         self.onIndexSettingsChange = onIndexSettingsChange
         self.onRebuild = onRebuild
         self.indexStatus = indexStatus
@@ -65,6 +84,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         refreshTimer?.invalidate()
         refreshTimer = nil
         recorder.stopRecording()
+        clipRecorder.stopRecording()
     }
 
     private func buildLayout() {
@@ -81,6 +101,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         ocrTab.label = "文字识别"
         ocrTab.view = buildOCRView()
         tabs.addTabViewItem(ocrTab)
+        let clipTab = NSTabViewItem(identifier: "clipboard")
+        clipTab.label = "剪贴板"
+        clipTab.view = buildClipboardView()
+        tabs.addTabViewItem(clipTab)
         let container = NSView()
         tabs.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(tabs)
@@ -483,7 +507,161 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         refresh()
     }
 
+    // MARK: - Clipboard tab
+
+    private func buildClipboardView() -> NSView {
+        let content = NSView()
+        let shortcutLabel = NSTextField(labelWithString: "打开剪贴板历史：")
+        clipRecorder.onRecord = { [weak self] shortcut in
+            guard let self else { return }
+            Preferences.clipboardShortcut = shortcut
+            self.clipboardHotKey.register(shortcut)
+            self.refresh()
+            self.onClipboardSettingsChange()
+        }
+        clipRecorder.onRecordingChange = { [weak self] recording in
+            if recording { self?.clipboardHotKey.suspend() } else { self?.clipboardHotKey.resume() }
+        }
+        clipShortcutNote.font = .systemFont(ofSize: 11)
+        let retentionLabel = NSTextField(labelWithString: "保留：")
+        for choice in Self.retentionChoices { clipRetentionPopup.addItem(withTitle: choice.1) }
+        let countLabel = NSTextField(labelWithString: "最多：")
+        for count in Self.countChoices { clipCountPopup.addItem(withTitle: "\(count) 条") }
+        for popup in [clipRetentionPopup, clipCountPopup] {
+            popup.target = self
+            popup.action = #selector(clipboardPopupChanged(_:))
+        }
+        for checkbox in [clipEnabledCheckbox, autoPasteCheckbox, clipOCRCheckbox] {
+            checkbox.target = self
+            checkbox.action = #selector(clipboardCheckboxChanged(_:))
+        }
+        accessibilityButton.target = self
+        accessibilityButton.action = #selector(requestAccessibility)
+        let note = NSTextField(wrappingLabelWithString: "内容只保存在这台 Mac（不参与时间机器备份）。带机密或临时标记的内容（如密码管理器复制的密码）不记录；未带标记的私密内容仍可能被记录，可随时在剪贴板窗口中暂停或删除。固定的条目不会因期限或数量被删除。")
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        note.preferredMaxLayoutWidth = 450
+        clipStatusLabel.font = .systemFont(ofSize: 11)
+        clipStatusLabel.textColor = .secondaryLabelColor
+        clipStatusLabel.preferredMaxLayoutWidth = 450
+        let clear = NSButton(title: "清空历史（保留固定）…", target: self, action: #selector(clearClipboard))
+
+        let views: [NSView] = [clipEnabledCheckbox, shortcutLabel, clipRecorder, clipShortcutNote, retentionLabel, clipRetentionPopup, countLabel, clipCountPopup,
+                               autoPasteCheckbox, accessibilityButton, clipOCRCheckbox, note, clipStatusLabel, clear]
+        for view in views {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            clipEnabledCheckbox.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            clipEnabledCheckbox.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            shortcutLabel.leadingAnchor.constraint(equalTo: clipEnabledCheckbox.leadingAnchor),
+            shortcutLabel.centerYAnchor.constraint(equalTo: clipRecorder.centerYAnchor),
+            clipRecorder.topAnchor.constraint(equalTo: clipEnabledCheckbox.bottomAnchor, constant: 12),
+            clipRecorder.leadingAnchor.constraint(equalTo: shortcutLabel.trailingAnchor, constant: 6),
+            clipRecorder.widthAnchor.constraint(equalToConstant: 150),
+            clipShortcutNote.leadingAnchor.constraint(equalTo: clipRecorder.trailingAnchor, constant: 8),
+            clipShortcutNote.centerYAnchor.constraint(equalTo: clipRecorder.centerYAnchor),
+            clipShortcutNote.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -20),
+            retentionLabel.leadingAnchor.constraint(equalTo: clipEnabledCheckbox.leadingAnchor),
+            retentionLabel.centerYAnchor.constraint(equalTo: clipRetentionPopup.centerYAnchor),
+            clipRetentionPopup.topAnchor.constraint(equalTo: clipRecorder.bottomAnchor, constant: 12),
+            clipRetentionPopup.leadingAnchor.constraint(equalTo: retentionLabel.trailingAnchor, constant: 6),
+            countLabel.leadingAnchor.constraint(equalTo: clipRetentionPopup.trailingAnchor, constant: 20),
+            countLabel.centerYAnchor.constraint(equalTo: clipRetentionPopup.centerYAnchor),
+            clipCountPopup.leadingAnchor.constraint(equalTo: countLabel.trailingAnchor, constant: 6),
+            clipCountPopup.centerYAnchor.constraint(equalTo: clipRetentionPopup.centerYAnchor),
+            autoPasteCheckbox.topAnchor.constraint(equalTo: clipRetentionPopup.bottomAnchor, constant: 14),
+            autoPasteCheckbox.leadingAnchor.constraint(equalTo: clipEnabledCheckbox.leadingAnchor),
+            accessibilityButton.topAnchor.constraint(equalTo: autoPasteCheckbox.bottomAnchor, constant: 4),
+            accessibilityButton.leadingAnchor.constraint(equalTo: autoPasteCheckbox.leadingAnchor, constant: 18),
+            clipOCRCheckbox.topAnchor.constraint(equalTo: accessibilityButton.bottomAnchor, constant: 8),
+            clipOCRCheckbox.leadingAnchor.constraint(equalTo: clipEnabledCheckbox.leadingAnchor),
+            note.topAnchor.constraint(equalTo: clipOCRCheckbox.bottomAnchor, constant: 12),
+            note.leadingAnchor.constraint(equalTo: clipEnabledCheckbox.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            clipStatusLabel.topAnchor.constraint(equalTo: note.bottomAnchor, constant: 8),
+            clipStatusLabel.leadingAnchor.constraint(equalTo: clipEnabledCheckbox.leadingAnchor),
+            clipStatusLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            clear.topAnchor.constraint(equalTo: clipStatusLabel.bottomAnchor, constant: 8),
+            clear.leadingAnchor.constraint(equalTo: clipEnabledCheckbox.leadingAnchor),
+            clear.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -14),
+        ])
+        return content
+    }
+
+    private func refreshClipboard() {
+        clipEnabledCheckbox.state = Preferences.clipboardEnabled ? .on : .off
+        clipRecorder.shortcut = clipboardHotKey.shortcut
+        if let shortcut = clipboardHotKey.shortcut, !clipboardHotKey.isRegistered {
+            clipShortcutNote.stringValue = "\(shortcut.display) 已被占用（可能是 KongFetch），请换一个"
+            clipShortcutNote.textColor = .systemRed
+        } else {
+            clipShortcutNote.stringValue = "⌫ 清除，⎋ 取消"
+            clipShortcutNote.textColor = .secondaryLabelColor
+        }
+        clipRetentionPopup.selectItem(at: Self.retentionChoices.firstIndex { $0.0 == Preferences.clipboardRetentionDays } ?? 1)
+        clipCountPopup.selectItem(at: Self.countChoices.firstIndex(of: Preferences.clipboardMaximumItems) ?? 1)
+        autoPasteCheckbox.state = Preferences.autoPaste ? .on : .off
+        accessibilityButton.isHidden = !Preferences.autoPaste || Paster.isTrusted
+        clipOCRCheckbox.state = Preferences.clipboardOCR ? .on : .off
+        let history = clipboardMonitor.history
+        var parts = ["\(history.items.count) 条，" + ByteCountFormatter.string(fromByteCount: Int64(history.totalBytes), countStyle: .file)]
+        if Preferences.clipboardEnabled { parts.append(Preferences.clipboardPaused ? "已暂停记录" : "正在记录") }
+        if let problem = history.problem { parts.append(problem) }
+        clipStatusLabel.stringValue = parts.joined(separator: " · ")
+    }
+
+    @objc private func clipboardCheckboxChanged(_ sender: NSButton) {
+        switch sender {
+        case clipEnabledCheckbox:
+            Preferences.clipboardEnabled = sender.state == .on
+            if sender.state == .on {
+                Preferences.clipboardPaused = false
+                clipboardMonitor.skipCurrentContents()
+            }
+        case autoPasteCheckbox:
+            Preferences.autoPaste = sender.state == .on
+            if sender.state == .on && !Paster.isTrusted { Paster.requestTrust() }
+        case clipOCRCheckbox:
+            Preferences.clipboardOCR = sender.state == .on
+        default:
+            break
+        }
+        refresh()
+        onClipboardSettingsChange()
+    }
+
+    @objc private func clipboardPopupChanged(_ sender: NSPopUpButton) {
+        if sender === clipRetentionPopup, Self.retentionChoices.indices.contains(sender.indexOfSelectedItem) {
+            Preferences.clipboardRetentionDays = Self.retentionChoices[sender.indexOfSelectedItem].0
+        } else if sender === clipCountPopup, Self.countChoices.indices.contains(sender.indexOfSelectedItem) {
+            Preferences.clipboardMaximumItems = Self.countChoices[sender.indexOfSelectedItem]
+        }
+        clipboardMonitor.history.limits = Preferences.clipboardLimits
+        refresh()
+    }
+
+    @objc private func requestAccessibility() {
+        Paster.requestTrust()
+        Paster.openAccessibilitySettings()
+    }
+
+    @objc private func clearClipboard() {
+        let alert = NSAlert()
+        alert.messageText = "清空剪贴板历史？"
+        alert.informativeText = "未固定的条目会被删除，无法恢复。固定的条目保留。"
+        alert.addButton(withTitle: "清空")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.clipboardMonitor.history.clear(includingPinned: false)
+            self?.refresh()
+        }
+    }
+
     private func refresh() {
+        refreshClipboard()
         refreshOCR()
         if folders != Preferences.roots {
             folders = Preferences.roots

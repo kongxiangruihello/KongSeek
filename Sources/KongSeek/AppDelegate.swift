@@ -10,6 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let doubleTap = DoubleTapMonitor()
     private var settingsWindow: SettingsWindowController?
     private var ocr: OCRService!
+    private var clipboardHistory: ClipboardHistory!
+    private var clipboardMonitor: ClipboardMonitor!
+    private var clipboardPanel: ClipboardPanelController!
+    private var clipboardHotKey: HotKey!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
@@ -17,6 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ocr = OCRService(directory: support.appendingPathComponent("KongSeek/OCR"))
         ocr.configure(Preferences.ocrSettings)
         searchWindow = SearchWindowController(service: service, ocr: ocr)
+
+        clipboardHistory = ClipboardHistory(store: ClipboardStore(directory: support.appendingPathComponent("KongSeek/Clipboard", isDirectory: true)),
+                                            limits: Preferences.clipboardLimits)
+        clipboardMonitor = ClipboardMonitor(history: clipboardHistory)
+        clipboardPanel = ClipboardPanelController(monitor: clipboardMonitor)
+        clipboardPanel.openSettings = { [weak self] in self?.openSettings() }
+        clipboardHotKey = HotKey(id: 2) { [weak self] in self?.clipboardPanel.toggle() }
+        clipboardHotKey.register(Preferences.clipboardShortcut)
+        clipboardMonitor.start()
         service.onStateChange = { [weak self] _ in self?.searchWindow.indexStateChanged() }
         hotKey = HotKey { [weak self] in self?.searchWindow.toggle() }
         hotKey.register(Preferences.searchShortcut)
@@ -39,6 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        clipboardMonitor?.stop()
+        clipboardHistory?.flush()
         service.saveNow()
     }
 
@@ -65,6 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let shortcut = hotKey.shortcut, !hotKey.isRegistered {
             menu.addItem(item("⚠︎ \(shortcut.display) 已被占用，点此更换…", #selector(openSettings)))
+        }
+        var clipboardTitle = "剪贴板历史"
+        if let shortcut = clipboardHotKey.shortcut { clipboardTitle += "（\(clipboardHotKey.isRegistered ? shortcut.display : shortcut.display + " 被占用")）" }
+        menu.addItem(item(clipboardTitle, #selector(openClipboard)))
+        if Preferences.clipboardEnabled {
+            menu.addItem(item(Preferences.clipboardPaused ? "继续记录剪贴板" : "暂停记录剪贴板", #selector(toggleClipboardPause)))
         }
         menu.addItem(.separator())
 
@@ -112,12 +133,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 hotKey: hotKey,
                 doubleTap: doubleTap,
                 ocr: ocr,
+                clipboardHotKey: clipboardHotKey,
+                clipboardMonitor: clipboardMonitor,
+                onClipboardSettingsChange: {},
                 onIndexSettingsChange: { [weak self] in self?.applySettings() },
                 onRebuild: { [weak self] in self?.service.rebuild() },
                 indexStatus: { [weak self] in self?.stateDescription ?? "" }
             )
         }
         settingsWindow?.show()
+    }
+
+    @objc private func openClipboard() {
+        clipboardPanel.show()
+    }
+
+    @objc private func toggleClipboardPause() {
+        Preferences.clipboardPaused.toggle()
+        if !Preferences.clipboardPaused { clipboardMonitor.skipCurrentContents() }
     }
 
     @objc private func rebuildIndex() {

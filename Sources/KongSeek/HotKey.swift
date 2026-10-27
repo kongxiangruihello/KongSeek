@@ -9,6 +9,7 @@ struct Shortcut: Codable, Equatable {
     var keyLabel: String
 
     static let defaultSearch = Shortcut(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(optionKey), keyLabel: "空格")
+    static let defaultClipboard = Shortcut(keyCode: UInt32(kVK_ANSI_V), carbonModifiers: UInt32(controlKey | optionKey), keyLabel: "V")
 
     var display: String {
         var text = ""
@@ -66,19 +67,30 @@ struct Shortcut: Codable, Equatable {
     }
 }
 
-/// The global search shortcut, registered through Carbon (no special permission needed).
+/// A global shortcut, registered through Carbon (no special permission needed).
+/// Each instance has its own id; events for other ids are passed on.
 final class HotKey {
     private(set) var shortcut: Shortcut?
+    private let identifier: UInt32
     private let action: () -> Void
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
 
-    init(action: @escaping () -> Void) {
+    private static let signature = OSType(0x4B53_4B31) // "KSK1"
+
+    init(id: UInt32 = 1, action: @escaping () -> Void) {
+        identifier = id
         self.action = action
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        let handler: EventHandlerUPP = { _, _, userData in
-            guard let userData else { return noErr }
+        let handler: EventHandlerUPP = { _, event, userData in
+            guard let userData, let event else { return OSStatus(eventNotHandledErr) }
             let hotKey = Unmanaged<HotKey>.fromOpaque(userData).takeUnretainedValue()
+            var pressed = EventHotKeyID()
+            let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                                           MemoryLayout<EventHotKeyID>.size, nil, &pressed)
+            guard status == noErr, pressed.signature == HotKey.signature, pressed.id == hotKey.identifier else {
+                return OSStatus(eventNotHandledErr)
+            }
             DispatchQueue.main.async { hotKey.action() }
             return noErr
         }
@@ -100,8 +112,8 @@ final class HotKey {
         shortcut = newShortcut
         guard let newShortcut else { return true }
         guard !newShortcut.isReservedBySystem else { return false }
-        let identifier = EventHotKeyID(signature: OSType(0x4B53_4B31), id: 1) // "KSK1"
-        let status = RegisterEventHotKey(newShortcut.keyCode, newShortcut.carbonModifiers, identifier, GetApplicationEventTarget(), 0, &hotKeyRef)
+        let hotKeyID = EventHotKeyID(signature: Self.signature, id: identifier)
+        let status = RegisterEventHotKey(newShortcut.keyCode, newShortcut.carbonModifiers, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
         if status != noErr { hotKeyRef = nil }
         return status == noErr
     }

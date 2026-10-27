@@ -139,4 +139,77 @@ enum Preferences {
     static var ocrSettings: OCRService.Settings {
         OCRService.Settings(enabled: ocrEnabled, folders: ocrFolders, pageLimit: ocrPageLimit, onlyOnPower: ocrOnlyOnPower, downloadFromICloud: ocrDownloadFromICloud)
     }
+
+    // MARK: - Clipboard history
+
+    /// Off until the user turns it on (as in KongFetch 3.2): copies can be private.
+    static var clipboardEnabled: Bool {
+        get { defaults.bool(forKey: "clipboardEnabled") }
+        set { defaults.set(newValue, forKey: "clipboardEnabled") }
+    }
+
+    static var clipboardPaused: Bool {
+        get { defaults.bool(forKey: "clipboardPaused") }
+        set { defaults.set(newValue, forKey: "clipboardPaused") }
+    }
+
+    static var clipboardShortcut: Shortcut? {
+        get {
+            if defaults.bool(forKey: "clipboardShortcutCleared") { return nil }
+            guard let data = defaults.data(forKey: "clipboardShortcut"),
+                  let shortcut = try? JSONDecoder().decode(Shortcut.self, from: data) else { return .defaultClipboard }
+            return shortcut
+        }
+        set {
+            defaults.set(newValue == nil, forKey: "clipboardShortcutCleared")
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: "clipboardShortcut")
+            } else {
+                defaults.removeObject(forKey: "clipboardShortcut")
+            }
+        }
+    }
+
+    /// Unpinned entries unused for this many days are removed; 0 keeps them.
+    static var clipboardRetentionDays: Int {
+        get { (defaults.object(forKey: "clipboardRetentionDays") as? Int) ?? 30 }
+        set { defaults.set(newValue, forKey: "clipboardRetentionDays") }
+    }
+
+    static var clipboardMaximumItems: Int {
+        get { (defaults.object(forKey: "clipboardMaximumItems") as? Int) ?? 300 }
+        set { defaults.set(newValue, forKey: "clipboardMaximumItems") }
+    }
+
+    static var clipboardLimits: ClipboardHistory.Limits {
+        ClipboardHistory.Limits(maximumItems: max(20, min(clipboardMaximumItems, 2000)),
+                                retentionDays: clipboardRetentionDays > 0 ? clipboardRetentionDays : nil)
+    }
+
+    /// Paste into the app in front after choosing an entry (needs Accessibility).
+    static var autoPaste: Bool {
+        get { defaults.object(forKey: "autoPaste") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "autoPaste") }
+    }
+
+    /// Recognize text in copied pictures, so they can be searched and pasted as text.
+    static var clipboardOCR: Bool {
+        get { defaults.object(forKey: "clipboardOCR") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "clipboardOCR") }
+    }
+
+    /// Bundle identifiers whose copies are never recorded.
+    static var clipboardExcludedApps: [String] {
+        get { defaults.stringArray(forKey: "clipboardExcludedApps") ?? [] }
+        set { defaults.set(newValue, forKey: "clipboardExcludedApps") }
+    }
+
+    /// What ⌘J does to text before pasting.
+    static var cleanupOperations: [TextCleanup.Operation] {
+        get {
+            guard let raw = defaults.stringArray(forKey: "cleanupOperations") else { return [.joinLines, .chinesePunctuation, .spaces] }
+            return raw.compactMap(TextCleanup.Operation.init(rawValue:))
+        }
+        set { defaults.set(newValue.map(\.rawValue), forKey: "cleanupOperations") }
+    }
 }
