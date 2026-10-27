@@ -12,7 +12,7 @@ public struct Snippet: Equatable {
     public static func find(in source: String, needles: [String], radius: Int = 60) -> Snippet? {
         let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
         var best: Range<String.Index>?
-        for needle in needles where !needle.isEmpty {
+        for needle in needles.flatMap(SearchText.scriptVariants) where !needle.isEmpty {
             if let range = source.range(of: needle, options: options), best == nil || range.lowerBound < best!.lowerBound {
                 best = range
             }

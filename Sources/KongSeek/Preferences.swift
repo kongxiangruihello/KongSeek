@@ -49,6 +49,20 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "updateProxy") }
     }
 
+    /// Recent searches that led to opening something (newest first); ↑ in an empty field shows them.
+    static var searchHistory: [String] {
+        get { defaults.stringArray(forKey: "searchHistory") ?? [] }
+        set { defaults.set(Array(newValue.prefix(50)), forKey: "searchHistory") }
+    }
+
+    static var keepSearchHistory: Bool {
+        get { defaults.object(forKey: "keepSearchHistory") as? Bool ?? true }
+        set {
+            defaults.set(newValue, forKey: "keepSearchHistory")
+            if !newValue { searchHistory = [] }
+        }
+    }
+
     /// Searches saved with ⌘S, shown when the search field is empty.
     static var savedSearches: [String] {
         get { defaults.stringArray(forKey: "savedSearches") ?? [] }

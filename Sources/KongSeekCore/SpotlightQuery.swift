@@ -11,14 +11,19 @@ public enum SpotlightQuery {
         let terms = query.words + query.phrases
         guard !terms.isEmpty else { return nil }
         var parts: [String] = []
+        // Chinese words are looked for in simplified and traditional form (繁简通搜).
         for word in query.words {
-            let value = escape(word)
             // Word-prefix match in the text, as Finder's "contents" search does.
-            parts.append("(kMDItemTextContent == \"\(value)*\"cdw || kMDItemDisplayName == \"*\(value)*\"cd)")
+            let alternatives = SearchText.scriptVariants(word).map(escape).map {
+                "kMDItemTextContent == \"\($0)*\"cdw || kMDItemDisplayName == \"*\($0)*\"cd"
+            }
+            parts.append("(" + alternatives.joined(separator: " || ") + ")")
         }
         for phrase in query.phrases {
-            let value = escape(phrase)
-            parts.append("(kMDItemTextContent == \"*\(value)*\"cd || kMDItemDisplayName == \"*\(value)*\"cd)")
+            let alternatives = SearchText.scriptVariants(phrase).map(escape).map {
+                "kMDItemTextContent == \"*\($0)*\"cd || kMDItemDisplayName == \"*\($0)*\"cd"
+            }
+            parts.append("(" + alternatives.joined(separator: " || ") + ")")
         }
         parts += filters(for: query)
         return parts.joined(separator: " && ")

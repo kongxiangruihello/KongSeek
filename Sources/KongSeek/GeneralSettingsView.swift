@@ -24,6 +24,7 @@ final class GeneralSettingsView: NSView {
     private let cliLabel = NSTextField(labelWithString: "")
     private let claudeButton = NSButton(title: "添加到 Claude 桌面版…", target: nil, action: nil)
     private let claudeLabel = NSTextField(labelWithString: "")
+    private let historyCheckbox = NSButton(checkboxWithTitle: "记录搜索历史（在空搜索框中按 ↑ 查看）", target: nil, action: nil)
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
     init(updater: Updater, library: SnippetLibrary, diagnosticReport: @escaping () -> String) {
@@ -99,6 +100,12 @@ final class GeneralSettingsView: NSView {
         claudeRow.spacing = 8
         contentCheckbox.target = self
         contentCheckbox.action = #selector(contentChanged)
+        historyCheckbox.target = self
+        historyCheckbox.action = #selector(historyChanged)
+        let clearHistory = NSButton(title: "清除搜索历史", target: self, action: #selector(clearHistory))
+        clearHistory.controlSize = .small
+        let historyRow = NSStackView(views: [historyCheckbox, clearHistory])
+        historyRow.spacing = 10
         contentCheckbox.toolTip = "关闭后，Claude 只能按文件名搜索（search_files），不能搜索正文（search_content）或读取文件（read_file）。"
         let transferHelp = NSTextField(wrappingLabelWithString: "设置文件包含各页的设置和文本片段，不含剪贴板历史、最近打开和索引，可用于换机或备份；主目录下的路径会自动换成新电脑的主目录。诊断包含状态报告、更新与构建日志、最近的崩溃报告和设置（不含片段与剪贴板内容），出问题时发给开发者。")
         transferHelp.font = .systemFont(ofSize: 11)
@@ -113,7 +120,7 @@ final class GeneralSettingsView: NSView {
         let stack = NSStackView(views: [
             versionLabel, sourceLabel,
             heading("更新"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
-            heading("设置与诊断"), transferRow, transferHelp, cliRow, claudeRow, contentCheckbox,
+            heading("设置与诊断"), historyRow, transferRow, transferHelp, cliRow, claudeRow, contentCheckbox,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -194,6 +201,7 @@ final class GeneralSettingsView: NSView {
         cliLabel.stringValue = CommandLineTool.status
         claudeLabel.stringValue = ClaudeDesktop.status
         contentCheckbox.state = Preferences.mcpReadContent ? .on : .off
+        historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
     }
 
     // MARK: Actions
@@ -258,6 +266,14 @@ final class GeneralSettingsView: NSView {
         done.messageText = message
         done.runModal()
         refresh()
+    }
+
+    @objc private func historyChanged() {
+        Preferences.keepSearchHistory = historyCheckbox.state == .on
+    }
+
+    @objc private func clearHistory() {
+        Preferences.searchHistory = []
     }
 
     @objc private func contentChanged() {

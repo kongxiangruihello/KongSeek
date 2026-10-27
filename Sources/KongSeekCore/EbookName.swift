@@ -67,16 +67,25 @@ public struct EbookName: Equatable, Sendable {
 
     /// The parts of a file name (without extension), or nil when it carries no site's marks.
     public static func parse(_ stem: String) -> EbookName? {
-        var text = stem.trimmingCharacters(in: .whitespaces)
-        var mark = ""
-        if let range = text.range(of: #"[_\s]*[（(]?(已读|未读|在读|精读|重要)[)）]?$"#, options: .regularExpression) {
-            mark = String(text[range]).trimmingCharacters(in: .whitespaces)
-            if !mark.hasPrefix("_") && !mark.hasPrefix("（") && !mark.hasPrefix("(") { mark = "_" + mark }
-            text = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
-        }
-        var parsed = annasArchive(text) ?? zLibrary(text)
-        parsed?.mark = mark
+        let split = splitMark(stem)
+        var parsed = annasArchive(split.stem) ?? zLibrary(split.stem)
+        parsed?.mark = split.mark
         return parsed
+    }
+
+    /// A reading mark the user put at the end of a name ("_已读", "（已读）", " 精读") and the rest.
+    public static func splitMark(_ name: String) -> (stem: String, mark: String) {
+        var text = name.trimmingCharacters(in: .whitespaces)
+        guard let range = text.range(of: #"[_\s]*[（(]?(已读|未读|在读|精读|重要)[)）]?$"#, options: .regularExpression) else { return (text, "") }
+        var mark = String(text[range]).trimmingCharacters(in: .whitespaces)
+        if !mark.hasPrefix("_") && !mark.hasPrefix("（") && !mark.hasPrefix("(") { mark = "_" + mark }
+        text = String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+        return (text, mark)
+    }
+
+    /// The tag a mark stands for: "_已读" → 已读.
+    public static func tag(forMark mark: String) -> String? {
+        ["已读", "未读", "在读", "精读", "重要"].first { mark.contains($0) }
     }
 
     /// "Title -- Authors -- edition, place, year -- place_Publisher -- ISBN -- md5 -- Anna’s Archive"; any part may be missing.

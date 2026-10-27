@@ -3,6 +3,7 @@ import PDFKit
 import ImageIO
 import IOKit.ps
 import KongSeekCore
+import KongSeekText
 
 /// Recognizes text in scanned PDFs and images in the folders the user chose, one file at a time
 /// in the background, so full-text search can find them.
@@ -205,10 +206,9 @@ final class OCRService {
         }
     }
 
-    /// A PDF whose first pages already carry text is not a scan.
+    /// A PDF whose sampled pages mostly carry text is not a scan (shared with "查找扫描版 PDF").
     static func hasTextLayer(_ document: PDFDocument) -> Bool {
-        let sample = (0..<min(document.pageCount, 3)).compactMap { document.page(at: $0)?.string }.joined()
-        return sample.filter { !$0.isWhitespace }.count >= 30
+        DocumentText.hasTextLayer(document)
     }
 
     /// Renders a page at roughly 2400 pixels on its long side on white, with Core Graphics (safe off the main thread).

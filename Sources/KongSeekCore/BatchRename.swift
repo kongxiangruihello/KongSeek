@@ -66,6 +66,8 @@ public enum BatchRename {
         public var script: Script = .unchanged
         /// For `.ebook`: how the short name is written.
         public var ebookStyle: EbookName.Style = .full
+        /// For `.ebook`: turn marks such as "_已读" into Finder tags instead of keeping them in the name.
+        public var marksToTags = false
         public init() {}
     }
 
@@ -86,10 +88,13 @@ public enum BatchRename {
         public var item: Item
         public var newName: String
         public var problem: Problem?
-        public init(item: Item, newName: String, problem: Problem? = nil) {
+        /// Finder tags to add after renaming (marks such as "_已读" moved out of the name).
+        public var tags: [String] = []
+        public init(item: Item, newName: String, problem: Problem? = nil, tags: [String] = []) {
             self.item = item
             self.newName = newName
             self.problem = problem
+            self.tags = tags
         }
         public var changed: Bool { newName != item.name }
         public var newPath: String { (item.folder as NSString).appendingPathComponent(newName) }
@@ -121,6 +126,7 @@ public enum BatchRename {
             let keepExtension = rule.keepExtension || rule.mode == .ebook
             let stem = keepExtension && !ext.isEmpty ? (item.name as NSString).deletingPathExtension : item.name
             var newStem: String
+            var tags: [String] = []
             switch rule.mode {
             case .replace:
                 if rule.find.isEmpty {
@@ -141,7 +147,15 @@ public enum BatchRename {
                     .replacingOccurrences(of: "{date}", with: item.modified.map(formatter.string(from:)) ?? "")
                     .replacingOccurrences(of: "{parent}", with: (item.folder as NSString).lastPathComponent)
             case .ebook:
-                newStem = EbookName.parse(stem)?.formatted(rule.ebookStyle) ?? stem
+                let split = EbookName.splitMark(stem)
+                var parsed = EbookName.parse(split.stem)
+                parsed?.mark = ""
+                newStem = parsed?.formatted(rule.ebookStyle) ?? split.stem
+                if rule.marksToTags, let tag = EbookName.tag(forMark: split.mark) {
+                    tags = [tag]
+                } else {
+                    newStem += split.mark
+                }
             }
             switch rule.script {
             case .unchanged: break
@@ -151,7 +165,7 @@ public enum BatchRename {
             newStem = newStem.trimmingCharacters(in: .whitespaces)
             if newStem.isEmpty { emptyStems.insert(index) }
             let newName = keepExtension && !ext.isEmpty ? newStem + "." + ext : newStem
-            previews.append(Preview(item: item, newName: newName, problem: nil))
+            previews.append(Preview(item: item, newName: newName, problem: nil, tags: tags))
         }
 
         // Problems: invalid names, two files ending up with one name, or a name already used by another file.

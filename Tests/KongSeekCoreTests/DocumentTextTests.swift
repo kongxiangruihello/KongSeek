@@ -74,6 +74,19 @@ final class DocumentTextTests: XCTestCase {
         XCTAssertTrue(DocumentText.excerpt(read, maximumCharacters: 1000).text.contains("--- 第 1 页（识别文字） ---"))
     }
 
+    func testTextLayer() throws {
+        let typed = makePDF("typed.pdf", ["The Analects of Confucius, book one", "Learning and practising in due season", nil])
+        XCTAssertEqual(DocumentText.textLayer(of: typed), DocumentText.TextLayer(hasText: true, pages: 3))
+        let scan = makePDF("scan2.pdf", [nil, nil, nil, nil])
+        XCTAssertEqual(DocumentText.textLayer(of: scan), DocumentText.TextLayer(hasText: false, pages: 4))
+        // A typed cover on an otherwise scanned book is still a scan.
+        let covered = makePDF("covered.pdf", ["Scanned and shared by some website, do not sell", nil, nil, nil, nil, nil])
+        XCTAssertEqual(DocumentText.textLayer(of: covered)?.hasText, false)
+        let junk = folder.appendingPathComponent("junk.pdf")
+        try Data("not a pdf".utf8).write(to: junk)
+        XCTAssertNil(DocumentText.textLayer(of: junk))
+    }
+
     func testTextWordAndOffsets() throws {
         let gbk = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
         let text = folder.appendingPathComponent("旧讲稿.txt")

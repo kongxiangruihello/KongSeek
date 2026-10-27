@@ -7,12 +7,83 @@ public enum SearchText {
     /// Same folding as 3.2 `normalized(_:)` (case, diacritics, full/half width),
     /// then precomposed so that byte comparisons agree with `String` comparisons
     /// even for names stored decomposed (old HFS+ files, some Korean names).
+    /// Since 0.16 also traditional → simplified Chinese, so 華夏 and 华夏 match each other.
     public static func fold(_ value: String) -> String {
-        var result = value
+        var result = simplifiedChinese(value
             .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: locale)
-            .precomposedStringWithCanonicalMapping
+            .precomposedStringWithCanonicalMapping)
         result.makeContiguousUTF8()
         return result
+    }
+
+    // MARK: Traditional and simplified Chinese
+
+    private static let hanFirst: UInt32 = 0x3400, hanLast: UInt32 = 0x9FFF
+
+    /// Simplified form of each traditional character in U+3400–U+9FFF that the system's
+    /// Traditional-Simplified transform maps to exactly one other character there (0 = none).
+    /// One character at a time and length-preserving, so positions in a converted
+    /// string are positions in the original (highlighting relies on this).
+    private static let simplifiedTable: [UInt16] = {
+        let count = Int(SearchText.hanLast - SearchText.hanFirst + 1)
+        var table = [UInt16](repeating: 0, count: count)
+        let transform = StringTransform(rawValue: "Traditional-Simplified")
+        let chunk = 1024
+        var start = 0
+        while start < count {
+            let end = min(count, start + chunk)
+            let scalars = (start..<end).compactMap { Unicode.Scalar(SearchText.hanFirst + UInt32($0)) }
+            var text = String.UnicodeScalarView()
+            text.append(contentsOf: scalars)
+            let converted = Array((String(text).applyingTransform(transform, reverse: false) ?? String(text)).unicodeScalars)
+            if converted.count == scalars.count {
+                for (original, simple) in zip(scalars, converted) where original != simple {
+                    SearchText.record(original, simple, in: &table)
+                }
+            } else {
+                // The transform changed the length somewhere: fall back to one character at a time.
+                for original in scalars {
+                    let single = Array((String(original).applyingTransform(transform, reverse: false) ?? "").unicodeScalars)
+                    if single.count == 1, single[0] != original { SearchText.record(original, single[0], in: &table) }
+                }
+            }
+            start = end
+        }
+        return table
+    }()
+
+    private static func record(_ original: Unicode.Scalar, _ simple: Unicode.Scalar, in table: inout [UInt16]) {
+        guard (hanFirst...hanLast).contains(simple.value) else { return }
+        table[Int(original.value - hanFirst)] = UInt16(simple.value)
+    }
+
+    /// Traditional characters replaced by simplified ones, character for character.
+    public static func simplifiedChinese(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: { $0.value >= hanFirst && $0.value <= hanLast && simplifiedTable[Int($0.value - hanFirst)] != 0 }) else {
+            return text
+        }
+        var result = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            if scalar.value >= hanFirst && scalar.value <= hanLast, case let mapped = simplifiedTable[Int(scalar.value - hanFirst)], mapped != 0,
+               let simple = Unicode.Scalar(UInt32(mapped)) {
+                result.append(simple)
+            } else {
+                result.append(scalar)
+            }
+        }
+        return String(result)
+    }
+
+    /// The word as typed plus its simplified and traditional forms (for searches that
+    /// cannot fold, such as Spotlight's content index and passages in document text).
+    public static func scriptVariants(_ word: String) -> [String] {
+        guard containsCJK(word) else { return [word] }
+        var variants = [word]
+        for form in [simplifiedChinese(word), word.applyingTransform(StringTransform(rawValue: "Simplified-Traditional"), reverse: false) ?? word]
+        where !variants.contains(form) {
+            variants.append(form)
+        }
+        return variants
     }
 
     /// Same range test as 3.2 `pinyinForms` (CJK Extension A + Unified Ideographs).

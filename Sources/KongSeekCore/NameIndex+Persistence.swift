@@ -10,7 +10,8 @@ public enum IndexStoreError: Error, Equatable {
 /// a few large memory copies instead of decoding one JSON string per path (3.2).
 extension NameIndex {
     static let fileMagic: UInt32 = 0x4B46_4E49 // "KFNI"
-    public static let fileFormatVersion: UInt32 = 1
+    /// 2 (0.16): folded names are also converted to simplified Chinese; older files are rebuilt.
+    public static let fileFormatVersion: UInt32 = 2
 
     /// Writes the index atomically (compacting it first).
     public func save(to url: URL) throws {

@@ -51,6 +51,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let modeButton = NSButton(title: "名称", target: nil, action: nil)
     /// "?": lists the search syntax with examples.
     private let helpButton = NSButton()
+    /// The list shows the search history (↑ in an empty field).
+    private var showingHistory = false
     private let snippetLabel = NSTextField(wrappingLabelWithString: "")
     private var snippetHeight: NSLayoutConstraint!
     private var snippetToken = 0
@@ -506,6 +508,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     func runSearch() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         webRows = []
+        showingHistory = false
         if browsedFolder == nil && (text == "?" || text == "？") {
             contentToken += 1
             contentSearch.stop()
@@ -640,7 +643,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case #selector(NSResponder.insertTab(_:)):
             toggleMode()
         case #selector(NSResponder.moveUp(_:)):
-            moveSelection(by: -1)
+            // ↑ in an empty field (at the top of the list) shows the search history.
+            if fieldEmpty && browsedFolder == nil && !showingHistory && table.selectedRow <= 0 && !Preferences.searchHistory.isEmpty {
+                showHistory()
+            } else {
+                moveSelection(by: -1)
+            }
         case #selector(NSResponder.moveDown(_:)):
             moveSelection(by: 1)
         case #selector(NSResponder.insertNewline(_:)):
@@ -697,6 +705,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                         Preferences.savedSearches.removeAll { $0 == fill.text }
                         statusLabel.stringValue = "已从收藏中移除“\(fill.text)”"
                         runSearch()
+                    } else if fill.isHistory {
+                        Preferences.searchHistory.removeAll { $0 == fill.text }
+                        if Preferences.searchHistory.isEmpty { runSearch() } else { showHistory() }
                     }
                     return true
                 }
@@ -777,6 +788,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             apply(fill)
             return
         }
+        rememberSearch()
         if let link = item.link {
             hide()
             NSWorkspace.shared.open(link)
@@ -797,6 +809,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     private func revealSelected() {
         guard let item = selectedItem, item.isFile else { return }
+        rememberSearch()
         hide()
         actions.reveal(archiveOrSelf(item))
     }
@@ -942,7 +955,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if fill.replace || base == "?" || base == "？" { base = "" }
         let prefix = base.isEmpty ? "" : base + " "
         // Without a value to type over, leave the caret after a space, ready for the next word.
-        let text = prefix + fill.text + (fill.select == nil && !fill.isSaved ? " " : "")
+        let text = prefix + fill.text + (fill.select == nil && !fill.isSaved && !fill.isHistory ? " " : "")
         field.stringValue = text
         panel.makeFirstResponder(field)
         if let editor = field.currentEditor() {
@@ -955,6 +968,28 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             editor.selectedRange = range
         }
         runSearch()
+    }
+
+    /// Searches that led somewhere: remembered when a result is opened or revealed.
+    private func rememberSearch() {
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Preferences.keepSearchHistory, browsedFolder == nil, !text.isEmpty, text != "?", text != "？" else { return }
+        var history = Preferences.searchHistory
+        history.removeAll { $0 == text }
+        history.insert(text, at: 0)
+        Preferences.searchHistory = history
+    }
+
+    private func showHistory() {
+        let rows = Preferences.searchHistory.map { text in
+            ResultItem(path: "history:" + text, name: text, isFolder: false, score: 0,
+                       fill: QueryFill(text: text, replace: true, select: nil, explanation: "搜索历史", isHistory: true))
+        }
+        var history = SearchOutcome(items: rows)
+        history.matchCount = rows.count
+        show(history)
+        showingHistory = true
+        statusLabel.stringValue = "搜索历史：↑↓ 选择，↩ 再次搜索，⌘⌫ 删除一条"
     }
 
     private var savedSearchRows: [ResultItem] {
@@ -1090,6 +1125,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         add("拷贝路径", "c", [.command, .option]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .path) ?? "" }
         add("拷贝名称", "c", [.command, .shift]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .name) ?? "" }
         menu.addItem(.separator())
+        if !item.isFolder && !item.isInArchive {
+            let isRead = FinderTags.has(FinderTags.read, item.path)
+            add(isRead ? "取消“已读”标签" : "标为已读（访达标签）") { [weak self] in
+                let done = FinderTags.set(FinderTags.read, on: item.path, adding: !isRead)
+                self?.statusLabel.stringValue = !done ? "无法更改标签" : (isRead ? "已取消“已读”：\(item.name)" : "已标为已读：\(item.name)（搜索 标签:已读 可找出全部）")
+            }
+        }
         add("批量重命名…") { [weak self] in
             self?.hide()
             self?.onBatchRename?([URL(fileURLWithPath: item.path)])
@@ -1120,8 +1162,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let location: String
         let image: NSImage
         if let fill = item.fill {
-            location = fill.isSaved ? "收藏的搜索 · ↩ 搜索 · ⌘⌫ 移除" : fill.explanation
-            image = NSImage(systemSymbolName: fill.isSaved ? "star" : "text.magnifyingglass", accessibilityDescription: fill.isSaved ? "收藏的搜索" : "语法") ?? NSImage()
+            location = fill.isSaved ? "收藏的搜索 · ↩ 搜索 · ⌘⌫ 移除" : (fill.isHistory ? "搜索历史 · ↩ 再次搜索 · ⌘⌫ 删除" : fill.explanation)
+            let symbol = fill.isSaved ? "star" : (fill.isHistory ? "clock.arrow.circlepath" : "text.magnifyingglass")
+            image = NSImage(systemSymbolName: symbol, accessibilityDescription: fill.explanation) ?? NSImage()
         } else if let link = item.link {
             location = link.host ?? link.scheme ?? ""
             image = NSImage(systemSymbolName: "globe", accessibilityDescription: "网页搜索") ?? NSImage()
@@ -1164,8 +1207,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let selected = selectedItem
         definitionScroll.isHidden = selected?.isFile ?? true
         if let item = selected, let fill = item.fill {
-            definitionView.string = fill.isSaved
-                ? "↩ 搜索：\(fill.text)\n\n⌘⌫ 从收藏中移除。在任意搜索时按 ⌘S 可收藏当前搜索。"
+            definitionView.string = fill.isSaved || fill.isHistory
+                ? "↩ 搜索：\(fill.text)\n\n⌘⌫ " + (fill.isSaved ? "从收藏中移除。在任意搜索时按 ⌘S 可收藏当前搜索。" : "从搜索历史中删除。在 设置 › 通用 可关闭或清除搜索历史。")
                 : "\(fill.text)\n\n\(fill.explanation)\n\n↩ 或单击：加入搜索框" + (fill.select.map { "，并选中“\($0)”方便直接改写" } ?? "") + "。"
             definitionView.scrollToBeginningOfDocument(nil)
         } else if let item = selected, !item.isFile {

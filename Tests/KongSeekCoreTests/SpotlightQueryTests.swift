@@ -7,12 +7,22 @@ final class SpotlightQueryTests: XCTestCase {
         XCTAssertNil(SpotlightQuery.content(for: SearchQuery("ext:pdf")), "full-text search needs a word")
         XCTAssertNil(SpotlightQuery.content(for: SearchQuery("学而 ext:../pdf")), "invalid queries are not run")
 
-        XCTAssertEqual(SpotlightQuery.content(for: SearchQuery("学而")),
-                       "(kMDItemTextContent == \"学而*\"cdw || kMDItemDisplayName == \"*学而*\"cd)")
-        XCTAssertEqual(SpotlightQuery.content(for: SearchQuery("\"不亦说乎\" ext:pdf,docx -ext:txt")),
-                       "(kMDItemTextContent == \"*不亦说乎*\"cd || kMDItemDisplayName == \"*不亦说乎*\"cd)"
+        XCTAssertEqual(SpotlightQuery.content(for: SearchQuery("report")),
+                       "(kMDItemTextContent == \"report*\"cdw || kMDItemDisplayName == \"*report*\"cd)")
+        XCTAssertEqual(SpotlightQuery.content(for: SearchQuery("\"annual report\" ext:pdf,docx -ext:txt")),
+                       "(kMDItemTextContent == \"*annual report*\"cd || kMDItemDisplayName == \"*annual report*\"cd)"
                            + " && (kMDItemFSName == \"*.docx\"c || kMDItemFSName == \"*.pdf\"c)"
                            + " && kMDItemFSName != \"*.txt\"c")
+    }
+
+    /// 繁简通搜 (0.16): Chinese words are looked for in both scripts.
+    func testChineseWordsInBothScripts() throws {
+        let word = try XCTUnwrap(SpotlightQuery.content(for: SearchQuery("学而")))
+        XCTAssertTrue(word.contains("kMDItemTextContent == \"学而*\"cdw"), word)
+        XCTAssertTrue(word.contains("kMDItemTextContent == \"學而*\"cdw"), word)
+        let phrase = try XCTUnwrap(SpotlightQuery.content(for: SearchQuery("\"華夏邊緣\"")))
+        XCTAssertTrue(phrase.contains("\"*华夏边缘*\"cd"), phrase)
+        XCTAssertTrue(phrase.contains("\"*華夏邊緣*\"cd"), phrase)
     }
 
     func testTypeDateSizeAndTag() throws {

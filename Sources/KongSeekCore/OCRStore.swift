@@ -140,8 +140,9 @@ public final class OCRStore {
         guard !needles.isEmpty else { return nil }
         let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
         // Every needle must occur somewhere in the document.
-        for needle in needles where !record.pages.contains(where: { $0.range(of: needle, options: options) != nil }) {
-            return nil
+        for needle in needles {
+            let variants = SearchText.scriptVariants(needle)
+            guard record.pages.contains(where: { page in variants.contains { page.range(of: $0, options: options) != nil } }) else { return nil }
         }
         for (index, page) in record.pages.enumerated() {
             if let snippet = Snippet.find(in: page, needles: needles) {

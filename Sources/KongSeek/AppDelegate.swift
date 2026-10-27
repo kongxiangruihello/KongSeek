@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var archivesStarted = false
     private var batchRename: BatchRenameWindowController?
     private var duplicates: DuplicatesWindowController?
+    private var space: SpaceWindowController?
+    private var scanned: ScannedPDFWindowController?
     private var updater: Updater!
     private var updateWindow: UpdateProgressWindow?
 
@@ -137,6 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("批量重命名…", #selector(openBatchRename)))
         menu.addItem(item("查找重复与相似文件…", #selector(openDuplicates)))
+        menu.addItem(item("空间分析…", #selector(openSpace)))
+        menu.addItem(item("查找扫描版 PDF…", #selector(openScannedPDFs)))
         menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(openSettings), key: ","))
         menu.addItem(item("关于 KongSeek", #selector(showAbout)))
@@ -321,6 +325,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return done([]) }
             self.service.archivePaths(completion: done)
         })
+    }
+
+    @objc private func openSpace() {
+        if space == nil { space = SpaceWindowController(service: service) }
+        space?.present()
+    }
+
+    @objc func openScannedPDFs() {
+        if scanned == nil { scanned = ScannedPDFWindowController(service: service, ocr: ocr) }
+        scanned?.present()
     }
 
     @objc private func openDuplicates() {

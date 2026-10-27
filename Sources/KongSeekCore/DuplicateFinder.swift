@@ -226,7 +226,8 @@ extension NameIndex {
     /// Every file (not folders or app bundles) in the index, optionally only below
     /// `folder`, at least `minimumSize` bytes, with size, date and whether it is on
     /// this Mac (iCloud placeholders are "dataless").
-    public func fileEntries(under folder: String? = nil, minimumSize: Int64 = 1) -> [FileEntry] {
+    /// With `extensions` (lowercased, without "."), only files with those extensions.
+    public func fileEntries(under folder: String? = nil, minimumSize: Int64 = 1, extensions: Set<String>? = nil) -> [FileEntry] {
         let scope = folder.map(Paths.canonical)
         let ids = liveEntryIDs().filter { flags[Int($0)] & (EntryFlags.directory.rawValue | EntryFlags.package.rawValue) == 0 }
         let chunk = 2048
@@ -238,6 +239,7 @@ extension NameIndex {
                 for id in ids[(c * chunk)..<min(ids.count, (c + 1) * chunk)] {
                     let filePath = self.path(of: id)
                     if let scope, !Paths.isWithin(filePath, scope) || filePath == scope { continue }
+                    if let extensions, !extensions.contains((filePath as NSString).pathExtension.lowercased()) { continue }
                     var info = stat()
                     guard lstat(filePath, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, Int64(info.st_size) >= minimumSize else { continue }
                     let dataless = info.st_flags & 0x4000_0000 != 0 // SF_DATALESS

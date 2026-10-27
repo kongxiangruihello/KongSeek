@@ -10,6 +10,8 @@ final class BatchRenameModel: ObservableObject {
     @Published var message: String?
     /// Moves that would undo the last rename (new path → old path).
     @Published private(set) var undoMoves: [(from: String, to: String)] = []
+    /// Tags the last rename added (path after renaming → tags), removed again by undo.
+    private var addedTags: [String: [String]] = [:]
 
     var previews: [BatchRename.Preview] {
         BatchRename.plan(items, rule: rule) { FileManager.default.fileExists(atPath: $0) }
@@ -75,6 +77,13 @@ final class BatchRenameModel: ObservableObject {
         }
         let renamed = plan.filter { $0.changed && $0.problem == nil }
         undoMoves = renamed.map { ($0.newPath, $0.item.path) }
+        // Marks moved out of names become Finder tags.
+        addedTags = [:]
+        for preview in renamed where !preview.tags.isEmpty {
+            let added = preview.tags.filter { !FinderTags.has($0, preview.newPath) }
+            for tag in added { FinderTags.set(tag, on: preview.newPath, adding: true) }
+            if !added.isEmpty { addedTags[preview.newPath] = added }
+        }
         // Keep working with the renamed files.
         let byOld = Dictionary(uniqueKeysWithValues: renamed.map { ($0.item.path, $0.newPath) })
         items = items.map { item in
@@ -88,6 +97,10 @@ final class BatchRenameModel: ObservableObject {
 
     func undo() {
         guard !undoMoves.isEmpty else { return }
+        for (path, tags) in addedTags {
+            for tag in tags { FinderTags.set(tag, on: path, adding: false) }
+        }
+        addedTags = [:]
         // Undo is a rename plan too (new names back to old), done the same safe way.
         let previews = undoMoves.map { move in
             BatchRename.Preview(item: BatchRename.Item(path: move.from), newName: (move.to as NSString).lastPathComponent, problem: nil)
@@ -210,6 +223,7 @@ struct BatchRenameView: View {
                     .frame(width: 320)
                     Spacer()
                 }
+                Toggle("把末尾的“_已读”等标记改为访达标签（从文件名中去掉，可搜索 标签:已读）", isOn: $model.rule.marksToTags)
                 Text("把 Anna's Archive、Z-Library 等网站下载的长文件名（含 ISBN、校验码、拼音转写、丛书名）整理为简短的书名。没有这些网站标记的文件名（如自己起的“作者--书名”）保持不变；末尾的“_已读”等标记会保留。")
                     .font(.caption).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

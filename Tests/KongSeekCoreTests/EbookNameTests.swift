@@ -62,4 +62,23 @@ final class EbookNameTests: XCTestCase {
         rule.ebookStyle = .titleOnly
         XCTAssertEqual(BatchRename.plan(items, rule: rule) { _ in false }.first?.newName, "流金集.pdf")
     }
+
+    func testMarksBecomeTags() {
+        XCTAssertEqual(EbookName.splitMark("洪门·青帮·袍哥 by 王纯五_已读").mark, "_已读")
+        XCTAssertEqual(EbookName.splitMark("论语稽（精读）").stem, "论语稽")
+        XCTAssertEqual(EbookName.tag(forMark: "_已读"), "已读")
+        var rule = BatchRename.Rule()
+        rule.mode = .ebook
+        rule.marksToTags = true
+        let items = [
+            BatchRename.Item(path: "/books/洪门·青帮·袍哥-----中国旧时民间黑社会习俗 by 王纯五_已读.pdf"),
+            BatchRename.Item(path: "/books/上海摩登_已读.pdf"),
+            BatchRename.Item(path: "/books/论语稽.pdf"),
+        ]
+        let plan = BatchRename.plan(items, rule: rule) { _ in false }
+        XCTAssertEqual(plan.map(\.newName), ["洪门·青帮·袍哥：中国旧时民间黑社会习俗（王纯五）.pdf", "上海摩登.pdf", "论语稽.pdf"])
+        XCTAssertEqual(plan.map(\.tags), [["已读"], ["已读"], []])
+        rule.marksToTags = false
+        XCTAssertEqual(BatchRename.plan(items, rule: rule) { _ in false }.map(\.newName)[1], "上海摩登_已读.pdf")
+    }
 }

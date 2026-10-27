@@ -36,6 +36,7 @@ struct QueryFill: Equatable {
     var select: String?
     var explanation: String
     var isSaved = false
+    var isHistory = false
 }
 
 struct SearchOutcome {
@@ -289,9 +290,9 @@ final class IndexService {
 
     /// Files in the index (optionally below `folder`) with size and date, for the
     /// duplicate finder. Calls back on main; an empty list while no index is loaded.
-    func fileEntries(under folder: String?, minimumSize: Int64, completion: @escaping ([FileEntry]) -> Void) {
+    func fileEntries(under folder: String?, minimumSize: Int64, extensions: Set<String>? = nil, completion: @escaping ([FileEntry]) -> Void) {
         queue.async { [weak self] in
-            let entries = self?.index?.fileEntries(under: folder, minimumSize: minimumSize) ?? []
+            let entries = self?.index?.fileEntries(under: folder, minimumSize: minimumSize, extensions: extensions) ?? []
             DispatchQueue.main.async { completion(entries) }
         }
     }

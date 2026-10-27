@@ -8,7 +8,11 @@ public enum MatchHighlighter {
     public static func ranges(in name: String, words: [String]) -> [NSRange] {
         var result: [NSRange] = []
         for word in words where !word.isEmpty {
-            let literal = literalRanges(in: name, word: word)
+            var literal = literalRanges(in: name, word: word)
+            if literal.isEmpty && SearchText.containsCJK(word) {
+                // 繁简: the conversion keeps positions, so ranges in the simplified name fit the original.
+                literal = literalRanges(in: SearchText.simplifiedChinese(name), word: SearchText.simplifiedChinese(word))
+            }
             if !literal.isEmpty {
                 result += literal
             } else if let pinyin = pinyinRanges(in: name, word: word) {

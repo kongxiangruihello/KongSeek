@@ -134,6 +134,26 @@ public enum DocumentText {
         throw Failure.downloading
     }
 
+    /// What "查找扫描版 PDF" needs to know about a PDF.
+    public struct TextLayer: Equatable {
+        public var hasText: Bool
+        public var pages: Int
+    }
+
+    /// Whether a local PDF has a text layer, and its page count; nil when it cannot be opened
+    /// or is password-protected. Never downloads from iCloud.
+    public static func textLayer(of url: URL) -> TextLayer? {
+        guard let document = PDFDocument(url: url) else { return nil }
+        if document.isLocked && !document.unlock(withPassword: "") { return nil }
+        return TextLayer(hasText: hasTextLayer(document), pages: document.pageCount)
+    }
+
+    /// The same test the background recognition uses: sampled pages, most of them with text.
+    public static func hasTextLayer(_ document: PDFDocument) -> Bool {
+        let texts = ScannedPDFs.samplePages(count: document.pageCount).map { document.page(at: $0)?.string ?? "" }
+        return ScannedPDFs.hasText(texts)
+    }
+
     /// Whether any page (checked up to 30) has a text layer.
     private static func documentHasText(_ document: PDFDocument) -> Bool {
         for index in 0..<min(document.pageCount, 30) where !(document.page(at: index)?.string?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {

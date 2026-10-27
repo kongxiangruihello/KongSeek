@@ -79,7 +79,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         self.onIndexSettingsChange = onIndexSettingsChange
         self.onRebuild = onRebuild
         self.indexStatus = indexStatus
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 650), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 680), styleMask: [.titled, .closable], backing: .buffered, defer: true)
         super.init()
         window.title = "KongSeek 设置"
         window.isReleasedWhenClosed = false
@@ -325,8 +325,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         ocrPauseButton.action = #selector(toggleOCRPause)
         let check = NSButton(title: "立即检查", target: self, action: #selector(checkOCRNow))
         let clear = NSButton(title: "清除识别结果", target: self, action: #selector(clearOCR))
+        let findScanned = NSButton(title: "查找扫描版 PDF…", target: self, action: #selector(findScannedPDFs))
+        findScanned.toolTip = "在已索引的文件夹中找出没有文字层的 PDF，按文件夹列出，一键加入上面的列表"
 
-        let views: [NSView] = [ocrEnabledCheckbox, scroll, add, remove, note, pageLabel, ocrPagePopup, ocrPowerCheckbox, ocrCloudCheckbox, ocrStatusLabel, ocrPauseButton, check, clear]
+        let views: [NSView] = [ocrEnabledCheckbox, scroll, add, remove, findScanned, note, pageLabel, ocrPagePopup, ocrPowerCheckbox, ocrCloudCheckbox, ocrStatusLabel, ocrPauseButton, check, clear]
         for view in views {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
@@ -342,6 +344,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             add.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             remove.centerYAnchor.constraint(equalTo: add.centerYAnchor),
             remove.leadingAnchor.constraint(equalTo: add.trailingAnchor, constant: 6),
+            findScanned.centerYAnchor.constraint(equalTo: add.centerYAnchor),
+            findScanned.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
             note.topAnchor.constraint(equalTo: add.bottomAnchor, constant: 6),
             note.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             note.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
@@ -418,6 +422,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             Preferences.ocrFolders = list
             self.ocrSettingsChanged()
         }
+    }
+
+    @objc private func findScannedPDFs() {
+        (NSApp.delegate as? AppDelegate)?.openScannedPDFs()
     }
 
     @objc private func removeOCRFolder() {
