@@ -49,6 +49,19 @@ cp "$bin_dir/KongSeek" "$app/Contents/MacOS/KongSeek"
 cp "$root/Resources/Info.plist" "$app/Contents/Info.plist"
 build_number="$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$app/Contents/Info.plist"
+# Where this build came from, for the in-app updater (设置 › 通用). The commit is
+# recorded only when the folder has no local changes, so it describes the code exactly.
+plutil -insert KSSourceRoot -string "$root" "$app/Contents/Info.plist"
+commit=""
+if [[ -z "$(git -C "$root" status --porcelain 2>/dev/null)" ]]; then
+  commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
+fi
+if [[ -n "$commit" ]]; then
+  plutil -insert KSSourceCommit -string "$commit" "$app/Contents/Info.plist"
+  echo "Source: $root @ ${commit:0:7}"
+else
+  echo "Source: $root (local changes; commit not recorded)"
+fi
 
 echo "== icon =="
 iconset="$staging/AppIcon.iconset"

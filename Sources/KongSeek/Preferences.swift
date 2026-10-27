@@ -37,6 +37,12 @@ enum Preferences {
 
     static var precision: MatchPrecision { matchFolderPath ? .withPath : .fuzzyName }
 
+    /// Check GitHub for a newer version after launch and every six hours.
+    static var autoCheckUpdates: Bool {
+        get { defaults.object(forKey: "autoCheckUpdates") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "autoCheckUpdates") }
+    }
+
     /// List the files inside .zip archives in the index, so a search finds them too.
     static var archiveSearch: Bool {
         get { defaults.object(forKey: "archiveSearch") as? Bool ?? true }

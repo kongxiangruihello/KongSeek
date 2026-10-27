@@ -13,6 +13,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let onClipboardSettingsChange: () -> Void
     private let snippetPage: SnippetSettingsView
     private let quickLinkPage: QuickLinkSettingsView
+    private let generalPage: GeneralSettingsView
+    private let tabs = NSTabView()
 
     private let clipEnabledCheckbox = NSButton(checkboxWithTitle: "记录剪贴板历史（文字、图片、文件）", target: nil, action: nil)
     private let clipRecorder = ShortcutRecorderButton()
@@ -61,7 +63,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     init(hotKey: HotKey, doubleTap: DoubleTapMonitor, ocr: OCRService, clipboardHotKey: HotKey, clipboardMonitor: ClipboardMonitor,
          onClipboardSettingsChange: @escaping () -> Void, lookupHotKey: HotKey, snippets: SnippetLibrary,
          snippetExpansion: SnippetExpansionService, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String,
-         archives: ArchiveService, onArchiveSettingsChange: @escaping () -> Void) {
+         archives: ArchiveService, onArchiveSettingsChange: @escaping () -> Void,
+         updater: Updater, diagnosticReport: @escaping () -> String) {
+        generalPage = GeneralSettingsView(updater: updater, library: snippets, diagnosticReport: diagnosticReport)
         self.archives = archives
         self.onArchiveSettingsChange = onArchiveSettingsChange
         self.hotKey = hotKey
@@ -83,7 +87,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         buildLayout()
     }
 
-    func show() {
+    /// Shows the window, on the "通用" page when `general` is set (update notices).
+    func show(general: Bool = false) {
+        if general { tabs.selectTabViewItem(withIdentifier: "general") }
         refresh()
         window.center()
         NSApp.activate(ignoringOtherApps: true)
@@ -101,7 +107,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     }
 
     private func buildLayout() {
-        let tabs = NSTabView()
         let launchTab = NSTabViewItem(identifier: "launch")
         launchTab.label = "唤起"
         launchTab.view = buildLaunchView()
@@ -126,6 +131,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         linkTab.label = "网页搜索"
         linkTab.view = quickLinkPage
         tabs.addTabViewItem(linkTab)
+        let generalTab = NSTabViewItem(identifier: "general")
+        generalTab.label = "通用"
+        generalTab.view = generalPage
+        tabs.addTabViewItem(generalTab)
         let container = NSView()
         tabs.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(tabs)
@@ -703,7 +712,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         }
     }
 
-    private func refresh() {
+    func refresh() {
+        generalPage.refresh()
         refreshClipboard()
         snippetPage.refreshStatus()
         refreshOCR()

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import ServiceManagement
 import KongSeekCore
 
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Whether the archive scan has run since the index last became ready.
     private var archivesStarted = false
     private var batchRename: BatchRenameWindowController?
+    private var updater: Updater!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
@@ -30,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         searchWindow = SearchWindowController(service: service, ocr: ocr)
         searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
         archives = ArchiveService(cacheURL: support.appendingPathComponent("KongSeek/archive-index.json"))
+        updater = Updater(supportDirectory: support.appendingPathComponent("KongSeek", isDirectory: true))
+        updater.onChange = { [weak self] in self?.settingsWindow?.refresh() }
+        if Preferences.autoCheckUpdates { updater.startAutomaticChecks() }
         service.archives = archives.index
 
         clipboardHistory = ClipboardHistory(store: ClipboardStore(directory: support.appendingPathComponent("KongSeek/Clipboard", isDirectory: true)),
@@ -97,6 +102,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let shortcut = hotKey.shortcut { ways.append(hotKey.isRegistered ? shortcut.display : "\(shortcut.display) 被占用") }
         let trigger = Preferences.doubleTapModifier
         if trigger != .off { ways.append("连按 \(trigger.title)") }
+        if updater.state.hasUpdate && !updater.state.isBusy {
+            let title = updater.state.remoteVersion.map { "⬆︎ 有新版本 \($0)，点此查看并安装…" } ?? "⬆︎ 有 \(updater.state.pending.count) 项更新，点此查看并安装…"
+            menu.addItem(item(title, #selector(openUpdates)))
+            menu.addItem(.separator())
+        } else if case .updating(let step) = updater.state.phase {
+            menu.addItem(disabled("更新中：" + step))
+            menu.addItem(.separator())
+        }
         menu.addItem(item("打开搜索" + (ways.isEmpty ? "" : "（\(ways.joined(separator: " 或 "))）"), #selector(openSearch)))
         if trigger != .off && !doubleTap.isListening {
             menu.addItem(item("⚠︎ 连按 \(trigger.title) 尚未生效：需要“输入监控”权限…", #selector(openSettings)))
@@ -168,10 +181,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 onRebuild: { [weak self] in self?.service.rebuild() },
                 indexStatus: { [weak self] in self?.stateDescription ?? "" },
                 archives: archives,
-                onArchiveSettingsChange: { [weak self] in self?.configureArchives() }
+                onArchiveSettingsChange: { [weak self] in self?.configureArchives() },
+                updater: updater,
+                diagnosticReport: { [weak self] in self?.diagnosticReport() ?? "" }
             )
         }
         settingsWindow?.show()
+    }
+
+    @objc private func openUpdates() {
+        openSettings()
+        settingsWindow?.show(general: true)
+    }
+
+    // MARK: - Diagnostics
+
+    /// Plain-text status for the diagnostics zip (no clipboard contents, snippet text or file lists).
+    private func diagnosticReport() -> String {
+        func yes(_ value: Bool) -> String { value ? "是" : "否" }
+        func time(_ date: Date?) -> String { date.map { ISO8601DateFormatter().string(from: $0) } ?? "-" }
+        func shortcut(_ key: HotKey) -> String {
+            guard let value = key.shortcut else { return "未设" }
+            return value.display + (key.isRegistered ? "（已注册）" : "（被占用）")
+        }
+        var model = [CChar](repeating: 0, count: 256)
+        var size = model.count
+        sysctlbyname("hw.model", &model, &size, nil, 0)
+        let progress = ocr.progress
+        let update = updater.state
+        let lines: [String] = [
+            "KongSeek \(Updater.version)（构建 \(Updater.build)，提交 \(Updater.installedCommit ?? "未记录")）",
+            "生成时间：\(time(Date()))",
+            "macOS \(ProcessInfo.processInfo.operatingSystemVersionString) · \(String(cString: model)) · \(ProcessInfo.processInfo.activeProcessorCount) 核",
+            "位置：\(Bundle.main.bundlePath)",
+            "签名：\(Updater.signingDescription())",
+            "",
+            "[权限]",
+            "输入监控：\(yes(doubleTap.hasPermission))  辅助功能：\(yes(AXIsProcessTrusted()))",
+            "",
+            "[唤起]",
+            "搜索 \(shortcut(hotKey))，剪贴板 \(shortcut(clipboardHotKey))，查词 \(shortcut(lookupHotKey))",
+            "连按 \(Preferences.doubleTapModifier.title)：监听 \(yes(doubleTap.isListening))，最近按键 \(time(doubleTap.lastEventAt))，最近连按 \(time(doubleTap.lastFiredAt))",
+            "",
+            "[索引]",
+            stateDescription,
+            "文件夹：" + Preferences.roots.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: "、"),
+            "隐藏文件 \(yes(Preferences.includeHidden))，匹配所在文件夹 \(yes(Preferences.matchFolderPath))",
+            "压缩包：\(Preferences.archiveSearch ? archives.statusText : "已关闭")",
+            "",
+            "[文字识别]",
+            "启用 \(yes(Preferences.ocrEnabled))，\(Preferences.ocrFolders.count) 个文件夹，已识别 \(ocr.store.recognizedDocumentCount)，待识别 \(progress.pending)，暂停 \(yes(ocr.paused))，上次检查 \(time(progress.lastCheck))，上次错误：\(progress.lastError ?? "-")",
+            "",
+            "[剪贴板与片段]",
+            "剪贴板：启用 \(yes(Preferences.clipboardEnabled))，暂停 \(yes(Preferences.clipboardPaused))，\(clipboardHistory.items.count) 条，\(clipboardHistory.totalBytes) 字节，问题：\(clipboardHistory.problem ?? "-")",
+            "片段：\(snippets.snippets.count) 个，自动展开 \(yes(Preferences.snippetExpansion))，监听 \(yes(snippetExpansion.isListening))，上次展开 \(time(snippetExpansion.lastExpansion))，问题：\(snippetExpansion.lastProblem ?? "-")",
+            "",
+            "[更新]",
+            "源码：\(update.sourceRoot ?? "-")，自动检查 \(yes(Preferences.autoCheckUpdates))，上次检查 \(time(update.lastCheck))，GitHub 新版本 \(update.remoteVersion ?? "-")，新提交 \(update.pending.count) 个",
+            "状态：\(update.phase)",
+            "备份：" + (update.backups.isEmpty ? "-" : update.backups.joined(separator: "、")),
+        ]
+        return lines.joined(separator: "\n") + "\n"
     }
 
     /// ⌃⌥D: look up the text selected in the front app.
