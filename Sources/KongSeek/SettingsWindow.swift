@@ -42,6 +42,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let pathCheckbox = NSButton(checkboxWithTitle: "关键词也匹配所在文件夹的路径", target: nil, action: nil)
     private let loginCheckbox = NSButton(checkboxWithTitle: "登录时自动启动 KongSeek", target: nil, action: nil)
     private let indexStatusLabel = NSTextField(labelWithString: "")
+    private let archives: ArchiveService
+    private let onArchiveSettingsChange: () -> Void
+    private let archiveCheckbox = NSButton(checkboxWithTitle: "也搜索 zip 压缩包里的文件名（不必解压）", target: nil, action: nil)
+    private let archiveStatusLabel = NSTextField(labelWithString: "")
+    private let archiveScanButton = NSButton(title: "立即扫描", target: nil, action: nil)
 
     private let ocrTable = NSTableView()
     private var ocrFolders: [String] = []
@@ -55,7 +60,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
 
     init(hotKey: HotKey, doubleTap: DoubleTapMonitor, ocr: OCRService, clipboardHotKey: HotKey, clipboardMonitor: ClipboardMonitor,
          onClipboardSettingsChange: @escaping () -> Void, lookupHotKey: HotKey, snippets: SnippetLibrary,
-         snippetExpansion: SnippetExpansionService, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String) {
+         snippetExpansion: SnippetExpansionService, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String,
+         archives: ArchiveService, onArchiveSettingsChange: @escaping () -> Void) {
+        self.archives = archives
+        self.onArchiveSettingsChange = onArchiveSettingsChange
         self.hotKey = hotKey
         self.doubleTap = doubleTap
         self.ocr = ocr
@@ -67,7 +75,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         self.onIndexSettingsChange = onIndexSettingsChange
         self.onRebuild = onRebuild
         self.indexStatus = indexStatus
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 540), styleMask: [.titled, .closable], backing: .buffered, defer: true)
         super.init()
         window.title = "KongSeek 设置"
         window.isReleasedWhenClosed = false
@@ -214,15 +222,22 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         note.textColor = .secondaryLabelColor
         note.preferredMaxLayoutWidth = 440
 
-        for checkbox in [hiddenCheckbox, pathCheckbox, loginCheckbox] {
+        for checkbox in [hiddenCheckbox, pathCheckbox, loginCheckbox, archiveCheckbox] {
             checkbox.target = self
             checkbox.action = #selector(checkboxChanged(_:))
         }
         indexStatusLabel.font = .systemFont(ofSize: 11)
         indexStatusLabel.textColor = .secondaryLabelColor
         let rebuild = NSButton(title: "立即重建索引", target: self, action: #selector(rebuildIndex))
+        archiveStatusLabel.font = .systemFont(ofSize: 11)
+        archiveStatusLabel.textColor = .secondaryLabelColor
+        archiveStatusLabel.lineBreakMode = .byTruncatingTail
+        archiveScanButton.target = self
+        archiveScanButton.action = #selector(scanArchives)
+        archiveScanButton.controlSize = .small
 
-        for view in [title, scroll, add, remove, reset, note, hiddenCheckbox, pathCheckbox, loginCheckbox, indexStatusLabel, rebuild] as [NSView] {
+        for view in [title, scroll, add, remove, reset, note, hiddenCheckbox, pathCheckbox, loginCheckbox, archiveCheckbox, archiveScanButton, archiveStatusLabel,
+                     indexStatusLabel, rebuild] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -248,7 +263,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             pathCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             loginCheckbox.topAnchor.constraint(equalTo: pathCheckbox.bottomAnchor, constant: 8),
             loginCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            rebuild.topAnchor.constraint(equalTo: loginCheckbox.bottomAnchor, constant: 16),
+            archiveCheckbox.topAnchor.constraint(equalTo: loginCheckbox.bottomAnchor, constant: 8),
+            archiveCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            archiveScanButton.topAnchor.constraint(equalTo: archiveCheckbox.bottomAnchor, constant: 4),
+            archiveScanButton.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 18),
+            archiveStatusLabel.centerYAnchor.constraint(equalTo: archiveScanButton.centerYAnchor),
+            archiveStatusLabel.leadingAnchor.constraint(equalTo: archiveScanButton.trailingAnchor, constant: 8),
+            archiveStatusLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
+            rebuild.topAnchor.constraint(equalTo: archiveScanButton.bottomAnchor, constant: 16),
             rebuild.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             indexStatusLabel.centerYAnchor.constraint(equalTo: rebuild.centerYAnchor),
             indexStatusLabel.leadingAnchor.constraint(equalTo: rebuild.trailingAnchor, constant: 10),
@@ -491,6 +513,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             indexSettingsChanged()
         case pathCheckbox:
             Preferences.matchFolderPath = sender.state == .on
+        case archiveCheckbox:
+            Preferences.archiveSearch = sender.state == .on
+            onArchiveSettingsChange()
         case loginCheckbox:
             do {
                 if sender.state == .on {
@@ -512,6 +537,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
 
     @objc private func rebuildIndex() {
         onRebuild()
+        refresh()
+    }
+
+    @objc private func scanArchives() {
+        onArchiveSettingsChange()
         refresh()
     }
 
@@ -685,6 +715,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         pathCheckbox.state = Preferences.matchFolderPath ? .on : .off
         loginCheckbox.state = SMAppService.mainApp.status == .enabled ? .on : .off
         indexStatusLabel.stringValue = indexStatus()
+        archiveCheckbox.state = Preferences.archiveSearch ? .on : .off
+        archiveScanButton.isHidden = !Preferences.archiveSearch
+        archiveStatusLabel.isHidden = !Preferences.archiveSearch
+        archiveScanButton.isEnabled = !archives.isScanning
+        archiveStatusLabel.stringValue = archives.statusText
 
         recorder.shortcut = hotKey.shortcut
         if let shortcut = hotKey.shortcut {

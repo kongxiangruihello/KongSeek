@@ -1,5 +1,6 @@
 import AppKit
 import Quartz
+import UniformTypeIdentifiers
 import KongSeekCore
 
 /// A floating panel that takes keyboard input without activating KongSeek,
@@ -69,6 +70,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let backButton = NSButton()
     private let scrollView = NSScrollView()
     private let actions = ResultActions()
+    /// Opens the batch-rename window with these files.
+    var onBatchRename: (([URL]) -> Void)?
+    /// Files taken out of archives for the preview, by "archive\0inner".
+    private var archivePreviews: [String: URL] = [:]
+    private var archivePreviewToken = 0
     private let defaultPlaceholder = "搜索文件名、拼音或首字母    ext:pdf    \"短语\"    -排除"
 
     /// Folder being browsed (→ on a folder), and the states to return to.
@@ -102,7 +108,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         super.init()
         configurePanel()
         buildLayout()
-        panel.quickLookURL = { [weak self] in self?.selectedItem.map { URL(fileURLWithPath: $0.path) } }
+        panel.quickLookURL = { [weak self] in self?.selectedItem.flatMap { self?.previewURL(for: $0) } }
     }
 
     // MARK: - Showing
@@ -738,6 +744,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             DictionaryLookup.openInDictionaryApp(item.name)
             return
         }
+        if item.isInArchive {
+            openFromArchive(item)
+            return
+        }
         hide()
         actions.open(item)
     }
@@ -745,7 +755,80 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func revealSelected() {
         guard let item = selectedItem, item.isFile else { return }
         hide()
-        actions.reveal(item)
+        actions.reveal(archiveOrSelf(item))
+    }
+
+    // MARK: - Files inside archives
+
+    private static func archiveKey(_ item: ResultItem) -> String {
+        item.path + "\u{0}" + (item.innerPath ?? "")
+    }
+
+    /// The archive itself, for actions that work on the .zip (reveal).
+    private func archiveOrSelf(_ item: ResultItem) -> ResultItem {
+        guard item.isInArchive else { return item }
+        return ResultItem(path: item.path, name: (item.path as NSString).lastPathComponent, isFolder: false, score: item.score)
+    }
+
+    /// What the preview and Quick Look show: the file itself, or for a file in an
+    /// archive its extracted copy (the archive until that is ready).
+    private func previewURL(for item: ResultItem) -> URL? {
+        guard item.isFile else { return nil }
+        if item.isInArchive, let extracted = archivePreviews[Self.archiveKey(item)] { return extracted }
+        return URL(fileURLWithPath: item.path)
+    }
+
+    private func openFromArchive(_ item: ResultItem) {
+        guard let inner = item.innerPath else { return }
+        statusLabel.stringValue = "正在从压缩包中取出“\(item.name)”…"
+        ArchiveService.extract(inner: inner, from: item.path) { [weak self] result in
+            switch result {
+            case .success(let url):
+                self?.hide()
+                NSWorkspace.shared.open(url)
+            case .failure(let error):
+                self?.statusLabel.stringValue = "无法从压缩包中取出：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func copyFromArchive(_ item: ResultItem, as kind: ResultActions.CopyKind) {
+        guard let inner = item.innerPath else { return }
+        switch kind {
+        case .name:
+            statusLabel.stringValue = actions.copy(item, as: .name)
+        case .path:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(item.path + "/" + inner, forType: .string)
+            statusLabel.stringValue = "已拷贝压缩包内路径：\((item.path as NSString).lastPathComponent)/\(inner)"
+        case .file:
+            statusLabel.stringValue = "正在从压缩包中取出“\(item.name)”…"
+            ArchiveService.extract(inner: inner, from: item.path) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let url):
+                    self.statusLabel.stringValue = self.actions.copy(ResultItem(path: url.path, name: item.name, isFolder: false, score: 0), as: .file)
+                case .failure(let error):
+                    self.statusLabel.stringValue = "无法从压缩包中取出：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Extracts the selected archive entry in the background for the preview (up to 200 MB).
+    private func loadArchivePreview(_ item: ResultItem) {
+        archivePreviewToken += 1
+        let token = archivePreviewToken
+        let key = Self.archiveKey(item)
+        guard let inner = item.innerPath, archivePreviews[key] == nil else { return }
+        ArchiveService.extract(inner: inner, from: item.path, maximumSize: 200_000_000) { [weak self] result in
+            guard let self, case .success(let url) = result else { return }
+            if self.archivePreviews.count > 200 { self.archivePreviews.removeAll() }
+            self.archivePreviews[key] = url
+            guard token == self.archivePreviewToken, self.selectedItem.map(Self.archiveKey) == key else { return }
+            self.preview.previewItem = url as NSURL
+            if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { QLPreviewPanel.shared().reloadData() }
+        }
     }
 
     private func copySelected(asPath: Bool) {
@@ -757,11 +840,19 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             statusLabel.stringValue = item.definition != nil ? "已拷贝释义" : "已拷贝网址"
             return
         }
+        if item.isInArchive {
+            copyFromArchive(item, as: asPath ? .path : .file)
+            return
+        }
         statusLabel.stringValue = actions.copy(item, as: asPath ? .path : .file)
     }
 
     private func trash(_ item: ResultItem) {
         guard item.isFile else { return }
+        if item.isInArchive {
+            statusLabel.stringValue = "这是压缩包中的文件，不能单独移到废纸篓"
+            return
+        }
         statusLabel.stringValue = actions.moveToTrash(item)
         if let row = results.firstIndex(of: item) {
             results.remove(at: row)
@@ -859,6 +950,18 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             entry.keyEquivalentModifierMask = modifiers
             menu.addItem(entry)
         }
+        if item.isInArchive {
+            add("打开", "o") { [weak self] in self?.openFromArchive(item) }
+            add("在访达中显示压缩包", "\r") { [weak self] in self?.hide(); self?.actions.reveal(self?.archiveOrSelf(item) ?? item) }
+            add("快速查看", "y") { [weak self] in self?.toggleQuickLook() }
+            menu.addItem(.separator())
+            add("拷贝文件（从压缩包中取出）", "c") { [weak self] in self?.copyFromArchive(item, as: .file) }
+            add("拷贝压缩包内路径", "c", [.command, .option]) { [weak self] in self?.copyFromArchive(item, as: .path) }
+            add("拷贝名称", "c", [.command, .shift]) { [weak self] in self?.copyFromArchive(item, as: .name) }
+            let rect = table.rect(ofRow: table.selectedRow)
+            menu.popUp(positioning: nil, at: NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
+            return
+        }
         if item.isFolder {
             let rightArrow = String(utf16CodeUnits: [unichar(NSRightArrowFunctionKey)], count: 1)
             add("进入文件夹", rightArrow, []) { [weak self] in self?.enterFolder(item) }
@@ -886,6 +989,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         add("拷贝路径", "c", [.command, .option]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .path) ?? "" }
         add("拷贝名称", "c", [.command, .shift]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .name) ?? "" }
         menu.addItem(.separator())
+        add("批量重命名…") { [weak self] in
+            self?.hide()
+            self?.onBatchRename?([URL(fileURLWithPath: item.path)])
+        }
         add("在“终端”中打开") { [weak self] in
             if let message = self?.actions.openInTerminal(item) { self?.statusLabel.stringValue = message } else { self?.hide() }
         }
@@ -917,6 +1024,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         } else if item.definition != nil {
             location = "系统词典 · ↩ 在“词典”中打开 · ⌘C 拷贝释义"
             image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "词典") ?? NSImage()
+        } else if let inner = item.innerPath {
+            let folder = (inner as NSString).deletingLastPathComponent
+            location = Self.displayLocation(of: item.path) + " › 压缩包 " + (item.path as NSString).lastPathComponent + (folder.isEmpty ? "" : " › " + folder)
+            image = icon(forExtension: (item.name as NSString).pathExtension)
         } else {
             location = Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "")
             image = icon(for: item.path)
@@ -942,7 +1053,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 ?? "↩ 在浏览器中打开：\n\(item.link?.absoluteString ?? "")"
             definitionView.scrollToBeginningOfDocument(nil)
         }
-        let url = selected.flatMap { $0.isFile ? URL(fileURLWithPath: $0.path) : nil }
+        let url = selected.flatMap(previewURL(for:))
+        if let item = selected, item.isInArchive { loadArchivePreview(item) }
         if (preview.previewItem as? NSURL).map({ $0 as URL }) != url {
             preview.previewItem = url as NSURL?
         }
@@ -993,6 +1105,16 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case .unsupported:
             return NSAttributedString(string: "此类文件不显示命中原文（支持 PDF、Word、RTF 与纯文本）。", attributes: note)
         }
+    }
+
+    /// A generic icon for a file type, for files inside archives.
+    private func icon(forExtension ext: String) -> NSImage {
+        let key = "\u{0}ext:" + ext.lowercased()
+        if let cached = icons.object(forKey: key as NSString) { return cached }
+        let image = NSWorkspace.shared.icon(for: UTType(filenameExtension: ext) ?? .data)
+        image.size = NSSize(width: 32, height: 32)
+        icons.setObject(image, forKey: key as NSString)
+        return image
     }
 
     private func icon(for path: String) -> NSImage {

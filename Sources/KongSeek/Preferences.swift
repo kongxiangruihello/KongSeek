@@ -37,6 +37,12 @@ enum Preferences {
 
     static var precision: MatchPrecision { matchFolderPath ? .withPath : .fuzzyName }
 
+    /// List the files inside .zip archives in the index, so a search finds them too.
+    static var archiveSearch: Bool {
+        get { defaults.object(forKey: "archiveSearch") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "archiveSearch") }
+    }
+
     static var rules: ExclusionRules {
         var rules = ExclusionRules.standard()
         rules.includeHidden = includeHidden

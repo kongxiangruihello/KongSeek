@@ -305,3 +305,22 @@ enum QueryLexer {
         return result
     }
 }
+
+extension SearchQuery {
+    /// The ext:, -ext:, "phrase" and -exclusion parts applied to a single file
+    /// name, for names kept outside the index (such as files inside archives).
+    public func acceptsName(_ name: String) -> Bool {
+        let folded = Array(SearchText.fold(name).utf8)
+        func contains(_ part: String) -> Bool {
+            let needle = Array(part.utf8)
+            return folded.withUnsafeBufferPointer { text in
+                needle.withUnsafeBufferPointer { ByteMatch.firstIndex(of: $0, in: text) != nil }
+            }
+        }
+        func hasSuffix(_ ext: String) -> Bool { folded.count > ext.utf8.count && folded.suffix(ext.utf8.count + 1).elementsEqual(("." + ext).utf8) }
+        if !extensions.isEmpty && !extensions.contains(where: hasSuffix) { return false }
+        if excludedExtensions.contains(where: hasSuffix) { return false }
+        if !phrases.allSatisfy({ contains(SearchText.fold($0)) }) { return false }
+        return !excluded.contains { contains(SearchText.fold($0)) }
+    }
+}

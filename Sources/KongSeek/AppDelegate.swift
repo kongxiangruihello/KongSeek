@@ -17,6 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lookupHotKey: HotKey!
     private var snippets: SnippetLibrary!
     private var snippetExpansion: SnippetExpansionService!
+    private var archives: ArchiveService!
+    /// Whether the archive scan has run since the index last became ready.
+    private var archivesStarted = false
+    private var batchRename: BatchRenameWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
@@ -24,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ocr = OCRService(directory: support.appendingPathComponent("KongSeek/OCR"))
         ocr.configure(Preferences.ocrSettings)
         searchWindow = SearchWindowController(service: service, ocr: ocr)
+        searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
+        archives = ArchiveService(cacheURL: support.appendingPathComponent("KongSeek/archive-index.json"))
+        service.archives = archives.index
 
         clipboardHistory = ClipboardHistory(store: ClipboardStore(directory: support.appendingPathComponent("KongSeek/Clipboard", isDirectory: true)),
                                             limits: Preferences.clipboardLimits)
@@ -38,7 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clipboardMonitor.start()
         lookupHotKey = HotKey(id: 3) { [weak self] in self?.lookUpSelection() }
         lookupHotKey.register(Preferences.lookupShortcut)
-        service.onStateChange = { [weak self] _ in self?.searchWindow.indexStateChanged() }
+        service.onStateChange = { [weak self] state in
+            guard let self else { return }
+            self.searchWindow.indexStateChanged()
+            // The archive list comes from the index, so scan once it is ready.
+            if case .ready = state, !self.archivesStarted {
+                self.archivesStarted = true
+                self.configureArchives()
+            }
+        }
         hotKey = HotKey { [weak self] in self?.searchWindow.toggle() }
         hotKey.register(Preferences.searchShortcut)
         doubleTap.onDoubleTap = { [weak self] in self?.searchWindow.toggle() }
@@ -100,6 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(disabled(stateDescription))
         menu.addItem(item("立即重建索引", #selector(rebuildIndex)))
         menu.addItem(.separator())
+        menu.addItem(item("批量重命名…", #selector(openBatchRename)))
+        menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(openSettings), key: ","))
         menu.addItem(item("关于 KongSeek", #selector(showAbout)))
         menu.addItem(item("退出 KongSeek", #selector(quit), key: "q"))
@@ -149,7 +166,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 snippetExpansion: snippetExpansion,
                 onIndexSettingsChange: { [weak self] in self?.applySettings() },
                 onRebuild: { [weak self] in self?.service.rebuild() },
-                indexStatus: { [weak self] in self?.stateDescription ?? "" }
+                indexStatus: { [weak self] in self?.stateDescription ?? "" },
+                archives: archives,
+                onArchiveSettingsChange: { [weak self] in self?.configureArchives() }
             )
         }
         settingsWindow?.show()
@@ -172,12 +191,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func rebuildIndex() {
+        archivesStarted = false
         service.rebuild()
         searchWindow.show()
     }
 
     private func applySettings() {
+        // The archives in the new index are scanned when it is ready.
+        archivesStarted = false
         service.update(roots: Preferences.roots, rules: Preferences.rules)
+    }
+
+    /// Scans the .zip files in the index now and every two hours, or forgets them when turned off.
+    private func configureArchives() {
+        guard Preferences.archiveSearch else {
+            archives.configure(source: nil)
+            return
+        }
+        archives.configure(source: { [weak self] done in
+            guard let self else { return done([]) }
+            self.service.archivePaths(completion: done)
+        })
+    }
+
+    @objc private func openBatchRename() {
+        showBatchRename(adding: [])
+    }
+
+    private func showBatchRename(adding urls: [URL]) {
+        if batchRename == nil { batchRename = BatchRenameWindowController() }
+        batchRename?.present(adding: urls)
     }
 
     @objc private func showAbout() {

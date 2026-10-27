@@ -12,8 +12,11 @@ struct ResultItem: Equatable {
     var link: URL? = nil
     /// A dictionary row ("cd 仁"): the word's definition, "" if the dictionaries have none.
     var definition: String? = nil
+    /// A file inside a .zip archive: its path in the archive (`path` is the archive).
+    var innerPath: String? = nil
 
     var isFile: Bool { link == nil && definition == nil }
+    var isInArchive: Bool { innerPath != nil }
 
     static func web(_ link: QuickLink, query: String) -> ResultItem? {
         guard let url = link.url(for: query) else { return nil }
@@ -63,6 +66,8 @@ final class IndexService {
     // Only touched on main.
     private var searchToken = 0
     private(set) var state: IndexState = .loading
+    /// Names inside .zip archives, searched along with the index when set.
+    var archives: ArchiveIndex?
     var onStateChange: ((IndexState) -> Void)?
 
     init(roots: [String], rules: ExclusionRules) {
@@ -192,12 +197,16 @@ final class IndexService {
         let token = searchToken
         let counts = Preferences.openCounts
         let opened = Preferences.lastOpened
+        let archives = Preferences.archiveSearch ? self.archives : nil
         queue.async { [weak self] in
             guard let self else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let outcome = trimmed.isEmpty
+            var outcome = trimmed.isEmpty
                 ? Self.recentItems(counts: counts, opened: opened)
                 : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts)
+            if !trimmed.isEmpty, let archives {
+                Self.mergeArchiveHits(into: &outcome, query: SearchQuery(trimmed), archives: archives, limit: limit)
+            }
             DispatchQueue.main.async {
                 guard token == self.searchToken else { return }
                 completion(outcome)
@@ -261,6 +270,41 @@ final class IndexService {
         outcome.isRecentList = true
         outcome.matchCount = items.count
         return outcome
+    }
+
+    /// The archive paths in the index (ext:zip), for the archive scan. Calls back on
+    /// the index queue, and not at all while no index is loaded.
+    func archivePaths(completion: @escaping ([String]) -> Void) {
+        queue.async { [weak self] in
+            // Not loaded yet: skip, rather than report "no archives" and forget them all.
+            guard let index = self?.index else { return }
+            completion(index.search(SearchQuery("ext:zip")).map { index.path(of: $0.id) })
+        }
+    }
+
+    /// Files inside archives whose name matches, placed a little below files of
+    /// the same score on disk (KongFetch 4: score − 40). Type and date filters
+    /// need attributes an archive entry does not have, so such queries skip archives.
+    static func mergeArchiveHits(into outcome: inout SearchOutcome, query: SearchQuery, archives: ArchiveIndex, limit: Int) {
+        let words = query.words + query.phrases
+        guard query.valid, !words.isEmpty, !query.needsMetadata else { return }
+        var exists: [String: Bool] = [:]
+        let hits = archives.search(words, limit: 60, accept: { path in
+            if let known = exists[path] { return known }
+            let found = FileManager.default.fileExists(atPath: path)
+            exists[path] = found
+            return found
+        }, acceptName: query.acceptsName)
+        guard !hits.isEmpty else { return }
+        var items = outcome.items
+        for hit in hits {
+            let item = ResultItem(path: hit.archive, name: (hit.inner as NSString).lastPathComponent, isFolder: false,
+                                  score: hit.score - 40, innerPath: hit.inner)
+            let position = items.firstIndex { $0.score < item.score } ?? items.count
+            items.insert(item, at: position)
+        }
+        outcome.items = Array(items.prefix(limit))
+        outcome.matchCount += hits.count
     }
 
     private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int]) -> SearchOutcome {
