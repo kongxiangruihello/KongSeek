@@ -25,7 +25,8 @@ final class MCPServerTests: XCTestCase {
         XCTAssertEqual(initialize["id"] as? Int, 1)
         XCTAssertEqual(result?["protocolVersion"] as? String, "2025-06-18")
         XCTAssertEqual((result?["serverInfo"] as? [String: Any])?["name"] as? String, "kongseek")
-        XCTAssertNotNil((result?["capabilities"] as? [String: Any])?["tools"])
+        XCTAssertEqual(((result?["capabilities"] as? [String: Any])?["tools"] as? [String: Any])?["listChanged"] as? Bool, true)
+        XCTAssertEqual(object(MCPServer.toolsChangedNotification)["method"] as? String, "notifications/tools/list_changed")
         XCTAssertEqual(result?["instructions"] as? String, "Search files.")
 
         let unknownVersion = object(server.handle(#"{"jsonrpc":"2.0","id":"a","method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#))

@@ -422,6 +422,8 @@ func runMCP(indexURL: URL) -> Never {
     let pendingKey = "KS_MCP_PENDING"
     if let pending = ProcessInfo.processInfo.environment[pendingKey] {
         unsetenv(pendingKey)
+        // Just switched to a new version: its tools may differ, so ask the client to list them again.
+        FileHandle.standardOutput.write(Data((MCPServer.toolsChangedNotification + "\n").utf8))
         answer(pending)
     }
     while let line = readLine(strippingNewline: true) {

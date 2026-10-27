@@ -42,6 +42,9 @@ public final class MCPServer {
         self.tools = tools
     }
 
+    /// Tells the client to fetch the tool list again (sent after an update brings new tools).
+    public static let toolsChangedNotification = #"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#
+
     /// Handles one line from the client; returns the response line, or nil for
     /// notifications (and blank lines).
     public func handle(_ line: String) -> String? {
@@ -76,7 +79,7 @@ public final class MCPServer {
             let version = requested.flatMap { Self.supportedVersions.contains($0) ? $0 : nil } ?? Self.defaultVersion
             var result: [String: Any] = [
                 "protocolVersion": version,
-                "capabilities": ["tools": ["listChanged": false]],
+                "capabilities": ["tools": ["listChanged": true]],
                 "serverInfo": ["name": name, "version": self.version],
             ]
             if let instructions { result["instructions"] = instructions }
