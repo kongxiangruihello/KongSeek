@@ -198,9 +198,15 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "clipboardOCR") }
     }
 
+    /// Password managers: never recorded, and snippets never expand there.
+    static let defaultExcludedApps = [
+        "com.1password.1password", "com.agilebits.onepassword7", "com.bitwarden.desktop",
+        "com.dashlane.Dashlane", "com.apple.Passwords", "com.apple.keychainaccess", "org.keepassxc.keepassxc",
+    ]
+
     /// Bundle identifiers whose copies are never recorded.
     static var clipboardExcludedApps: [String] {
-        get { defaults.stringArray(forKey: "clipboardExcludedApps") ?? [] }
+        get { defaults.stringArray(forKey: "clipboardExcludedApps") ?? defaultExcludedApps }
         set { defaults.set(newValue, forKey: "clipboardExcludedApps") }
     }
 
@@ -211,5 +217,47 @@ enum Preferences {
             return raw.compactMap(TextCleanup.Operation.init(rawValue:))
         }
         set { defaults.set(newValue.map(\.rawValue), forKey: "cleanupOperations") }
+    }
+
+    // MARK: - Web search, lookup, snippets
+
+    /// Keywords for web searches typed in the search window ("hd 仁").
+    static var quickLinks: [QuickLink] {
+        get {
+            guard let data = defaults.data(forKey: "quickLinks"),
+                  let links = try? JSONDecoder().decode([QuickLink].self, from: data) else { return QuickLinks.defaults }
+            return links
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) { defaults.set(data, forKey: "quickLinks") }
+        }
+    }
+
+    static func resetQuickLinks() {
+        defaults.removeObject(forKey: "quickLinks")
+    }
+
+    /// Look up the selected text in the system dictionary.
+    static var lookupShortcut: Shortcut? {
+        get {
+            if defaults.bool(forKey: "lookupShortcutCleared") { return nil }
+            guard let data = defaults.data(forKey: "lookupShortcut"),
+                  let shortcut = try? JSONDecoder().decode(Shortcut.self, from: data) else { return .defaultLookup }
+            return shortcut
+        }
+        set {
+            defaults.set(newValue == nil, forKey: "lookupShortcutCleared")
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: "lookupShortcut")
+            } else {
+                defaults.removeObject(forKey: "lookupShortcut")
+            }
+        }
+    }
+
+    /// Replace a typed snippet keyword with the snippet (needs Input Monitoring and Accessibility).
+    static var snippetExpansion: Bool {
+        get { defaults.object(forKey: "snippetExpansion") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "snippetExpansion") }
     }
 }

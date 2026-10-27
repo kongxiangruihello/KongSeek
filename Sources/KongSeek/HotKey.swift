@@ -10,6 +10,7 @@ struct Shortcut: Codable, Equatable {
 
     static let defaultSearch = Shortcut(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(optionKey), keyLabel: "空格")
     static let defaultClipboard = Shortcut(keyCode: UInt32(kVK_ANSI_V), carbonModifiers: UInt32(controlKey | optionKey), keyLabel: "V")
+    static let defaultLookup = Shortcut(keyCode: UInt32(kVK_ANSI_D), carbonModifiers: UInt32(controlKey | optionKey), keyLabel: "D")
 
     var display: String {
         var text = ""

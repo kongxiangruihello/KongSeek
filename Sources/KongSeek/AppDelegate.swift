@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var clipboardMonitor: ClipboardMonitor!
     private var clipboardPanel: ClipboardPanelController!
     private var clipboardHotKey: HotKey!
+    private var lookupHotKey: HotKey!
+    private var snippets: SnippetLibrary!
+    private var snippetExpansion: SnippetExpansionService!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
@@ -25,11 +28,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clipboardHistory = ClipboardHistory(store: ClipboardStore(directory: support.appendingPathComponent("KongSeek/Clipboard", isDirectory: true)),
                                             limits: Preferences.clipboardLimits)
         clipboardMonitor = ClipboardMonitor(history: clipboardHistory)
-        clipboardPanel = ClipboardPanelController(monitor: clipboardMonitor)
+        snippets = SnippetLibrary(fileURL: support.appendingPathComponent("KongSeek/snippets.json"))
+        snippetExpansion = SnippetExpansionService(library: snippets, monitor: clipboardMonitor)
+        snippetExpansion.enabled = Preferences.snippetExpansion
+        clipboardPanel = ClipboardPanelController(monitor: clipboardMonitor, library: snippets)
         clipboardPanel.openSettings = { [weak self] in self?.openSettings() }
         clipboardHotKey = HotKey(id: 2) { [weak self] in self?.clipboardPanel.toggle() }
         clipboardHotKey.register(Preferences.clipboardShortcut)
         clipboardMonitor.start()
+        lookupHotKey = HotKey(id: 3) { [weak self] in self?.lookUpSelection() }
+        lookupHotKey.register(Preferences.lookupShortcut)
         service.onStateChange = { [weak self] _ in self?.searchWindow.indexStateChanged() }
         hotKey = HotKey { [weak self] in self?.searchWindow.toggle() }
         hotKey.register(Preferences.searchShortcut)
@@ -136,12 +144,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 clipboardHotKey: clipboardHotKey,
                 clipboardMonitor: clipboardMonitor,
                 onClipboardSettingsChange: {},
+                lookupHotKey: lookupHotKey,
+                snippets: snippets,
+                snippetExpansion: snippetExpansion,
                 onIndexSettingsChange: { [weak self] in self?.applySettings() },
                 onRebuild: { [weak self] in self?.service.rebuild() },
                 indexStatus: { [weak self] in self?.stateDescription ?? "" }
             )
         }
         settingsWindow?.show()
+    }
+
+    /// ⌃⌥D: look up the text selected in the front app.
+    private func lookUpSelection() {
+        SelectedText.fetch(monitor: clipboardMonitor) { [weak self] text in
+            self?.searchWindow.showLookup(text: text)
+        }
     }
 
     @objc private func openClipboard() {

@@ -11,6 +11,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let clipboardHotKey: HotKey
     private let clipboardMonitor: ClipboardMonitor
     private let onClipboardSettingsChange: () -> Void
+    private let snippetPage: SnippetSettingsView
+    private let quickLinkPage: QuickLinkSettingsView
 
     private let clipEnabledCheckbox = NSButton(checkboxWithTitle: "记录剪贴板历史（文字、图片、文件）", target: nil, action: nil)
     private let clipRecorder = ShortcutRecorderButton()
@@ -52,17 +54,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private static let pageLimits = [50, 200, 500, 1000]
 
     init(hotKey: HotKey, doubleTap: DoubleTapMonitor, ocr: OCRService, clipboardHotKey: HotKey, clipboardMonitor: ClipboardMonitor,
-         onClipboardSettingsChange: @escaping () -> Void, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String) {
+         onClipboardSettingsChange: @escaping () -> Void, lookupHotKey: HotKey, snippets: SnippetLibrary,
+         snippetExpansion: SnippetExpansionService, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String) {
         self.hotKey = hotKey
         self.doubleTap = doubleTap
         self.ocr = ocr
         self.clipboardHotKey = clipboardHotKey
         self.clipboardMonitor = clipboardMonitor
         self.onClipboardSettingsChange = onClipboardSettingsChange
+        snippetPage = SnippetSettingsView(library: snippets, expansion: snippetExpansion)
+        quickLinkPage = QuickLinkSettingsView(lookupHotKey: lookupHotKey)
         self.onIndexSettingsChange = onIndexSettingsChange
         self.onRebuild = onRebuild
         self.indexStatus = indexStatus
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 470), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: true)
         super.init()
         window.title = "KongSeek 设置"
         window.isReleasedWhenClosed = false
@@ -105,6 +110,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         clipTab.label = "剪贴板"
         clipTab.view = buildClipboardView()
         tabs.addTabViewItem(clipTab)
+        let snippetTab = NSTabViewItem(identifier: "snippets")
+        snippetTab.label = "片段"
+        snippetTab.view = snippetPage
+        tabs.addTabViewItem(snippetTab)
+        let linkTab = NSTabViewItem(identifier: "links")
+        linkTab.label = "网页搜索"
+        linkTab.view = quickLinkPage
+        tabs.addTabViewItem(linkTab)
         let container = NSView()
         tabs.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(tabs)
@@ -662,6 +675,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
 
     private func refresh() {
         refreshClipboard()
+        snippetPage.refreshStatus()
         refreshOCR()
         if folders != Preferences.roots {
             folders = Preferences.roots

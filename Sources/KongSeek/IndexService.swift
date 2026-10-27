@@ -8,6 +8,17 @@ struct ResultItem: Equatable {
     let score: Int
     /// Found in text recognized from a scan (OCR), not in the file's own text.
     var recognized = false
+    /// A web search row ("hd 仁"): opens this address instead of a file.
+    var link: URL? = nil
+    /// A dictionary row ("cd 仁"): the word's definition, "" if the dictionaries have none.
+    var definition: String? = nil
+
+    var isFile: Bool { link == nil && definition == nil }
+
+    static func web(_ link: QuickLink, query: String) -> ResultItem? {
+        guard let url = link.url(for: query) else { return nil }
+        return ResultItem(path: url.absoluteString, name: "用 \(link.name) 搜索“\(query)”", isFolder: false, score: 0, link: url)
+    }
 }
 
 struct SearchOutcome {

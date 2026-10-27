@@ -58,6 +58,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private var spotlightFinished = false
     private var ocrItems: [ResultItem] = []
     private var contentQuery = SearchQuery("")
+    /// Web search rows shown above the results ("hd 仁").
+    private var webRows: [ResultItem] = []
+    private let definitionScroll = NSTextView.scrollableTextView()
+    private var definitionView: NSTextView { definitionScroll.documentView as! NSTextView }
     private var results: [ResultItem] = []
     private var outcome = SearchOutcome()
     private var keyMonitor: Any?
@@ -264,7 +268,16 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         snippetLabel.isSelectable = true
         snippetLabel.lineBreakMode = .byTruncatingTail
 
-        for view in [searchIcon, field, modeButton, topLine, scroll, middleLine, snippetLabel, preview, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        definitionView.isEditable = false
+        definitionView.isSelectable = true
+        definitionView.drawsBackground = false
+        definitionView.font = .systemFont(ofSize: 14)
+        definitionView.textContainerInset = NSSize(width: 10, height: 10)
+        definitionScroll.drawsBackground = false
+        definitionScroll.hasVerticalScroller = true
+        definitionScroll.isHidden = true
+
+        for view in [searchIcon, field, modeButton, topLine, scroll, middleLine, snippetLabel, preview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -306,6 +319,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             preview.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -8),
             preview.bottomAnchor.constraint(equalTo: bottomLine.topAnchor, constant: -8),
 
+            definitionScroll.topAnchor.constraint(equalTo: preview.topAnchor),
+            definitionScroll.bottomAnchor.constraint(equalTo: preview.bottomAnchor),
+            definitionScroll.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
+            definitionScroll.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
+
             emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
             emptyLabel.widthAnchor.constraint(lessThanOrEqualTo: scroll.widthAnchor, constant: -40),
@@ -338,6 +356,29 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
             return
         }
+        runSearch()
+    }
+
+    /// "cd 仁": the definition from the Dictionary app's dictionaries, plus 汉典.
+    private func showLookup(_ word: String) {
+        let definition = DictionaryLookup.definition(of: word) ?? ""
+        webRows = [ResultItem(path: "dict:" + word, name: word, isFolder: false, score: 0, definition: definition)]
+        if let handian = Preferences.quickLinks.first(where: { $0.keyword == "hd" }), let row = ResultItem.web(handian, query: word) {
+            webRows.append(row)
+        }
+        var lookup = SearchOutcome()
+        lookup.notes = ["查词"]
+        show(lookup)
+    }
+
+    /// Opens the window looking up `text` (⌃⌥D on a selection).
+    func showLookup(text: String?) {
+        let word = (text ?? "").split(whereSeparator: \.isNewline).first.map { String($0.prefix(60)) }?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        if contentMode { toggleMode() }
+        show()
+        field.stringValue = DictionaryLookup.keyword + " " + word
+        field.currentEditor()?.moveToEndOfDocument(nil)
         runSearch()
     }
 
@@ -438,6 +479,17 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     func runSearch() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        webRows = []
+        if browsedFolder == nil, let word = DictionaryLookup.word(in: field.stringValue) {
+            contentToken += 1
+            contentSearch.stop()
+            showLookup(word)
+            return
+        }
+        if browsedFolder == nil, let match = QuickLinks.match(field.stringValue, in: Preferences.quickLinks),
+           let row = ResultItem.web(match.link, query: match.query) {
+            webRows = [row]
+        }
         if contentMode && browsedFolder == nil && !text.isEmpty {
             runContentSearch()
             return
@@ -460,7 +512,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let keepPath = newOutcome.isContent && outcome.isContent ? selectedItem?.path : nil
         let previousRow = table.selectedRow
         outcome = newOutcome
-        results = newOutcome.items
+        results = webRows + newOutcome.items
+        // Nothing found: offer the web searches marked as fallbacks.
+        let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if results.isEmpty && browsedFolder == nil && !query.isEmpty && !newOutcome.gathering && !newOutcome.isRecentList {
+            results = Preferences.quickLinks.filter(\.fallback).compactMap { ResultItem.web($0, query: query) }
+        }
         table.reloadData()
         if let keepPath, let row = results.firstIndex(where: { $0.path == keepPath }) {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -671,22 +728,40 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func open(row: Int) {
         guard row >= 0 && row < results.count else { return }
         let item = results[row]
+        if let link = item.link {
+            hide()
+            NSWorkspace.shared.open(link)
+            return
+        }
+        if item.definition != nil {
+            hide()
+            DictionaryLookup.openInDictionaryApp(item.name)
+            return
+        }
         hide()
         actions.open(item)
     }
 
     private func revealSelected() {
-        guard let item = selectedItem else { return }
+        guard let item = selectedItem, item.isFile else { return }
         hide()
         actions.reveal(item)
     }
 
     private func copySelected(asPath: Bool) {
         guard let item = selectedItem else { return }
+        if !item.isFile {
+            let text = item.definition.flatMap { $0.isEmpty ? nil : $0 } ?? item.link?.absoluteString ?? item.name
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            statusLabel.stringValue = item.definition != nil ? "已拷贝释义" : "已拷贝网址"
+            return
+        }
         statusLabel.stringValue = actions.copy(item, as: asPath ? .path : .file)
     }
 
     private func trash(_ item: ResultItem) {
+        guard item.isFile else { return }
         statusLabel.stringValue = actions.moveToTrash(item)
         if let row = results.firstIndex(of: item) {
             results.remove(at: row)
@@ -701,7 +776,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func toggleQuickLook() {
-        guard selectedItem != nil else { return }
+        guard let item = selectedItem, item.isFile else { return }
         let quickLook = QLPreviewPanel.shared()!
         if quickLook.isVisible {
             quickLook.orderOut(nil)
@@ -776,7 +851,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     // MARK: - Action menu (⌘K)
 
     private func showActionMenu() {
-        guard let item = selectedItem, table.selectedRow >= 0 else { return }
+        guard let item = selectedItem, item.isFile, table.selectedRow >= 0 else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
         func add(_ title: String, _ key: String = "", _ modifiers: NSEvent.ModifierFlags = [.command], _ handler: @escaping () -> Void) {
@@ -834,10 +909,22 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let identifier = NSUserInterfaceItemIdentifier("ResultCell")
         let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? ResultCellView) ?? ResultCellView(identifier: identifier)
         let item = results[row]
+        let location: String
+        let image: NSImage
+        if let link = item.link {
+            location = link.host ?? link.scheme ?? ""
+            image = NSImage(systemSymbolName: "globe", accessibilityDescription: "网页搜索") ?? NSImage()
+        } else if item.definition != nil {
+            location = "系统词典 · ↩ 在“词典”中打开 · ⌘C 拷贝释义"
+            image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "词典") ?? NSImage()
+        } else {
+            location = Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "")
+            image = icon(for: item.path)
+        }
         cell.configure(
-            name: highlighted(item.name),
-            location: Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : ""),
-            icon: icon(for: item.path),
+            name: item.isFile ? highlighted(item.name) : NSAttributedString(string: item.name, attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.labelColor]),
+            location: location,
+            icon: image,
             shortcut: row < 9 ? "⌘\(row + 1)" : ""
         )
         return cell
@@ -848,7 +935,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func updatePreview() {
-        let url = selectedItem.map { URL(fileURLWithPath: $0.path) }
+        let selected = selectedItem
+        definitionScroll.isHidden = selected?.isFile ?? true
+        if let item = selected, !item.isFile {
+            definitionView.string = item.definition.map { $0.isEmpty ? "系统词典中没有“\(item.name)”。\n可在“词典”App 的设置中启用更多词典（如现代汉语词典、牛津英汉汉英词典），或用汉典查询。" : $0 }
+                ?? "↩ 在浏览器中打开：\n\(item.link?.absoluteString ?? "")"
+            definitionView.scrollToBeginningOfDocument(nil)
+        }
+        let url = selected.flatMap { $0.isFile ? URL(fileURLWithPath: $0.path) : nil }
         if (preview.previewItem as? NSURL).map({ $0 as URL }) != url {
             preview.previewItem = url as NSURL?
         }

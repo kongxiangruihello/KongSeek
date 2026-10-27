@@ -1,4 +1,5 @@
 import AppKit
+import KongSeekCore
 
 /// KongReview (the user's highlight and review app) takes text through
 /// kongreview://add links: its quick-capture window opens filled in, and
@@ -25,10 +26,7 @@ enum KongReviewLink {
         return true
     }
 
-    /// Percent-encodes a query value (also "&", "=", "+" and "#").
     static func encode(_ value: String) -> String {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: "&=+#")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+        QuickLink.encode(value)
     }
 }
