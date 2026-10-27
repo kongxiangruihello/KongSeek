@@ -42,6 +42,7 @@ final class RelevanceTests: XCTestCase {
         XCTAssertEqual(Set(refined.map(\.id)), Set(hits.map(\.id)), "same matches")
         let names = refined.sorted { $0.score > $1.score }.map { index.name(of: $0.id) }
         XCTAssertEqual(names, ["论语.pdf", "论语稽.pdf", "论月.pdf", title])
-        XCTAssertEqual(index.refined(hits, query: SearchQuery("dupe: lunyu")).map(\.score), index.search(SearchQuery("dupe: lunyu")).map(\.score))
+        // dupe: keeps its own order and scores.
+        XCTAssertEqual(index.refined(hits, query: SearchQuery("dupe: lunyu")), hits)
     }
 }

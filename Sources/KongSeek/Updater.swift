@@ -29,6 +29,8 @@ final class Updater {
         var lastCheck: Date?
         var sourceRoot: String?
         var backups: [String] = []
+        /// The update in progress (or just ended), for the progress window.
+        var progress: Progress?
 
         var hasUpdate: Bool { remoteVersion != nil || !pending.isEmpty }
         var isBusy: Bool {
@@ -39,8 +41,39 @@ final class Updater {
         }
     }
 
+    /// The steps of an update, shown in the progress window.
+    enum Step: Int, CaseIterable, Equatable {
+        case fetch, test, compile, verify, backup, install
+
+        var title: String {
+            switch self {
+            case .fetch: return "从 GitHub 获取新代码"
+            case .test: return "编译并运行测试"
+            case .compile: return "编译新版本"
+            case .verify: return "校验签名"
+            case .backup: return "备份当前版本"
+            case .install: return "安装并重新打开"
+            }
+        }
+    }
+
+    struct Progress: Equatable {
+        var title: String
+        var steps: [Step]
+        var current: Step
+        /// Whole update, 0…1.
+        var fraction: Double = 0
+        var detail: String = ""
+        var started = Date()
+        /// Set when the update stopped; the installed version is unchanged.
+        var failure: String?
+        var finished = false
+    }
+
     private(set) var state = State()
     var onChange: (() -> Void)?
+    /// Called on main when an update starts, so the progress window can appear.
+    var onUpdateStarted: (() -> Void)?
 
     private let queue = DispatchQueue(label: "KongSeek.updater", qos: .utility)
     private let supportDirectory: URL
@@ -177,34 +210,87 @@ final class Updater {
             set { $0.phase = .failed("找不到 KongSeek 的源码文件夹（应在 ~/Developer/kongseek）") }
             return
         }
-        set { $0.phase = .updating(fromLocalSource ? "正在用源码文件夹中的代码编译…" : "正在获取更新…") }
+        let steps: [Step] = fromLocalSource ? [.test, .compile, .verify, .backup, .install] : Step.allCases
+        let title = fromLocalSource ? "用本地源码重新构建 KongSeek" : "更新 KongSeek" + (state.remoteVersion.map { " 到 \($0)" } ?? "")
+        set {
+            $0.phase = .updating(fromLocalSource ? "正在用源码文件夹中的代码编译…" : "正在获取更新…")
+            $0.progress = Progress(title: title, steps: steps, current: steps[0], detail: fromLocalSource ? "准备中…" : "正在连接 GitHub…")
+        }
+        onUpdateStarted?()
         queue.async { [weak self] in
             guard let self else { return }
             self.log("==== \(fromLocalSource ? "从本地源码重新构建" : "更新") 开始 \(Date())")
+            // Share of the whole bar before the build starts.
+            let buildStart = fromLocalSource ? 0.0 : 0.08
             do {
                 if !fromLocalSource {
                     let fetch = self.fetch(root)
                     guard fetch.status == 0 else { throw UpdateError(Self.fetchFailure(fetch.output)) }
+                    self.report(.fetch, fraction: 0.05, "正在更新源码文件夹…")
                     try self.bringSourceUpToDate(root)
                 }
                 self.set { $0.phase = .updating("正在测试并编译（约一两分钟）…") }
-                try self.step(self.run("/bin/bash", ["scripts/build-app.sh", "--test"], root), "测试或编译失败（详情见 build/build.log）")
+                self.report(.test, fraction: buildStart, "正在编译测试…")
+                var build = BuildLogProgress(expectedTests: UserDefaults.standard.integer(forKey: "lastTestCount").nonZero ?? 120)
+                var shown = (detail: "", fraction: -1.0)
+                let result = self.run("/bin/bash", ["scripts/build-app.sh", "--test"], root) { line in
+                    build.consume(line)
+                    let fraction = buildStart + (0.9 - buildStart) * build.overall
+                    guard build.detail != shown.detail || fraction - shown.fraction >= 0.01 else { return }
+                    shown = (build.detail, fraction)
+                    self.report(build.stage >= .compiling ? .compile : .test, fraction: fraction, build.detail)
+                }
+                if let total = build.executedTests, total > 0 { UserDefaults.standard.set(total, forKey: "lastTestCount") }
+                guard result.status == 0 else {
+                    if !build.failedTests.isEmpty {
+                        throw UpdateError("有 \(build.failedTests.count) 项测试未通过（\(build.failedTests.prefix(3).joined(separator: "、"))），已停止；当前安装的版本没有改动。")
+                    }
+                    if build.stage < .runningTests || build.stage >= .compiling {
+                        let detail = result.output.split(separator: "\n").last { $0.contains("error:") }.map(String.init) ?? ""
+                        throw UpdateError("编译失败，已停止；当前安装的版本没有改动。" + (detail.isEmpty ? "" : "\n" + detail))
+                    }
+                    throw UpdateError("测试或编译失败（详情见构建日志），已停止；当前安装的版本没有改动。")
+                }
 
                 let built = URL(fileURLWithPath: root).appendingPathComponent("build/KongSeek.app")
                 self.set { $0.phase = .updating("正在校验签名…") }
+                self.report(.verify, fraction: 0.92, "确认新版本与当前版本的签名一致，以保留已授予的权限…")
                 try self.verifySignature(of: built)
 
                 self.set { $0.phase = .updating("正在备份当前版本…") }
+                self.report(.backup, fraction: 0.95, "备份 KongSeek \(Self.version)，以便需要时回退…")
                 try self.backupRunningApp()
 
                 self.set { $0.phase = .updating("正在安装，KongSeek 将重新打开…") }
+                self.report(.install, fraction: 1, "安装完成，KongSeek 将在几秒内重新打开…")
+                self.set { $0.progress?.finished = true }
+                UserDefaults.standard.set(Self.version, forKey: "updatedFrom")
                 try self.installAndRelaunch(built)
             } catch {
                 let message = (error as? UpdateError)?.message ?? error.localizedDescription
                 self.log("失败：\(message)")
-                self.set { $0.phase = .failed(message) }
+                UserDefaults.standard.removeObject(forKey: "updatedFrom")
+                self.set {
+                    $0.phase = .failed(message)
+                    $0.progress?.failure = message
+                }
             }
         }
+    }
+
+    /// Moves the progress window to `step`.
+    private func report(_ step: Step, fraction: Double, _ detail: String) {
+        set {
+            guard $0.progress != nil else { return }
+            $0.progress?.current = step
+            $0.progress?.fraction = max($0.progress?.fraction ?? 0, fraction)
+            $0.progress?.detail = detail
+        }
+    }
+
+    func dismissProgress() {
+        guard state.progress != nil, !state.isBusy else { return }
+        set { $0.progress = nil }
     }
 
     /// Moves the source folder to origin/main. A locally changed file is fine when
@@ -257,13 +343,23 @@ final class Updater {
     func rollback() {
         guard let latest = listBackups().first else { return }
         let url = backupsURL.appendingPathComponent(latest)
-        set { $0.phase = .updating("正在回退到 \(latest)…") }
+        set {
+            $0.phase = .updating("正在回退到 \(latest)…")
+            $0.progress = Progress(title: "回退到 " + latest.replacingOccurrences(of: ".app", with: ""), steps: [.install], current: .install,
+                                   fraction: 0.5, detail: "正在换回上一版，KongSeek 将重新打开…")
+        }
+        onUpdateStarted?()
         queue.async { [weak self] in
             guard let self else { return }
             do {
+                UserDefaults.standard.set(Self.version, forKey: "updatedFrom")
                 try self.installAndRelaunch(url)
             } catch {
-                self.set { $0.phase = .failed("回退失败：\(error.localizedDescription)") }
+                UserDefaults.standard.removeObject(forKey: "updatedFrom")
+                self.set {
+                    $0.phase = .failed("回退失败：\(error.localizedDescription)")
+                    $0.progress?.failure = "回退失败：\(error.localizedDescription)"
+                }
             }
         }
     }
@@ -353,7 +449,8 @@ final class Updater {
         helper.standardError = FileHandle.nullDevice
         try helper.run()
         log("已启动安装程序，KongSeek 即将退出。")
-        DispatchQueue.main.async { NSApp.terminate(nil) }
+        // A moment for the progress window to show "完成" before quitting.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { NSApp.terminate(nil) }
     }
 
     /// Backup name of the running copy, e.g. "KongSeek-0.9.0-12.app".
@@ -392,7 +489,8 @@ final class Updater {
     /// Runs a command to completion, appending it (and its output) to the update log.
     /// A command that runs longer than `timeout` seconds is stopped.
     private func run(_ executable: String, _ arguments: [String], _ directory: String,
-                     timeout: TimeInterval = 1200, logOutput: Bool = true) -> (status: Int32, output: String) {
+                     timeout: TimeInterval = 1200, logOutput: Bool = true,
+                     onLine: ((String) -> Void)? = nil) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -420,7 +518,22 @@ final class Updater {
             }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Read as output arrives, handing complete lines (split at \n or \r) to `onLine`.
+        var data = Data()
+        var pending = Data()
+        let handle = pipe.fileHandleForReading
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }
+            data.append(chunk)
+            guard let onLine else { continue }
+            pending.append(chunk)
+            while let cut = pending.firstIndex(where: { $0 == 0x0A || $0 == 0x0D }) {
+                onLine(String(decoding: pending[pending.startIndex..<cut], as: UTF8.self))
+                pending.removeSubrange(pending.startIndex...cut)
+            }
+        }
+        if let onLine, !pending.isEmpty { onLine(String(decoding: pending, as: UTF8.self)) }
         process.waitUntilExit()
         watchdog.cancel()
         var output = String(decoding: data, as: UTF8.self)
@@ -452,4 +565,8 @@ final class Updater {
             }
         }
     }
+}
+
+private extension Int {
+    var nonZero: Int? { self == 0 ? nil : self }
 }

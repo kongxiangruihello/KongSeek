@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var archivesStarted = false
     private var batchRename: BatchRenameWindowController?
     private var updater: Updater!
+    private var updateWindow: UpdateProgressWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
@@ -33,8 +34,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
         archives = ArchiveService(cacheURL: support.appendingPathComponent("KongSeek/archive-index.json"))
         updater = Updater(supportDirectory: support.appendingPathComponent("KongSeek", isDirectory: true))
-        updater.onChange = { [weak self] in self?.settingsWindow?.refresh() }
+        updater.onChange = { [weak self] in
+            self?.settingsWindow?.refresh()
+            self?.updateWindow?.refresh()
+        }
+        updater.onUpdateStarted = { [weak self] in self?.showUpdateProgress() }
         if Preferences.autoCheckUpdates { updater.startAutomaticChecks() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.reportFinishedUpdate() }
         service.archives = archives.index
 
         clipboardHistory = ClipboardHistory(store: ClipboardStore(directory: support.appendingPathComponent("KongSeek/Clipboard", isDirectory: true)),
@@ -107,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item(title, #selector(openUpdates)))
             menu.addItem(.separator())
         } else if case .updating(let step) = updater.state.phase {
-            menu.addItem(disabled("更新中：" + step))
+            menu.addItem(item("更新中：\(step)（点此查看进度）", #selector(showUpdateProgress)))
             menu.addItem(.separator())
         }
         menu.addItem(item("打开搜索" + (ways.isEmpty ? "" : "（\(ways.joined(separator: " 或 "))）"), #selector(openSearch)))
@@ -187,6 +193,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
         }
         settingsWindow?.show()
+    }
+
+    @objc private func showUpdateProgress() {
+        if updateWindow == nil { updateWindow = UpdateProgressWindow(updater: updater) }
+        updateWindow?.show()
+    }
+
+    /// After an update (or rollback) KongSeek is reopened by the installer; say
+    /// whether the new version is the one now running.
+    private func reportFinishedUpdate() {
+        guard let previous = UserDefaults.standard.string(forKey: "updatedFrom") else { return }
+        UserDefaults.standard.removeObject(forKey: "updatedFrom")
+        let alert = NSAlert()
+        if previous == Updater.version {
+            alert.messageText = "更新没有完成"
+            alert.informativeText = "KongSeek 仍是 \(previous)。安装时出了问题，已恢复原来的版本。详情见 设置 › 通用 › 更新日志。"
+            alert.alertStyle = .warning
+        } else {
+            alert.messageText = "KongSeek 已更新到 \(Updater.version)"
+            var notes = ""
+            if let root = updater.state.sourceRoot,
+               let changelog = try? String(contentsOfFile: root + "/CHANGELOG.md", encoding: .utf8) {
+                notes = ReleaseNotes.sections(in: changelog, newerThan: previous)
+                    .filter { !ReleaseNotes.isNewer($0.version, than: Updater.version) }
+                    .map { "\($0.version)\n\($0.body)" }.joined(separator: "\n\n")
+            }
+            alert.informativeText = "原来的版本：\(previous)" + (notes.isEmpty ? "" : "\n\n" + notes)
+        }
+        alert.addButton(withTitle: "好")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func openUpdates() {
