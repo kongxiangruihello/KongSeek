@@ -13,6 +13,9 @@ struct SearchOutcome {
     /// Listing a folder's contents; nil when it is not in the index.
     var browsedFolder: String?
     var folderNotIndexed = false
+    /// Full-text (Spotlight) results; `gathering` while Spotlight is still searching.
+    var isContent = false
+    var gathering = false
     /// Showing recently opened items because the query is empty.
     var isRecentList = false
     /// Matches before the display limit and attribute filters.

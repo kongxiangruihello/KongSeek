@@ -41,6 +41,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let preview: QLPreviewView
     private let statusLabel = NSTextField(labelWithString: "")
     private let emptyLabel = NSTextField(labelWithString: "")
+
+    /// Full-text mode (Tab): Spotlight searches file contents.
+    private var contentMode = false
+    private let contentSearch = ContentSearch()
+    private let modeButton = NSButton(title: "名称", target: nil, action: nil)
+    private let snippetLabel = NSTextField(wrappingLabelWithString: "")
+    private var snippetHeight: NSLayoutConstraint!
+    private var snippetToken = 0
+    private var pendingContentSearch: DispatchWorkItem?
     private var results: [ResultItem] = []
     private var outcome = SearchOutcome()
     private var keyMonitor: Any?
@@ -110,6 +119,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     func hide() {
+        contentSearch.stop()
+        pendingContentSearch?.cancel()
         if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
             QLPreviewPanel.shared().orderOut(nil)
         }
@@ -232,7 +243,19 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         hints.alignment = .right
         hints.lineBreakMode = .byTruncatingHead
 
-        for view in [searchIcon, field, topLine, scroll, middleLine, preview, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        modeButton.bezelStyle = .recessed
+        modeButton.setButtonType(.momentaryPushIn)
+        modeButton.font = .systemFont(ofSize: 12, weight: .medium)
+        modeButton.target = self
+        modeButton.action = #selector(toggleMode)
+        modeButton.toolTip = "⇥ 切换按名称 / 按内容（全文）搜索"
+        snippetLabel.font = .systemFont(ofSize: 12)
+        snippetLabel.textColor = .labelColor
+        snippetLabel.maximumNumberOfLines = 5
+        snippetLabel.isSelectable = true
+        snippetLabel.lineBreakMode = .byTruncatingTail
+
+        for view in [searchIcon, field, modeButton, topLine, scroll, middleLine, snippetLabel, preview, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -246,7 +269,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
             field.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
             field.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 10),
-            field.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            field.trailingAnchor.constraint(equalTo: modeButton.leadingAnchor, constant: -10),
+            modeButton.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
+            modeButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
+            modeButton.widthAnchor.constraint(equalToConstant: 52),
             field.heightAnchor.constraint(equalToConstant: 30),
 
             topLine.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 12),
@@ -263,7 +289,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             middleLine.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 6),
             middleLine.widthAnchor.constraint(equalToConstant: 1),
 
-            preview.topAnchor.constraint(equalTo: topLine.bottomAnchor, constant: 8),
+            snippetLabel.topAnchor.constraint(equalTo: topLine.bottomAnchor, constant: 8),
+            snippetLabel.leadingAnchor.constraint(equalTo: preview.leadingAnchor, constant: 4),
+            snippetLabel.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -4),
+            preview.topAnchor.constraint(equalTo: snippetLabel.bottomAnchor, constant: 0),
             preview.leadingAnchor.constraint(equalTo: middleLine.trailingAnchor, constant: 8),
             preview.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -8),
             preview.bottomAnchor.constraint(equalTo: bottomLine.topAnchor, constant: -8),
@@ -282,6 +311,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             hints.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -14),
             hints.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
         ])
+        snippetHeight = snippetLabel.heightAnchor.constraint(equalToConstant: 0)
+        snippetHeight.isActive = true
         updateEmptyLabel()
     }
 
@@ -290,10 +321,76 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     func controlTextDidChange(_ obj: Notification) {
         // Wait while a Chinese input method is still composing.
         if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
+        if contentMode && browsedFolder == nil {
+            // Spotlight queries cost more than the name index: wait for a pause in typing.
+            pendingContentSearch?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.runSearch() }
+            pendingContentSearch = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+            return
+        }
         runSearch()
     }
 
+    @objc private func toggleMode() {
+        guard browsedFolder == nil else { return }
+        contentMode.toggle()
+        modeButton.title = contentMode ? "全文" : "名称"
+        modeButton.contentTintColor = contentMode ? .controlAccentColor : nil
+        field.placeholderString = contentMode ? "搜索文件内容：PDF、Word、Pages、文本……（Spotlight）" : defaultPlaceholder
+        snippetHeight.constant = contentMode ? 92 : 0
+        if !contentMode { contentSearch.stop() }
+        runSearch()
+    }
+
+    private func runContentSearch() {
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = SearchQuery(text)
+        guard let queryString = SpotlightQuery.content(for: query) else {
+            contentSearch.stop()
+            var empty = SearchOutcome()
+            empty.isContent = true
+            empty.notes = query.valid ? ["全文搜索需要至少一个词"] : query.notes
+            show(empty)
+            return
+        }
+        let rules = Preferences.rules
+        let roots = NameIndex.effectiveRoots(Preferences.roots, rules: rules)
+        let excluded = query.excluded.map(SearchText.fold)
+        let started = contentSearch.search(queryString, scopes: roots) { [weak self] hits, finished in
+            guard let self else { return }
+            let kept = hits.filter { hit in
+                guard !rules.excludes(path: hit.path, roots: roots) else { return false }
+                let name = SearchText.fold((hit.path as NSString).lastPathComponent)
+                return !excluded.contains { name.contains($0) }
+            }.sorted { a, b in
+                if a.relevance != b.relevance { return a.relevance > b.relevance }
+                return (a.modified ?? .distantPast) > (b.modified ?? .distantPast)
+            }
+            var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions)
+            outcome.isContent = true
+            outcome.gathering = !finished
+            outcome.matchCount = kept.count
+            outcome.items = kept.prefix(200).map { hit in
+                ResultItem(path: hit.path, name: (hit.path as NSString).lastPathComponent, isFolder: hit.isFolder, score: Int(hit.relevance * 1000))
+            }
+            self.show(outcome)
+        }
+        if !started {
+            var failed = SearchOutcome()
+            failed.isContent = true
+            failed.notes = ["无法启动 Spotlight 搜索"]
+            show(failed)
+        }
+    }
+
     func runSearch() {
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if contentMode && browsedFolder == nil && !text.isEmpty {
+            runContentSearch()
+            return
+        }
+        contentSearch.stop()
         if let folder = browsedFolder {
             service.browse(folder: folder, filter: field.stringValue) { [weak self] outcome in
                 self?.show(outcome)
@@ -306,10 +403,16 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func show(_ newOutcome: SearchOutcome) {
+        // While Spotlight is still delivering results, keep the user's selection.
+        let keepPath = newOutcome.isContent && outcome.isContent ? selectedItem?.path : nil
+        let previousRow = table.selectedRow
         outcome = newOutcome
         results = newOutcome.items
         table.reloadData()
-        if !results.isEmpty {
+        if let keepPath, let row = results.firstIndex(where: { $0.path == keepPath }) {
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            if row != previousRow { table.scrollRowToVisible(row) }
+        } else if !results.isEmpty {
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             table.scrollRowToVisible(0)
         }
@@ -329,6 +432,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func updateEmptyLabel() {
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
         emptyLabel.isHidden = !results.isEmpty
+        if outcome.isContent {
+            emptyLabel.stringValue = outcome.gathering ? "正在用 Spotlight 搜索文件内容…" : "没有文件的正文包含这些词\n（只搜 Spotlight 已建立内容索引的文件）"
+            return
+        }
+        if contentMode && text.isEmpty && results.isEmpty {
+            emptyLabel.stringValue = "全文模式：输入正文中的字词\n可配合 ext:pdf、文档、最近一周 等筛选\n⇥ 切回按名称搜索"
+            return
+        }
         if browsedFolder != nil {
             emptyLabel.stringValue = outcome.folderNotIndexed
                 ? "这个文件夹不在索引中（如应用包内部或排除的文件夹）。\n按 ⌘O 在访达中打开，← 返回。"
@@ -357,7 +468,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case .ready(let entries, _):
             parts.append("已索引 \(entries.formatted()) 项")
         }
-        if let folder = browsedFolder {
+        if outcome.isContent {
+            parts = ["全文（Spotlight）"]
+            if outcome.gathering {
+                parts.append("正在搜索… 已找到 \(outcome.matchCount.formatted()) 项")
+            } else {
+                let shown = results.count < outcome.matchCount ? "显示前 \(results.count) 项" : "\(results.count) 项"
+                parts.append("匹配 \(outcome.matchCount.formatted()) 项，\(shown)")
+            }
+        } else if let folder = browsedFolder {
             parts = ["📁 " + (folder as NSString).abbreviatingWithTildeInPath, "\(outcome.matchCount.formatted()) 项", "← 返回  ⎋ 回到搜索结果"]
         } else if outcome.isRecentList {
             if !results.isEmpty { parts.append("最近打开 \(results.count) 项 · ⌘⌫ 从列表移除") }
@@ -374,6 +493,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         let fieldEmpty = field.stringValue.isEmpty
         switch selector {
+        case #selector(NSResponder.insertTab(_:)):
+            toggleMode()
         case #selector(NSResponder.moveUp(_:)):
             moveSelection(by: -1)
         case #selector(NSResponder.moveDown(_:)):
@@ -674,10 +795,52 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func updatePreview() {
-        if let item = selectedItem {
-            preview.previewItem = URL(fileURLWithPath: item.path) as NSURL
-        } else {
-            preview.previewItem = nil
+        let url = selectedItem.map { URL(fileURLWithPath: $0.path) }
+        if (preview.previewItem as? NSURL).map({ $0 as URL }) != url {
+            preview.previewItem = url as NSURL?
+        }
+        updateSnippet()
+    }
+
+    /// In full-text mode, the passage around the first match, with its PDF page.
+    private func updateSnippet() {
+        snippetToken += 1
+        let token = snippetToken
+        guard contentMode, outcome.isContent, let item = selectedItem, !item.isFolder else {
+            snippetLabel.stringValue = ""
+            return
+        }
+        let needles = outcome.highlightWords
+        snippetLabel.attributedStringValue = NSAttributedString(string: "正在查找命中位置…", attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 12)])
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let found = ContentPreview.find(in: URL(fileURLWithPath: item.path), needles: needles)
+            DispatchQueue.main.async {
+                guard let self, token == self.snippetToken else { return }
+                self.snippetLabel.attributedStringValue = Self.snippetText(found)
+            }
+        }
+    }
+
+    private static func snippetText(_ outcome: ContentPreview.Outcome) -> NSAttributedString {
+        let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.labelColor]
+        let note: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]
+        switch outcome {
+        case .found(let found):
+            let result = NSMutableAttributedString()
+            if let page = found.page {
+                result.append(NSAttributedString(string: "第 \(page) 页  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]))
+            }
+            let start = result.length
+            result.append(NSAttributedString(string: found.snippet.text, attributes: base))
+            let range = NSRange(location: start + found.snippet.highlight.location, length: found.snippet.highlight.length)
+            result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.4), range: range)
+            return result
+        case .notFound:
+            return NSAttributedString(string: "Spotlight 认为此文件匹配，但未能定位原文（可能命中的是元数据，或词语被分隔）。", attributes: note)
+        case .notDownloaded:
+            return NSAttributedString(string: "此文件在 iCloud 中尚未下载到本机，不读取正文。", attributes: note)
+        case .unsupported:
+            return NSAttributedString(string: "此类文件不显示命中原文（支持 PDF、Word、RTF 与纯文本）。", attributes: note)
         }
     }
 
