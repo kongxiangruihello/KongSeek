@@ -25,6 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var duplicates: DuplicatesWindowController?
     private var space: SpaceWindowController?
     private var scanned: ScannedPDFWindowController?
+    private var statusWindow: StatusWindowController?
+    /// Files downloaded in the last week, for the menu (refreshed in the background).
+    private var recentDownloads: [FileEntry] = []
+    private var downloadsTimer: Timer?
     private var updater: Updater!
     private var updateWindow: UpdateProgressWindow?
 
@@ -63,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.searchWindow.indexStateChanged()
             // The archive list comes from the index, so scan once it is ready.
+            if case .ready = state { self.refreshRecentDownloads() }
             if case .ready = state, !self.archivesStarted {
                 self.archivesStarted = true
                 self.configureArchives()
@@ -129,6 +134,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var clipboardTitle = "剪贴板历史"
         if let shortcut = clipboardHotKey.shortcut { clipboardTitle += "（\(clipboardHotKey.isRegistered ? shortcut.display : shortcut.display + " 被占用")）" }
         menu.addItem(item(clipboardTitle, #selector(openClipboard)))
+        if !recentDownloads.isEmpty {
+            let downloads = NSMenu()
+            for entry in recentDownloads {
+                let url = URL(fileURLWithPath: entry.path)
+                let icon = NSWorkspace.shared.icon(forFile: entry.path)
+                icon.size = NSSize(width: 16, height: 16)
+                let open = ClosureMenuItem(title: entry.name, key: "") { NSWorkspace.shared.open(url) }
+                open.image = icon
+                open.toolTip = (entry.path as NSString).abbreviatingWithTildeInPath
+                downloads.addItem(open)
+                let reveal = ClosureMenuItem(title: "在访达中显示 " + entry.name, key: "") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                reveal.image = icon
+                reveal.isAlternate = true
+                reveal.keyEquivalentModifierMask = .option
+                downloads.addItem(reveal)
+            }
+            downloads.addItem(.separator())
+            downloads.addItem(ClosureMenuItem(title: "在搜索窗口中查看（dc:7d）", key: "") { [weak self] in self?.searchWindow.show(query: "dc:7d file: ") })
+            let downloadsItem = NSMenuItem(title: "最近下载（7 天内）", action: nil, keyEquivalent: "")
+            downloadsItem.submenu = downloads
+            menu.addItem(downloadsItem)
+        }
         if Preferences.clipboardEnabled {
             menu.addItem(item(Preferences.clipboardPaused ? "继续记录剪贴板" : "暂停记录剪贴板", #selector(toggleClipboardPause)))
         }
@@ -141,10 +168,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("查找重复与相似文件…", #selector(openDuplicates)))
         menu.addItem(item("空间分析…", #selector(openSpace)))
         menu.addItem(item("查找扫描版 PDF…", #selector(openScannedPDFs)))
+        menu.addItem(item("状态与诊断…", #selector(openStatus)))
         menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(openSettings), key: ","))
         menu.addItem(item("关于 KongSeek", #selector(showAbout)))
         menu.addItem(item("退出 KongSeek", #selector(quit), key: "q"))
+        // For the next time the menu opens.
+        if case .ready = service.state { refreshRecentDownloads() }
     }
 
     private var stateDescription: String {
@@ -287,6 +317,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// The checks shown in 状态与诊断 (0.18): what works, and what needs the user.
+    private func healthReport() -> [HealthItem] {
+        var items: [HealthItem] = []
+        let settings: (title: String, run: () -> Void) = ("打开设置", { [weak self] in self?.openSettings() })
+        func time(_ date: Date?) -> String { date.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "从未" }
+
+        switch service.state {
+        case .ready(let entries, let updated):
+            items.append(HealthItem("索引", "已索引 \(entries.formatted()) 项", "更新于 \(time(updated))；文件夹：" + Preferences.roots.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: "、"), .ok))
+        case .building(let entries):
+            items.append(HealthItem("索引", "正在建立索引", "已收录 \(entries.formatted()) 项；建好前搜索结果可能不全", .info))
+        case .loading:
+            items.append(HealthItem("索引", "正在载入索引", "通常几秒钟", .info))
+        }
+
+        if let shortcut = hotKey.shortcut {
+            items.append(hotKey.isRegistered
+                ? HealthItem("唤起", "快捷键 \(shortcut.display)", "可用", .ok)
+                : HealthItem("唤起", "快捷键 \(shortcut.display) 被其他应用占用", "请换一个快捷键", .warning, action: settings))
+        }
+        let trigger = Preferences.doubleTapModifier
+        if trigger != .off {
+            items.append(doubleTap.hasPermission && doubleTap.isListening
+                ? HealthItem("唤起", "连按 \(trigger.title)", "可用", .ok)
+                : HealthItem("唤起", "连按 \(trigger.title) 未生效", "需要“输入监控”权限：设置 › 唤起 › 授予权限", .warning, action: settings))
+        }
+        if Preferences.autoPaste || Preferences.snippetExpansion {
+            items.append(AXIsProcessTrusted()
+                ? HealthItem("权限", "辅助功能", "已授权（直接粘贴、片段展开需要）", .ok)
+                : HealthItem("权限", "辅助功能未授权", "直接粘贴和片段展开需要：系统设置 › 隐私与安全性 › 辅助功能 中打开 KongSeek", .warning,
+                             action: ("打开系统设置", { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) })))
+        }
+
+        let progress = ocr.progress
+        if Preferences.ocrEnabled && !Preferences.ocrFolders.isEmpty {
+            var detail = "\(Preferences.ocrFolders.count) 个文件夹，已识别 \(ocr.store.recognizedDocumentCount) 个文件，待识别 \(progress.pending) 个"
+            if let reason = progress.pausedReason { detail += "；\(reason)" }
+            items.append(HealthItem("文字识别", "后台识别扫描件", detail, .ok))
+            if let error = progress.lastError {
+                items.append(HealthItem("文字识别", "上次识别出错", error, .warning))
+            }
+            if progress.lastInCloud > 0 && !Preferences.ocrDownloadFromICloud {
+                items.append(HealthItem("文字识别", "\(progress.lastInCloud) 个文件只在 iCloud 中，未识别", "可在 设置 › 文字识别 中勾选“从 iCloud 下载”", .info, action: settings))
+            }
+        } else {
+            items.append(HealthItem("文字识别", "未设置识别文件夹", "扫描版 PDF 的正文搜不到；可用“查找扫描版 PDF…”一键加入", .info,
+                                    action: ("查找扫描版 PDF…", { [weak self] in self?.openScannedPDFs() })))
+        }
+
+        let update = updater.state
+        switch update.phase {
+        case .failed(let message):
+            items.append(HealthItem("更新", "上次更新失败", message, .warning, action: ("查看", { [weak self] in self?.openUpdates() })))
+        case .updating(let step):
+            items.append(HealthItem("更新", "正在更新", step, .info))
+        default:
+            if update.hasUpdate {
+                items.append(HealthItem("更新", "有新版本" + (update.remoteVersion.map { " \($0)" } ?? ""), "上次检查 \(time(update.lastCheck))", .info,
+                                        action: ("查看并安装", { [weak self] in self?.openUpdates() })))
+            } else {
+                items.append(HealthItem("更新", "已是最新版本 \(Updater.version)", "上次检查 \(time(update.lastCheck))", .ok))
+            }
+        }
+
+        let cli = CommandLineTool.status
+        items.append(HealthItem("Claude 与命令行", "命令行工具 ks", cli, cli.hasPrefix("已安装") ? .ok : .info))
+        let claude = ClaudeDesktop.status
+        items.append(HealthItem("Claude 与命令行", "Claude 桌面版", claude + (Preferences.mcpReadContent ? "；允许读取正文" : "；只按文件名搜索"),
+                                claude.hasPrefix("已添加（") ? .ok : .info))
+
+        if Preferences.clipboardEnabled {
+            if let problem = clipboardHistory.problem {
+                items.append(HealthItem("剪贴板与片段", "剪贴板历史有问题", problem, .warning))
+            } else {
+                items.append(HealthItem("剪贴板与片段", "剪贴板历史", Preferences.clipboardPaused ? "已暂停记录" : "\(clipboardHistory.items.count) 条", .ok))
+            }
+        }
+        if Preferences.snippetExpansion {
+            items.append(snippetExpansion.isListening
+                ? HealthItem("剪贴板与片段", "片段自动展开", "\(snippets.snippets.count) 个片段", .ok)
+                : HealthItem("剪贴板与片段", "片段自动展开未生效", snippetExpansion.lastProblem ?? "需要“输入监控”和“辅助功能”权限", .warning, action: settings))
+        }
+        if Preferences.archiveSearch {
+            items.append(HealthItem("其他", "压缩包内搜索", archives.statusText, .ok))
+        }
+        return items
+    }
+
     /// ⌃⌥D: look up the text selected in the front app.
     private func lookUpSelection() {
         SelectedText.fetch(monitor: clipboardMonitor) { [weak self] text in
@@ -325,6 +443,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return done([]) }
             self.service.archivePaths(completion: done)
         })
+    }
+
+    @objc func openStatus() {
+        if statusWindow == nil {
+            statusWindow = StatusWindowController(service: service, report: { [weak self] in self?.healthReport() ?? [] },
+                                                  diagnosticText: { [weak self] in self?.diagnosticReport() ?? "" })
+        }
+        statusWindow?.present()
+    }
+
+    /// Finds files downloaded in the last week, for the menu; every five minutes and when the index is ready.
+    private func refreshRecentDownloads() {
+        if downloadsTimer == nil {
+            let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in self?.refreshRecentDownloads() }
+            RunLoop.main.add(timer, forMode: .common)
+            downloadsTimer = timer
+        }
+        service.recentDownloads { [weak self] entries in self?.recentDownloads = entries }
     }
 
     @objc private func openSpace() {

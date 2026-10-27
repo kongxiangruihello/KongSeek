@@ -56,6 +56,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let snippetLabel = NSTextField(wrappingLabelWithString: "")
     private var snippetHeight: NSLayoutConstraint!
     private var snippetToken = 0
+    /// Where the words were found in the selected file (from the passage shown above the
+    /// preview), for ⌥↩ "open at the hit" and "拷贝引文" (0.18).
+    private var lastHit: (path: String, page: Int?)?
     private var pendingContentSearch: DispatchWorkItem?
     /// The full-text search in progress: Spotlight results and recognized-text
     /// (OCR) results arrive separately and are merged.
@@ -142,6 +145,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         field.currentEditor()?.selectAll(nil)
         installKeyMonitor()
         runSearch() // an empty query lists recently opened items
+    }
+
+    /// Opens the window with `query` typed in (menu bar › 最近下载 › 在搜索窗口中查看).
+    func show(query: String) {
+        show()
+        field.stringValue = query
+        field.currentEditor()?.moveToEndOfDocument(nil)
+        runSearch()
     }
 
     func hide() {
@@ -693,6 +704,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func handleShortcut(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
         let keyCode = event.keyCode
+        if modifiers == [.option], keyCode == 36 || keyCode == 76 {
+            // ⌥↩: open at the page / slide of the hit.
+            if let item = selectedItem, item.isFile, !item.isFolder, !item.isInArchive {
+                openAtHit(item)
+                return true
+            }
+        }
         if modifiers == [.command] {
             switch keyCode {
             case 36, 76: // Return, Enter
@@ -1077,6 +1095,73 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     // MARK: - Action menu (⌘K)
 
+    /// The page or slide of the hit in `item`, when one was found.
+    private func hitPage(for item: ResultItem) -> Int? {
+        guard let hit = lastHit, hit.path == item.path else { return nil }
+        return hit.page
+    }
+
+    /// ⌥↩: a PDF opens in the reader at the hit's page (with its table of contents);
+    /// a presentation opens in PowerPoint at the slide; anything else opens as usual.
+    private func openAtHit(_ item: ResultItem) {
+        let ext = (item.path as NSString).pathExtension.lowercased()
+        let page = hitPage(for: item)
+        rememberSearch()
+        if ext == "pdf" {
+            hide()
+            ReaderWindowController.shared.open(URL(fileURLWithPath: item.path), page: page, words: outcome.highlightWords)
+        } else if ext == "pptx", let page {
+            hide()
+            PowerPoint.open(item.path, slide: page) { message in
+                guard let message else { return }
+                let alert = NSAlert()
+                alert.messageText = "未能直接翻到第 \(page) 张"
+                alert.informativeText = message
+                alert.runModal()
+            }
+        } else {
+            hide()
+            actions.open(item)
+        }
+    }
+
+    /// Copies the sentence around the hit with where it comes from: a GB/T 7714
+    /// reference with the page for ebooks, otherwise the file name and page (0.18).
+    private func copyQuotation(_ item: ResultItem) {
+        let needles = outcome.highlightWords
+        let page = hitPage(for: item)
+        let store = ocr.store
+        statusLabel.stringValue = "正在提取引文…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let url = URL(fileURLWithPath: item.path)
+            let ext = url.pathExtension.lowercased()
+            var source = ""
+            if let pages = try? DocumentText.read(url, firstPage: page ?? 1, maximumPages: page == nil ? 3_000 : 1, ocr: store) {
+                source = pages.pages.joined(separator: "\n")
+            }
+            let sentence = Quotation.sentence(in: source, needles: needles)
+            let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
+            var origin: String
+            if DuplicateFinder.bookExtensions.contains(ext) {
+                let reference = Citation.book(EbookName.parse(stem), fallbackTitle: stem).text
+                origin = page.map { Citation.withPage(reference, page: $0) } ?? reference
+            } else {
+                origin = "《\(stem)》" + (page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" } ?? "")
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard let sentence else {
+                    self.statusLabel.stringValue = "未能提取命中的句子"
+                    return
+                }
+                let text = "“\(sentence)”\n\(origin)"
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                self.statusLabel.stringValue = "已拷贝引文：“\(sentence.prefix(30))…” — \(origin)"
+            }
+        }
+    }
+
     /// Copies a GB/T 7714 reference for an ebook, from its file name and (EPUB) its
     /// own metadata, and says what is missing (0.17).
     static func copyReference(for path: String) -> String {
@@ -1140,17 +1225,43 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         add("在访达中显示", "\r") { [weak self] in self?.hide(); self?.actions.reveal(item) }
         add("快速查看", "y") { [weak self] in self?.toggleQuickLook() }
+        let ext = (item.path as NSString).pathExtension.lowercased()
+        let hitPage = self.hitPage(for: item)
+        if !item.isFolder && ext == "pdf" {
+            add(hitPage.map { "在阅读窗口中打开到第 \($0) 页" } ?? "在阅读窗口中打开（含目录）", "\r", [.option]) { [weak self] in self?.openAtHit(item) }
+        } else if !item.isFolder && ext == "pptx", let hitPage {
+            add("在 PowerPoint 中打开到第 \(hitPage) 张", "\r", [.option]) { [weak self] in self?.openAtHit(item) }
+        }
         menu.addItem(.separator())
+        if lastHit?.path == item.path {
+            add(hitPage.map { "拷贝引文（含出处，第 \($0) \(ext == "pptx" ? "张" : "页")）" } ?? "拷贝引文（含出处）") { [weak self] in self?.copyQuotation(item) }
+        }
         add("拷贝文件", "c") { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .file) ?? "" }
         add("拷贝路径", "c", [.command, .option]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .path) ?? "" }
         add("拷贝名称", "c", [.command, .shift]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .name) ?? "" }
         menu.addItem(.separator())
         if !item.isFolder && !item.isInArchive {
-            let isRead = FinderTags.has(FinderTags.read, item.path)
-            add(isRead ? "取消“已读”标签" : "标为已读（访达标签）") { [weak self] in
-                let done = FinderTags.set(FinderTags.read, on: item.path, adding: !isRead)
-                self?.statusLabel.stringValue = !done ? "无法更改标签" : (isRead ? "已取消“已读”：\(item.name)" : "已标为已读：\(item.name)（搜索 标签:已读 可找出全部）")
+            // Reading state as a Finder tag, one at a time (待读 / 在读 / 精读 / 已读).
+            let state = FinderTags.readingState(of: item.path)
+            let states = NSMenu()
+            for name in FinderTags.readingStates {
+                let entry = ClosureMenuItem(title: name, key: "") { [weak self] in
+                    let done = FinderTags.setReadingState(name, on: item.path)
+                    self?.statusLabel.stringValue = done ? "已标为“\(name)”：\(item.name)（搜索 标签:\(name) 可找出全部）" : "无法更改标签"
+                }
+                entry.state = name == state ? .on : .off
+                states.addItem(entry)
             }
+            if state != nil {
+                states.addItem(.separator())
+                states.addItem(ClosureMenuItem(title: "清除阅读状态", key: "") { [weak self] in
+                    let done = FinderTags.setReadingState(nil, on: item.path)
+                    self?.statusLabel.stringValue = done ? "已清除阅读状态：\(item.name)" : "无法更改标签"
+                })
+            }
+            let stateItem = NSMenuItem(title: "阅读状态" + (state.map { "：\($0)" } ?? "（访达标签）"), action: nil, keyEquivalent: "")
+            stateItem.submenu = states
+            menu.addItem(stateItem)
         }
         if DuplicateFinder.bookExtensions.contains((item.path as NSString).pathExtension.lowercased()) {
             add("拷贝为参考文献（GB/T 7714）") { [weak self] in
@@ -1253,6 +1364,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func updateSnippet() {
         snippetToken += 1
         let token = snippetToken
+        lastHit = nil
         if !contentMode {
             updateNameModeSnippet(token: token)
             return
@@ -1268,6 +1380,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             let found = ContentPreview.find(in: URL(fileURLWithPath: item.path), needles: needles, ocr: store)
             DispatchQueue.main.async {
                 guard let self, token == self.snippetToken else { return }
+                if case .found(let place) = found { self.lastHit = (item.path, place.page) }
                 self.snippetLabel.attributedStringValue = Self.snippetText(found)
             }
         }
@@ -1287,7 +1400,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             self.snippetQueue.async {
                 let found = ContentPreview.find(in: URL(fileURLWithPath: item.path), needles: needles, ocr: store)
                 DispatchQueue.main.async {
-                    guard token == self.snippetToken, !self.contentMode, case .found = found else { return }
+                    guard token == self.snippetToken, !self.contentMode, case .found(let place) = found else { return }
+                    self.lastHit = (item.path, place.page)
                     let text = NSMutableAttributedString(string: "正文也有  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
                     text.append(Self.snippetText(found))
                     self.snippetLabel.attributedStringValue = text
@@ -1311,7 +1425,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case .found(let found):
             let result = NSMutableAttributedString()
             if let page = found.page {
-                result.append(NSAttributedString(string: "第 \(page) 页  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]))
+                result.append(NSAttributedString(string: "第 \(page) 页", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]))
+                result.append(NSAttributedString(string: "（⌥↩ 打开到此处，⌘K 拷贝引文）  ", attributes: note))
             }
             if found.recognized {
                 result.append(NSAttributedString(string: "识别文字  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.systemOrange]))

@@ -3,6 +3,27 @@ import Foundation
 /// Finder tags on files: the 已读 mark (0.16) and tags moved out of file names.
 enum FinderTags {
     static let read = "已读"
+    /// Reading states, one at a time (0.18).
+    static let readingStates = ["待读", "在读", "精读", "已读"]
+
+    /// The file's reading state, if it has one of `readingStates`.
+    static func readingState(of path: String) -> String? {
+        let current = tags(of: path)
+        return readingStates.first { current.contains($0) }
+    }
+
+    /// Sets one reading state (nil clears it), keeping the file's other tags.
+    @discardableResult
+    static func setReadingState(_ state: String?, on path: String) -> Bool {
+        var current = tags(of: path).filter { !readingStates.contains($0) }
+        if let state { current.append(state) }
+        do {
+            try (URL(fileURLWithPath: path) as NSURL).setResourceValue(current, forKey: .tagNamesKey)
+            return true
+        } catch {
+            return false
+        }
+    }
 
     static func tags(of path: String) -> [String] {
         var url = URL(fileURLWithPath: path)

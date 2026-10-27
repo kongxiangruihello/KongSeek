@@ -73,6 +73,13 @@ public enum Citation {
         return Result(text: text.trimmingCharacters(in: .whitespaces), missing: missing, notes: notes)
     }
 
+    /// The reference with the page cited: "…, 2018." → "…, 2018: 23." (GB/T 7714: 出版年: 引文页码).
+    public static func withPage(_ reference: String, page: Int) -> String {
+        var text = reference
+        if text.hasSuffix(".") { text.removeLast() }
+        return text + ": \(page)."
+    }
+
     /// Names and the role word at the end: "孙雪霞、陈桐生译注" → ([孙雪霞, 陈桐生], "译注").
     static func people(_ raw: String) -> (names: [String], role: String?) {
         var text = raw.trimmingCharacters(in: .whitespaces)

@@ -297,6 +297,16 @@ final class IndexService {
         }
     }
 
+    /// Files downloaded in the last `days` days, newest first (menu bar › 最近下载).
+    /// Calls back on main; empty while no index is loaded.
+    func recentDownloads(days: Int = 7, limit: Int = 12, completion: @escaping ([FileEntry]) -> Void) {
+        queue.async { [weak self] in
+            let since = Date().addingTimeInterval(-Double(days) * 86_400)
+            let entries = self?.index?.recentlyCreated(since: since, limit: limit) ?? []
+            DispatchQueue.main.async { completion(entries) }
+        }
+    }
+
     /// The archive paths in the index (ext:zip), for the archive scan. Calls back on
     /// the index queue, and not at all while no index is loaded.
     func archivePaths(completion: @escaping ([String]) -> Void) {
