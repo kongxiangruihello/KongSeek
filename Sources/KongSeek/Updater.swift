@@ -245,9 +245,9 @@ final class Updater {
                     if !build.failedTests.isEmpty {
                         throw UpdateError("有 \(build.failedTests.count) 项测试未通过（\(build.failedTests.prefix(3).joined(separator: "、"))），已停止；当前安装的版本没有改动。")
                     }
-                    if build.stage < .runningTests || build.stage >= .compiling {
-                        let detail = result.output.split(separator: "\n").last { $0.contains("error:") }.map(String.init) ?? ""
-                        throw UpdateError("编译失败，已停止；当前安装的版本没有改动。" + (detail.isEmpty ? "" : "\n" + detail))
+                    if let first = build.compileErrors.first {
+                        throw UpdateError("编译失败，已停止；当前安装的版本没有改动。\n" + first
+                            + (build.compileErrors.count > 1 ? "（另有 \(build.compileErrors.count - 1) 处）" : ""))
                     }
                     throw UpdateError("测试或编译失败（详情见构建日志），已停止；当前安装的版本没有改动。")
                 }
@@ -281,10 +281,11 @@ final class Updater {
     /// Moves the progress window to `step`.
     private func report(_ step: Step, fraction: Double, _ detail: String) {
         set {
-            guard $0.progress != nil else { return }
-            $0.progress?.current = step
-            $0.progress?.fraction = max($0.progress?.fraction ?? 0, fraction)
-            $0.progress?.detail = detail
+            guard var progress = $0.progress else { return }
+            progress.current = step
+            progress.fraction = max(progress.fraction, fraction)
+            progress.detail = detail
+            $0.progress = progress
         }
     }
 

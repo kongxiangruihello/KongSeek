@@ -44,4 +44,16 @@ final class BuildLogProgressTests: XCTestCase {
         XCTAssertEqual(BuildLogProgress.executedCount("Executed 9 tests"), 9)
         XCTAssertEqual(BuildLogProgress.testName("Test Case '-[KongSeekCoreTests.RelevanceTests testX]' failed (0.02 seconds)."), "RelevanceTests testX")
     }
+
+    func testCompilerErrors() {
+        // As swift build printed it on the Mac (colors and a documentation link).
+        let line = "/Users/x/kongseek/Sources/KongSeek/Updater.swift:286:24: \u{1B}[1;31merror: \u{1B}[1;39moverlapping accesses to '$0.progress', but modification requires exclusive access; consider copying to a local variable\u{1B}[0;0m [#\u{1B}]8;;https://docs.swift.org/compiler/documentation/diagnostics/exclusivity-violation\u{1B}\\ExclusivityViolation\u{1B}]8;;\u{1B}\\]"
+        var progress = BuildLogProgress()
+        progress.consume("== tests ==")
+        progress.consume(line)
+        progress.consume(line)
+        progress.consume("error: SwiftCompile normal arm64 /Users/x/Updater.swift failed with a nonzero exit code. Command line: cd /Users")
+        XCTAssertEqual(progress.compileErrors, ["Updater.swift 第 286 行：overlapping accesses to '$0.progress', but modification requires exclusive access; consider copying to a local variable"])
+        XCTAssertNil(BuildLogProgress.compileError("error: Build failed"))
+    }
 }

@@ -14,6 +14,8 @@ public struct BuildLogProgress: Equatable, Sendable {
     public private(set) var detail = "准备中…"
     public private(set) var testsRun = 0
     public private(set) var failedTests: [String] = []
+    /// "Updater.swift 第 286 行：overlapping accesses …" for each compiler error.
+    public private(set) var compileErrors: [String] = []
     /// The largest "Executed N tests" (the total), for the next run's estimate.
     public private(set) var executedTests: Int?
     /// Tests expected (the previous run's count) until the real count is printed.
@@ -36,8 +38,12 @@ public struct BuildLogProgress: Equatable, Sendable {
     /// swift build may separate its "[3/20]" updates with carriage returns; pass
     /// each piece between \r or \n as a line.
     public mutating func consume(_ rawLine: String) {
-        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        let line = Self.plain(rawLine).trimmingCharacters(in: .whitespaces)
         guard !line.isEmpty else { return }
+        if let error = Self.compileError(line) {
+            if !compileErrors.contains(error) && compileErrors.count < 20 { compileErrors.append(error) }
+            return
+        }
         if line.hasPrefix("== tests ==") {
             advance(to: .buildingTests, "正在编译测试…")
         } else if line.hasPrefix("Test Suite 'All tests' started") {
@@ -68,6 +74,39 @@ public struct BuildLogProgress: Equatable, Sendable {
         if next > stage { fraction = 0 }
         stage = next
         if !text.isEmpty { detail = text }
+    }
+
+    /// Removes terminal colors and hyperlinks (ESC [ … m, ESC ] 8 ; ; … ESC \\).
+    static func plain(_ text: String) -> String {
+        guard text.contains("\u{1B}") else { return text }
+        var result = ""
+        var scalars = text.unicodeScalars.makeIterator()
+        while let scalar = scalars.next() {
+            guard scalar == "\u{1B}" else { result.unicodeScalars.append(scalar); continue }
+            guard let kind = scalars.next() else { break }
+            if kind == "[" {
+                while let next = scalars.next(), !(0x40...0x7E).contains(next.value) {}
+            } else if kind == "]" {
+                // OSC: up to BEL or ESC \.
+                while let next = scalars.next() {
+                    if next == "\u{07}" { break }
+                    if next == "\u{1B}" { _ = scalars.next(); break }
+                }
+            }
+        }
+        return result
+    }
+
+    /// "/…/Sources/KongSeek/Updater.swift:286:24: error: overlapping …" →
+    /// "Updater.swift 第 286 行：overlapping …"
+    static func compileError(_ line: String) -> String? {
+        guard let marker = line.range(of: ": error: ") else { return nil }
+        let location = line[..<marker.lowerBound].split(separator: ":")
+        guard location.count >= 2, location[0].hasSuffix(".swift"), let lineNumber = Int(location[1]) else { return nil }
+        let file = (String(location[0]) as NSString).lastPathComponent
+        var message = String(line[marker.upperBound...])
+        if let link = message.range(of: " [#") { message = String(message[..<link.lowerBound]) }
+        return "\(file) 第 \(lineNumber) 行：\(message)"
     }
 
     /// "[12 / 40] Compiling …" or "[12/40] …"
