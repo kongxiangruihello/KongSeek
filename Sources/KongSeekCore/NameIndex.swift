@@ -444,9 +444,109 @@ public final class NameIndex {
     /// scored like 3.2 `AdvancedSearchQuery.filenameScore`. Type, date, size and
     /// tag filters need file attributes; apply `query.acceptsMetadata` to the hits.
     /// A query with no words matches every entry that passes its filters (score 0).
+    ///
+    /// The 0.10 operators are applied here too: in:/parent: narrow the entries
+    /// scanned, path: and file:/folder: are checked in the scan, and regex:,
+    /// size:, dm: and dupe: filter the matches (size and date read from disk).
     public func search(_ query: SearchQuery, precision: MatchPrecision = .fuzzyName, within candidates: [Int32]? = nil) -> [SearchHit] {
         guard query.valid else { return [] }
-        return scan(words: query.words, precision: precision, within: candidates, constraints: QueryConstraints(query: query, precision: precision))
+        let advanced = query.advanced
+        var scope = candidates
+        if !advanced.scopes.isEmpty {
+            scope = scopeCandidates(advanced.scopes, within: candidates)
+            if scope?.isEmpty ?? true { return [] }
+        }
+        var hits = scan(words: query.words, precision: precision, within: scope, constraints: QueryConstraints(query: query, precision: precision))
+        if !advanced.regexes.isEmpty || !advanced.excludedRegexes.isEmpty {
+            hits = parallelFilter(hits) { id in
+                let name = self.name(of: id)
+                for regex in advanced.regexes where !regex.matches(name: name, path: self.path(of: id)) { return false }
+                for regex in advanced.excludedRegexes where regex.matches(name: name, path: self.path(of: id)) { return false }
+                return true
+            }
+        }
+        if advanced.attributes.isActive {
+            let attributes = advanced.attributes
+            hits = parallelFilter(hits) { id in
+                var info = stat()
+                guard lstat(self.path(of: id), &info) == 0 else { return false }
+                let flag = self.flags[Int(id)]
+                let isFolder = flag & EntryFlags.directory.rawValue != 0 && flag & EntryFlags.package.rawValue == 0
+                let modified = Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9)
+                return attributes.accepts(isDirectory: isFolder, size: Int64(info.st_size), modified: modified)
+            }
+        }
+        if advanced.dupe { hits = duplicates(hits) }
+        return hits
+    }
+
+    // MARK: - Operators
+
+    /// Entries inside the in:/parent: folders (all positive scopes must hold),
+    /// minus those inside excluded ones, ascending. Folders named by name match
+    /// every indexed folder with that name.
+    func scopeCandidates(_ scopes: [ScopeFilter], within candidates: [Int32]?) -> [Int32] {
+        var allowed: Set<Int32>? = candidates.map(Set.init)
+        var excluded = Set<Int32>()
+        for scope in scopes {
+            var members = Set<Int32>()
+            for folder in folderIDs(for: scope.target) {
+                var pending = [folder]
+                while let current = pending.popLast() {
+                    for child in children[current] ?? [] where !isDeleted(child) {
+                        members.insert(child)
+                        if scope.recursive, children[child] != nil { pending.append(child) }
+                    }
+                }
+            }
+            if scope.excluded {
+                excluded.formUnion(members)
+            } else {
+                allowed = allowed.map { $0.intersection(members) } ?? members
+            }
+        }
+        let base = allowed ?? Set(liveEntryIDs())
+        return base.subtracting(excluded).sorted()
+    }
+
+    func folderIDs(for target: ScopeFilter.Target) -> [Int32] {
+        switch target {
+        case .path(let path):
+            return directoryIDs[path].map { [$0] } ?? []
+        case .folderName(let name):
+            return directoryPaths.keys.filter { !isRoot($0) && folded.string(at: Int($0)) == name }
+        }
+    }
+
+    /// Files whose folded name occurs more than once, grouped by name (names in
+    /// order, each group by path).
+    func duplicates(_ hits: [SearchHit]) -> [SearchHit] {
+        var groups: [String: [SearchHit]] = [:]
+        for hit in hits {
+            let flag = flags[Int(hit.id)]
+            if flag & EntryFlags.directory.rawValue != 0 && flag & EntryFlags.package.rawValue == 0 { continue }
+            groups[folded.string(at: Int(hit.id)), default: []].append(hit)
+        }
+        return groups.filter { $0.value.count > 1 }
+            .sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+            .flatMap { group in group.value.sorted { path(of: $0.id) < path(of: $1.id) } }
+    }
+
+    /// `hits` that pass `keep`, in order; checked on all cores for large sets.
+    func parallelFilter(_ hits: [SearchHit], _ keep: (Int32) -> Bool) -> [SearchHit] {
+        if hits.count < 4096 { return hits.filter { keep($0.id) } }
+        let chunk = 4096
+        let count = (hits.count + chunk - 1) / chunk
+        var parts = [[SearchHit]](repeating: [], count: count)
+        hits.withUnsafeBufferPointer { input in
+            parts.withUnsafeMutableBufferPointer { output in
+                DispatchQueue.concurrentPerform(iterations: count) { c in
+                    let start = c * chunk, end = min(input.count, start + chunk)
+                    output[c] = input[start..<end].filter { keep($0.id) }
+                }
+            }
+        }
+        return parts.flatMap { $0 }
     }
 
     private func scan(words: [String], precision: MatchPrecision, within candidates: [Int32]?, constraints: QueryConstraints?) -> [SearchHit] {
@@ -504,10 +604,11 @@ public final class NameIndex {
                         // ext:, "phrase" and -exclusion filters (3.2 acceptsURL).
                         if let filter {
                             let isFolder = flag & directoryBit != 0 && flag & packageBit == 0
+                            if filter.kind == 1 && isFolder || filter.kind == 2 && !isFolder { continue }
                             if !filter.acceptsExtension(name: name, isFolder: isFolder) { continue }
-                            if filter.filtersText {
-                                let accepted: Bool
-                                if filter.usesPath {
+                            if filter.filtersText || filter.filtersPath {
+                                var accepted = true
+                                if filter.usesPath || filter.filtersPath {
                                     let parent = parentPointer[id]
                                     if parent != pathParent {
                                         pathParent = parent
@@ -519,7 +620,9 @@ public final class NameIndex {
                                     }
                                     pathBuffer.removeSubrange(pathPrefixCount...)
                                     pathBuffer.append(contentsOf: name)
-                                    accepted = pathBuffer.withUnsafeBufferPointer { filter.acceptsText($0) }
+                                    accepted = pathBuffer.withUnsafeBufferPointer { path in
+                                        (!filter.filtersText || filter.acceptsText(filter.usesPath ? path : name)) && filter.acceptsPathTerms(path)
+                                    }
                                 } else {
                                     accepted = filter.acceptsText(name)
                                 }
@@ -623,7 +726,10 @@ final class QueryConstraints {
             excludedExtensions: list(query.excludedExtensions.sorted().map { Array(("." + $0).utf8) }),
             phrases: list(query.phrases.map { Array(SearchText.fold($0).utf8) }),
             excluded: list(query.excluded.map { Array(SearchText.fold($0).utf8) }),
-            usesPath: precision == .withPath
+            usesPath: precision == .withPath,
+            pathTerms: list(query.advanced.pathTerms.map { Array($0.utf8) }),
+            excludedPathTerms: list(query.advanced.excludedPathTerms.map { Array($0.utf8) }),
+            kind: query.advanced.kind == .files ? 1 : (query.advanced.kind == .folders ? 2 : 0)
         )
         self.storage = storage
         self.lists = lists
@@ -647,8 +753,21 @@ struct ConstraintView {
     let excluded: ByteList
     /// Name-and-path mode checks phrases and exclusions against the whole path.
     let usesPath: Bool
+    /// path: and -path: terms, checked against the whole folded path.
+    let pathTerms: ByteList
+    let excludedPathTerms: ByteList
+    /// 0 any, 1 files only (file:), 2 folders only (folder:).
+    let kind: UInt8
 
     var filtersText: Bool { !phrases.isEmpty || !excluded.isEmpty }
+    var filtersPath: Bool { !pathTerms.isEmpty || !excludedPathTerms.isEmpty }
+
+    @inline(__always)
+    func acceptsPathTerms(_ path: UnsafeBufferPointer<UInt8>) -> Bool {
+        for term in pathTerms.items where ByteMatch.firstIndex(of: term, in: path) == nil { return false }
+        for term in excludedPathTerms.items where ByteMatch.firstIndex(of: term, in: path) != nil { return false }
+        return true
+    }
 
     /// 3.2: a folder passes only when no positive extension is required.
     @inline(__always)

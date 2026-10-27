@@ -37,6 +37,23 @@ macOS 菜单栏文件搜索工具：随时唤出，按文件名、拼音全拼�
 - 开头写类型词：`pdf`、`文档`、`图片`、`音频`、`视频`、`文件夹`。
 - 自然语言筛选：`最近一周`、`今天`、`昨天`、`大于100MB`、`标签:工作`（也可写 `#工作`）。
 
+高级语法（0.10 起，参照 Everything）：
+
+| 写法 | 含义 |
+| --- | --- |
+| `path:讲义` / `-path:草稿` | 路径中含有 / 不含 |
+| `in:~/Documents`、`in:论语` / `-in:草稿` | 在某文件夹（含子文件夹）中，按路径或文件夹名 / 排除 |
+| `parent:~/Desktop`、`parent:讲义` | 直接在某文件夹中 |
+| `size:>10mb`、`size:1mb..20mb`、`size:empty`、`size:large` | 按大小（1 MB = 1000 KB，与访达一致） |
+| `dm:today`、`dm:thisweek`、`dm:7d`、`dm:2024-10`、`dm:>=2024-01-01`、`dm:2024-01..2024-03` | 按修改日期 |
+| `regex:^第.+讲\.pdf$` / `-regex:` | 名称匹配正则（含 `/` 时匹配路径）/ 排除 |
+| `file:`、`folder:` | 只要文件 / 只要文件夹 |
+| `dupe:` | 只列同名文件 |
+
+值里有空格时加引号，如 `in:"~/My Folder"`。
+
+命令行：设置 › 通用 › 安装命令行工具 ks 后，在“终端”中输入 `ks 合同 ext:pdf`，`ks --help` 查看选项。
+
 全文模式（⇥ 切换）用 Spotlight 的内容索引搜 PDF、Word、Pages、文本等文件的正文，同样支持上面的筛选；预览区上方显示命中处的上下文，PDF 标出页码。
 扫描版 PDF 和图片里的文字 Spotlight 读不到：在“设置 › 文字识别”中添加存放扫描件的文件夹，KongSeek 会在后台用本机 Apple Vision 识别（不上传），之后全文模式也能搜到，结果标为“识别文字”。
 
@@ -101,6 +118,7 @@ macOS 菜单栏文件搜索工具：随时唤出，按文件名、拼音全拼�
 ```
 Sources/KongSeekCore         搜索引擎（无 AppKit，有单元测试）：名称索引、匹配与拼音、查询语法、索引文件、FSEvents
 Sources/KongSeek             应用：菜单栏、全局快捷键、搜索窗口、预览
+Sources/ks                   命令行搜索工具（读取应用保存的索引）
 Sources/KongSeekLegacy32     KongFetch 3.2 的匹配与查询代码原样副本，只作测试和基准的对照
 Sources/KongSeekTestSupport  测试与基准用的合成目录树
 Sources/ksbench              性能基准：swift run -c release ksbench synth|new|legacy <目录>
@@ -111,4 +129,4 @@ scripts/mac-test.sh          开发检查：编译全部目标、跑测试、可
 
 ## 暂未包含
 
-Everything 式的高级语法（path:、size:、dm: 等）、命令行入口等，之后逐步加入。
+更多功能之后逐步加入。

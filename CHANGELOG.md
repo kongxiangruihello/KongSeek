@@ -1,5 +1,23 @@
 # 更新记录
 
+## 0.10.0 — 2026-10-27
+
+- 高级搜索语法（参照 Everything），可与原有写法混用，多个条件同时成立：
+  - `path:讲义` 路径中含有（`-path:草稿` 排除）；`in:~/Documents` 或 `in:论语` 在某文件夹及其子文件夹中（`-in:` 排除）；
+    `parent:~/Desktop` 或 `parent:讲义` 直接在某文件夹中。
+  - `size:>10mb`、`size:<=500kb`、`size:1mb..20mb`、`size:empty`、`size:large`（tiny/small/medium/large/huge/gigantic）。
+  - `dm:today`、`dm:yesterday`、`dm:thisweek`、`dm:lastmonth`、`dm:7d`（最近 7 天）、`dm:2024`、`dm:2024-10`、`dm:>=2024-10-01`、
+    `dm:2024-01..2024-03`；也可写 `dm:今天`、`dm:本周`、`dm:去年`。
+  - `regex:^第.+讲\.pdf$` 名称匹配正则（含 `/` 时匹配整个路径；`-regex:` 排除）。
+  - `file:`、`folder:` 只要文件 / 只要文件夹；`dupe:` 只列出同名文件，同名的排在一起。
+  - 值里有空格时加引号：`in:"~/My Folder"`。写错时状态栏会提示正确写法。
+  - 全文模式同样支持这些条件（大小和日期交给 Spotlight，路径条件在结果上筛选）；压缩包内的文件也按路径条件筛选。
+  - 大小和日期由索引在所有核心上并行读取，单独用 `dm:today` 搜整个索引也只需约一秒。
+- 命令行工具 `ks`：在“终端”中按名称搜索，语法与搜索窗口相同，例如 `ks 合同 ext:pdf dm:thismonth`、`ks -o 论语讲义`（打开第一条）、
+  `ks --json dupe: in:~/Downloads`。读取 KongSeek 保存的索引，不需要应用在运行。设置 › 通用 › “安装命令行工具 ks…” 把它链接到
+  `/usr/local/bin/ks`。`ks --help` 查看全部选项。
+- 应用内更新：源码文件夹里的文件只要与某个已发布版本相同，就视为可安全更新（以前只认最新版本）。
+
 ## 0.9.1 — 2026-10-27
 
 - 更新可走代理：git 不读取 macOS 的代理设置，现在 KongSeek 自动把“系统代理”（Clash、Surge 等开启“设置为系统代理”时）

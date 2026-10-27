@@ -207,30 +207,48 @@ final class Updater {
         }
     }
 
-    /// Moves the source folder to origin/main. Local changes are allowed only where
-    /// they already equal origin/main (files copied in from a newer checkout);
-    /// anything else stops the update rather than being overwritten.
+    /// Moves the source folder to origin/main. A locally changed file is fine when
+    /// its content equals that file in some published commit (copied in from a
+    /// newer checkout, as the old update route did); anything else is a real edit,
+    /// and the update stops rather than overwrite it. Files the repository has
+    /// never contained are left alone.
     private func bringSourceUpToDate(_ root: String) throws {
         if git(["merge-base", "--is-ancestor", "HEAD", "origin/main"], root).status != 0 {
             throw UpdateError("源码文件夹里有 GitHub 上没有的提交，为避免丢失，已停止更新。")
         }
-        let changed = git(["diff", "--name-only", "HEAD"], root).output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-        var conflicts: [String] = []
-        for path in changed where git(["diff", "--quiet", "origin/main", "--", path], root).status != 0 {
-            conflicts.append(path)
+        func lines(_ result: (status: Int32, output: String)) -> [String] {
+            result.output.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
         }
-        let untracked = git(["ls-files", "--others", "--exclude-standard"], root, logOutput: false).output
-            .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
-        for path in untracked {
-            let upstream = git(["rev-parse", "--verify", "--quiet", "origin/main:\(path)"], root, logOutput: false)
-            guard upstream.status == 0 else { continue } // not in the repository: left alone
-            let local = git(["hash-object", "--", path], root, logOutput: false)
-            if local.output.trimmingCharacters(in: .whitespacesAndNewlines) != upstream.output.trimmingCharacters(in: .whitespacesAndNewlines) {
-                conflicts.append(path)
+        let changed = lines(git(["diff", "--name-only", "HEAD"], root, logOutput: false))
+        let untracked = lines(git(["ls-files", "--others", "--exclude-standard"], root, logOutput: false))
+        let fm = FileManager.default
+        let local = Array(Set(changed + untracked)).sorted().filter { fm.fileExists(atPath: root + "/" + $0) }
+        if !local.isEmpty {
+            let hashes = lines(git(["hash-object", "--"] + local, root, logOutput: false))
+            guard hashes.count == local.count else { throw UpdateError("无法读取源码文件夹中的文件") }
+            // Every version of every file in the last 200 published commits.
+            var published: [String: Set<String>] = [:]
+            for commit in lines(git(["rev-list", "--max-count=200", "origin/main"], root, logOutput: false)) {
+                for entry in lines(git(["ls-tree", "-r", commit], root, logOutput: false)) {
+                    // "<mode> blob <hash>\t<path>"
+                    let parts = entry.split(separator: "\t", maxSplits: 1)
+                    guard parts.count == 2, let hash = parts[0].split(separator: " ").last else { continue }
+                    published[String(parts[1]), default: []].insert(String(hash))
+                }
             }
-        }
-        guard conflicts.isEmpty else {
-            throw UpdateError("源码文件夹里这些文件有本地修改，为避免覆盖，已停止更新：" + conflicts.prefix(5).joined(separator: "、"))
+            let tracked = Set(changed)
+            var conflicts: [String] = []
+            for (path, hash) in zip(local, hashes) {
+                if let versions = published[path] {
+                    if !versions.contains(hash) { conflicts.append(path) }
+                } else if tracked.contains(path) {
+                    conflicts.append(path)
+                }
+            }
+            guard conflicts.isEmpty else {
+                throw UpdateError("源码文件夹里这些文件有本地修改，为避免覆盖，已停止更新：" + conflicts.prefix(5).joined(separator: "、"))
+            }
+            log("本地有 \(local.count) 个文件与已发布版本相同，可安全更新。")
         }
         try step(git(["reset", "--hard", "--quiet", "origin/main"], root), "无法更新源码文件夹")
     }

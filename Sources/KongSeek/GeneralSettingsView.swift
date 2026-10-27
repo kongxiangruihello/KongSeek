@@ -20,6 +20,8 @@ final class GeneralSettingsView: NSView {
     private let localButton = NSButton(title: "用本地源码重新构建", target: nil, action: nil)
     private let rollbackButton = NSButton(title: "回退到上一版…", target: nil, action: nil)
     private let logButton = NSButton(title: "更新日志", target: nil, action: nil)
+    private let cliButton = NSButton(title: "安装命令行工具 ks…", target: nil, action: nil)
+    private let cliLabel = NSTextField(labelWithString: "")
 
     init(updater: Updater, library: SnippetLibrary, diagnosticReport: @escaping () -> String) {
         self.updater = updater
@@ -78,6 +80,13 @@ final class GeneralSettingsView: NSView {
         let diagnosticsButton = NSButton(title: "导出诊断包…", target: self, action: #selector(exportDiagnostics))
         let transferRow = NSStackView(views: [exportButton, importButton, diagnosticsButton])
         transferRow.spacing = 6
+        cliButton.target = self
+        cliButton.action = #selector(installCommandLineTool)
+        cliLabel.font = .systemFont(ofSize: 11)
+        cliLabel.textColor = .secondaryLabelColor
+        cliLabel.lineBreakMode = .byTruncatingMiddle
+        let cliRow = NSStackView(views: [cliButton, cliLabel])
+        cliRow.spacing = 8
         let transferHelp = NSTextField(wrappingLabelWithString: "设置文件包含各页的设置和文本片段，不含剪贴板历史、最近打开和索引，可用于换机或备份；主目录下的路径会自动换成新电脑的主目录。诊断包含状态报告、更新与构建日志、最近的崩溃报告和设置（不含片段与剪贴板内容），出问题时发给开发者。")
         transferHelp.font = .systemFont(ofSize: 11)
         transferHelp.textColor = .secondaryLabelColor
@@ -91,7 +100,7 @@ final class GeneralSettingsView: NSView {
         let stack = NSStackView(views: [
             versionLabel, sourceLabel,
             heading("更新"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
-            heading("设置与诊断"), transferRow, transferHelp,
+            heading("设置与诊断"), transferRow, transferHelp, cliRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -169,6 +178,7 @@ final class GeneralSettingsView: NSView {
         rollbackButton.isEnabled = !busy && !state.backups.isEmpty
         rollbackButton.toolTip = state.backups.first.map { "回退到 " + $0.replacingOccurrences(of: ".app", with: "") }
         logButton.isEnabled = FileManager.default.fileExists(atPath: updater.logURL.path)
+        cliLabel.stringValue = CommandLineTool.status
     }
 
     // MARK: Actions
@@ -221,6 +231,20 @@ final class GeneralSettingsView: NSView {
         NSWorkspace.shared.open(updater.logURL)
     }
 
+    @objc private func installCommandLineTool() {
+        let alert = NSAlert()
+        alert.messageText = "安装命令行工具 ks？"
+        alert.informativeText = "在 /usr/local/bin 中建立指向 KongSeek 内置 ks 的链接，之后可在“终端”中输入 ks 合同 搜索（ks --help 查看用法）。若该文件夹需要管理员权限，macOS 会请你输入密码。"
+        alert.addButton(withTitle: "安装")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let message = CommandLineTool.install()
+        let done = NSAlert()
+        done.messageText = message
+        done.runModal()
+        refresh()
+    }
+
     @objc private func exportSettings() {
         SettingsTransfer.exportSettings(library: library)
     }
@@ -231,5 +255,49 @@ final class GeneralSettingsView: NSView {
 
     @objc private func exportDiagnostics() {
         DiagnosticsBundle.export(report: diagnosticReport(), updateLog: updater.logURL, sourceRoot: updater.state.sourceRoot)
+    }
+}
+
+/// The ks command (Contents/MacOS/ks) linked into /usr/local/bin.
+enum CommandLineTool {
+    static let linkPath = "/usr/local/bin/ks"
+    static var bundled: String { Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ks").path }
+
+    static var status: String {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: bundled) else { return "此版本未包含 ks" }
+        if let target = try? fm.destinationOfSymbolicLink(atPath: linkPath) {
+            return target == bundled ? "已安装：在“终端”中输入 ks --help" : "/usr/local/bin/ks 指向别处：\(target)"
+        }
+        return fm.fileExists(atPath: linkPath) ? "/usr/local/bin/ks 已被其他文件占用" : "未安装"
+    }
+
+    /// Links ks into /usr/local/bin, asking for an administrator password when needed.
+    static func install() -> String {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: bundled) else { return "此版本未包含 ks，请先更新 KongSeek。" }
+        if fm.fileExists(atPath: linkPath), (try? fm.destinationOfSymbolicLink(atPath: linkPath)) == nil {
+            return "/usr/local/bin/ks 是一个普通文件，为免覆盖，没有安装。"
+        }
+        let folder = (linkPath as NSString).deletingLastPathComponent
+        if fm.isWritableFile(atPath: folder) {
+            do {
+                if (try? fm.destinationOfSymbolicLink(atPath: linkPath)) != nil { try fm.removeItem(atPath: linkPath) }
+                try fm.createSymbolicLink(atPath: linkPath, withDestinationPath: bundled)
+                return "已安装 ks。在“终端”中输入 ks --help 查看用法。"
+            } catch {
+                return "安装失败：\(error.localizedDescription)"
+            }
+        }
+        func quoted(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let command = "mkdir -p \(quoted(folder)) && ln -sfh \(quoted(bundled)) \(quoted(linkPath))"
+        let script = "do shell script \"\(command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
+        var error: NSDictionary?
+        _ = NSAppleScript(source: script)?.executeAndReturnError(&error)
+        if let error {
+            let code = error[NSAppleScript.errorNumber] as? Int ?? 0
+            return code == -128 ? "已取消。" : "安装失败：\(error[NSAppleScript.errorMessage] as? String ?? "未知错误")"
+        }
+        return "已安装 ks。在“终端”中输入 ks --help 查看用法。"
     }
 }

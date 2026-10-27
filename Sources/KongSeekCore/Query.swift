@@ -156,10 +156,15 @@ public struct SearchQuery: Sendable {
     public let excludedExtensions: Set<String>
     public let notes: [String]
     public let valid: Bool
+    /// path:, in:, parent:, size:, dm:, regex:, file:, folder:, dupe: (0.10).
+    public let advanced: AdvancedFilters
 
     public var highlightWords: [String] { words + phrases }
-    public var hasConstraints: Bool { !phrases.isEmpty || !excluded.isEmpty || !extensions.isEmpty || !excludedExtensions.isEmpty || !valid }
-    /// True when results also need file attributes (type, date, size, tag).
+    public var hasConstraints: Bool {
+        !phrases.isEmpty || !excluded.isEmpty || !extensions.isEmpty || !excludedExtensions.isEmpty || !valid || !advanced.isEmpty
+    }
+    /// True when results also need file attributes (type, date, size, tag) that
+    /// the index does not apply itself (3.2's type words and natural filters).
     public var needsMetadata: Bool { filter != .all || !natural.descriptions.isEmpty }
 
     public var descriptions: [String] {
@@ -168,16 +173,25 @@ public struct SearchQuery: Sendable {
         if !excluded.isEmpty { values.append("排除：" + excluded.joined(separator: "、")) }
         if !extensions.isEmpty { values.append("扩展名：" + extensions.sorted().joined(separator: "、")) }
         if !excludedExtensions.isEmpty { values.append("排除扩展名：" + excludedExtensions.sorted().joined(separator: "、")) }
-        return values + notes
+        return values + advanced.descriptions + notes
     }
 
-    public init(_ text: String, fallback: KindFilter = .all) {
+    public init(_ text: String, fallback: KindFilter = .all, now: Date = Date(), calendar: Calendar = .current) {
         let lexed = QueryLexer.lex(text)
         var ordinary: [String] = [], phrases: [String] = [], excluded: [String] = []
         var excludedPhrases = Set<String>(), extensions = Set<String>(), excludedExtensions = Set<String>()
         var notes: [String] = [], valid = true
         var firstPositiveWasPhrase = false, foundPositive = false
+        var advanced = AdvancedFilters()
         for token in lexed.tokens {
+            if let name = token.operatorName {
+                let value = String(token.value.dropFirst(name.count + 1))
+                if let word = advanced.apply(operator: name, value: value, excluded: token.excluded, now: now, calendar: calendar) {
+                    if !foundPositive { foundPositive = true }
+                    ordinary.append(word)
+                }
+                continue
+            }
             if token.operatorPrefix {
                 let raw = String(token.value.dropFirst(4))
                 let parts = raw.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "," || $0 == "，" || $0 == "|" }).map { part -> String in
@@ -213,6 +227,11 @@ public struct SearchQuery: Sendable {
             words.removeFirst()
         }
         if lexed.unfinishedQuote { notes.append("引号尚未闭合，当前按短语搜索") }
+        if !advanced.errors.isEmpty {
+            valid = false
+            notes += advanced.errors
+        }
+        self.advanced = advanced
         self.natural = natural
         self.filter = filter
         self.words = words
@@ -225,9 +244,17 @@ public struct SearchQuery: Sendable {
         self.valid = valid
     }
 
-    /// Type and natural-language filters, which need file attributes.
+    /// Type, natural-language, size: and dm: filters, which need file attributes.
     public func acceptsMetadata(_ metadata: EntryMetadata, now: Date = Date()) -> Bool {
-        filter.accepts(metadata) && natural.accepts(metadata, now: now)
+        filter.accepts(metadata) && natural.accepts(metadata, now: now) && advanced.attributes.accepts(metadata)
+    }
+
+    /// Everything a result found outside the index (full text, archives) must
+    /// satisfy besides its words: path operators and, if needed, attributes.
+    public func acceptsExternal(path: String, isFolder: Bool) -> Bool {
+        guard advanced.acceptsPath(path, isFolder: isFolder) else { return false }
+        if advanced.attributes.isActive && !advanced.attributes.accepts(EntryMetadata.read(path: path)) { return false }
+        return true
     }
 
     /// Query text with type/date filters removed but quotes and operators kept.
@@ -254,6 +281,8 @@ enum QueryLexer {
         let phrase: Bool
         let excluded: Bool
         let operatorPrefix: Bool
+        /// path, in, size … when the token starts with one of those and a colon (unquoted).
+        var operatorName: String? = nil
     }
 
     struct Result {
@@ -299,7 +328,10 @@ enum QueryLexer {
             }
             if quote != nil { result.unfinishedQuote = true }
             if !value.isEmpty {
-                result.tokens.append(Token(value: value, phrase: quoted, excluded: excluded, operatorPrefix: prefix.lowercased().hasPrefix("ext:")))
+                let lowered = prefix.lowercased()
+                let name = AdvancedFilters.operatorNames.first { lowered.hasPrefix($0 + ":") || lowered.hasPrefix($0 + "：") }
+                result.tokens.append(Token(value: value, phrase: quoted && name == nil, excluded: excluded,
+                                           operatorPrefix: lowered.hasPrefix("ext:"), operatorName: name))
             }
         }
         return result

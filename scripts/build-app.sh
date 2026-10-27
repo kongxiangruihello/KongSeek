@@ -37,6 +37,7 @@ fi
 
 echo "== compile =="
 xcrun swift build -c release --product KongSeek
+xcrun swift build -c release --product ks
 bin_dir="$(xcrun swift build -c release --show-bin-path)"
 
 # Assemble outside the project folder: files in iCloud-synced folders pick up
@@ -46,6 +47,7 @@ trap 'rm -rf "$staging"' EXIT
 app="$staging/KongSeek.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/KongSeek" "$app/Contents/MacOS/KongSeek"
+cp "$bin_dir/ks" "$app/Contents/MacOS/ks"
 cp "$root/Resources/Info.plist" "$app/Contents/Info.plist"
 build_number="$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$app/Contents/Info.plist"
@@ -84,10 +86,13 @@ for candidate in "${KONGSEEK_SIGN_IDENTITY:-}" "KongSeek Local Signing" "KongFet
     break
   fi
 done
+# The command-line tool is signed first; signing the bundle does not sign it.
 if [[ -n "$identity" ]]; then
+  codesign --force --sign "$identity" --identifier com.kongxiangrui.KongSeek.ks "$app/Contents/MacOS/ks"
   codesign --force --sign "$identity" --identifier com.kongxiangrui.KongSeek "$app"
   echo "Signed with stable identity: $identity"
 else
+  codesign --force --sign - --identifier com.kongxiangrui.KongSeek.ks "$app/Contents/MacOS/ks"
   codesign --force --sign - --identifier com.kongxiangrui.KongSeek "$app"
   echo "WARNING: no local signing certificate found; signed ad hoc."
   echo "         macOS may ask again for folder access after every update."
@@ -97,6 +102,7 @@ codesign --verify --strict "$app" || echo "NOTE: codesign --verify reported a tr
 rm -rf "$root/build/KongSeek.app"
 ditto "$app" "$root/build/KongSeek.app"
 echo "Built: $root/build/KongSeek.app"
+"$app/Contents/MacOS/ks" --version || echo "NOTE: ks did not run"
 
 if [[ $install -eq 1 ]]; then
   echo "== install =="

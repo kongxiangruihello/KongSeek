@@ -287,14 +287,17 @@ final class IndexService {
     /// need attributes an archive entry does not have, so such queries skip archives.
     static func mergeArchiveHits(into outcome: inout SearchOutcome, query: SearchQuery, archives: ArchiveIndex, limit: Int) {
         let words = query.words + query.phrases
-        guard query.valid, !words.isEmpty, !query.needsMetadata else { return }
+        let advanced = query.advanced
+        guard query.valid, !words.isEmpty, !query.needsMetadata, !advanced.dupe, !advanced.attributes.isActive else { return }
         var exists: [String: Bool] = [:]
         let hits = archives.search(words, limit: 60, accept: { path in
             if let known = exists[path] { return known }
             let found = FileManager.default.fileExists(atPath: path)
             exists[path] = found
             return found
-        }, acceptName: query.acceptsName)
+        }, acceptName: query.acceptsName).filter { hit in
+            advanced.acceptsPath(hit.archive + "/" + hit.inner, isFolder: false)
+        }
         guard !hits.isEmpty else { return }
         var items = outcome.items
         for hit in hits {
@@ -320,6 +323,14 @@ final class IndexService {
         // Highest score first; among equal scores: applications, then items opened
         // more often, then recently modified, then shorter names. Ties are
         // re-ranked group by group, only as far as shown.
+        // dupe: keeps the index's order (same names together).
+        if query.advanced.dupe {
+            outcome.items = hits.prefix(limit).map { hit in
+                let flags = index.flags(of: hit.id)
+                return ResultItem(path: index.path(of: hit.id), name: index.name(of: hit.id), isFolder: flags.contains(.directory) && !flags.contains(.package), score: hit.score)
+            }
+            return outcome
+        }
         let sorted = hits.sorted { a, b in
             if a.score != b.score { return a.score > b.score }
             return a.id < b.id

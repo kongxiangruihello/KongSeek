@@ -59,6 +59,18 @@ public enum SpotlightQuery {
         if let tag = natural.tag {
             parts.append("kMDItemUserTags == \"\(escape(tag))\"cd")
         }
+        // 0.10 operators: size:, dm:, file:, folder:.
+        let attributes = query.advanced.attributes
+        if let minimum = attributes.minimumSize { parts.append("kMDItemFSSize >= \(minimum)") }
+        if let maximum = attributes.maximumSize { parts.append("kMDItemFSSize <= \(maximum)") }
+        let iso = ISO8601DateFormatter()
+        if let from = attributes.modifiedFrom { parts.append("kMDItemFSContentChangeDate >= $time.iso(\(iso.string(from: from)))") }
+        if let before = attributes.modifiedBefore { parts.append("kMDItemFSContentChangeDate < $time.iso(\(iso.string(from: before)))") }
+        if query.advanced.kind == .folders || (attributes.hasSize && query.advanced.kind == .any) {
+            parts.append(query.advanced.kind == .folders ? "kMDItemContentType == \"public.folder\"" : "kMDItemContentType != \"public.folder\"")
+        } else if query.advanced.kind == .files {
+            parts.append("kMDItemContentType != \"public.folder\"")
+        }
         return parts
     }
 

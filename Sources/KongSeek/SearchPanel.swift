@@ -75,7 +75,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// Files taken out of archives for the preview, by "archive\0inner".
     private var archivePreviews: [String: URL] = [:]
     private var archivePreviewToken = 0
-    private let defaultPlaceholder = "搜索文件名、拼音或首字母    ext:pdf    \"短语\"    -排除"
+    private let defaultPlaceholder = "搜索文件名、拼音或首字母   ext:pdf  in:文件夹  dm:7d  size:>10mb  -排除"
 
     /// Folder being browsed (→ on a folder), and the states to return to.
     private struct BrowseLevel {
@@ -432,7 +432,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             let items = hits.compactMap { hit -> ResultItem? in
                 let name = (hit.path as NSString).lastPathComponent
                 let folded = SearchText.fold(name)
-                guard !excluded.contains(where: { folded.contains($0) }), Self.accepts(name: folded, query: query) else { return nil }
+                guard !excluded.contains(where: { folded.contains($0) }), Self.accepts(name: folded, query: query),
+                      query.acceptsExternal(path: hit.path, isFolder: false) else { return nil }
                 if query.needsMetadata && !query.acceptsMetadata(EntryMetadata.read(path: hit.path)) { return nil }
                 return ResultItem(path: hit.path, name: name, isFolder: false, score: 0, recognized: true)
             }
@@ -446,7 +447,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let started = contentSearch.search(queryString, scopes: roots) { [weak self] hits, finished in
             guard let self, token == self.contentToken else { return }
             self.spotlightItems = hits.filter { hit in
-                guard !rules.excludes(path: hit.path, roots: roots) else { return false }
+                guard !rules.excludes(path: hit.path, roots: roots),
+                      query.advanced.acceptsPath(hit.path, isFolder: hit.isFolder) else { return false }
                 let name = SearchText.fold((hit.path as NSString).lastPathComponent)
                 return !excluded.contains { name.contains($0) }
             }.sorted { a, b in
