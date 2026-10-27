@@ -1,5 +1,14 @@
 # 更新记录
 
+## 0.11.0 — 2026-10-27
+
+- 拖出（移植自 KongFetch 4.6）：搜索结果可直接拖到微信、邮件、访达等处（拷贝文件）；网页搜索行拖出的是网址；
+  压缩包内的文件在选中、预览取出后也能拖出。
+- 让 Claude 用 KongSeek 搜索文件（MCP）：`ks mcp` 作为 MCP 服务运行，提供 `search_files`（按名称、拼音和全部高级语法搜索，
+  返回路径、类型、大小和修改时间）和 `index_info` 两个工具，只读文件名和路径，不打开、不修改文件。
+  设置 › 通用 › “添加到 Claude 桌面版…” 自动写入 Claude 的配置（原文件先备份为 `.kongseek-backup`），重新打开 Claude 后生效。
+  也可用于其他支持 MCP 的应用：命令为 `/Applications/KongSeek.app/Contents/MacOS/ks`，参数 `mcp`。
+
 ## 0.10.0 — 2026-10-27
 
 - 高级搜索语法（参照 Everything），可与原有写法混用，多个条件同时成立：

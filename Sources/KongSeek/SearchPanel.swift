@@ -234,6 +234,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         table.style = .plain
         table.dataSource = self
         table.delegate = self
+        table.setDraggingSourceOperationMask(.copy, forLocal: false)
         table.target = self
         table.doubleAction = #selector(openSelected)
         table.refusesFirstResponder = true
@@ -1041,6 +1042,17 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             shortcut: row < 9 ? "⌘\(row + 1)" : ""
         )
         return cell
+    }
+
+    /// Dragging a result out (to WeChat, Mail, Finder…) copies the file. A file in
+    /// an archive can be dragged once its preview copy has been taken out.
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard results.indices.contains(row) else { return nil }
+        let item = results[row]
+        if let link = item.link { return link as NSURL }
+        guard item.isFile, item.definition == nil else { return nil }
+        if item.isInArchive { return archivePreviews[Self.archiveKey(item)].map { $0 as NSURL } }
+        return URL(fileURLWithPath: item.path) as NSURL
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

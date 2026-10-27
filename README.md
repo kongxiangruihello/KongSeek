@@ -54,6 +54,11 @@ macOS 菜单栏文件搜索工具：随时唤出，按文件名、拼音全拼�
 
 命令行：设置 › 通用 › 安装命令行工具 ks 后，在“终端”中输入 `ks 合同 ext:pdf`，`ks --help` 查看选项。
 
+Claude：设置 › 通用 › “添加到 Claude 桌面版…”，重新打开 Claude 后，可以直接让 Claude 按文件名（含拼音和上面的语法）找文件。
+原理是 `ks mcp`（MCP 服务，只读文件名和路径）；其他支持 MCP 的应用可填命令 `/Applications/KongSeek.app/Contents/MacOS/ks`、参数 `mcp`。
+
+搜索结果可以直接拖到微信、邮件、访达等处。
+
 全文模式（⇥ 切换）用 Spotlight 的内容索引搜 PDF、Word、Pages、文本等文件的正文，同样支持上面的筛选；预览区上方显示命中处的上下文，PDF 标出页码。
 扫描版 PDF 和图片里的文字 Spotlight 读不到：在“设置 › 文字识别”中添加存放扫描件的文件夹，KongSeek 会在后台用本机 Apple Vision 识别（不上传），之后全文模式也能搜到，结果标为“识别文字”。
 

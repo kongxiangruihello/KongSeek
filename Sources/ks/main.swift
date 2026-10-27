@@ -1,15 +1,16 @@
 import Foundation
 import KongSeekCore
 
-// ks: search KongSeek's name index from the terminal.
+// ks: search KongSeek's name index from the terminal, or (`ks mcp`) serve it to
+// Claude and other MCP clients over stdio.
 //
 // Reads the index file the app keeps (~/Library/Application Support/KongSeek/
-// name-index.ksidx), so it needs no running app and starts in well under a
-// second. The app writes that file about 20 seconds after files change; items
-// that no longer exist are left out of the output.
+// name-index.ksidx), so it needs no running app. The app writes that file about
+// 20 seconds after files change; items that no longer exist are left out.
 
 let usage = """
 用法：ks [选项] 查询…
+      ks mcp              作为 MCP 服务运行（供 Claude 桌面版等调用，见 设置 › 通用）
 
 按文件名（含拼音、首字母）在 KongSeek 的索引中搜索，每行输出一个路径。查询语法与搜索窗口相同：
   合同 2024          每个词都要出现（hetong、ht 也可）
@@ -37,10 +38,153 @@ let usage = """
 退出码：0 有结果，1 没有结果，2 用法错误或无法读取索引。
 """
 
+let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版"
+
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data(("ks: " + message + "\n").utf8))
     exit(2)
 }
+
+// MARK: - Index and search (shared by the command line and MCP)
+
+/// The saved index, reloaded when the app has written a newer one.
+final class IndexFile {
+    let url: URL
+    private var index: NameIndex?
+    private var loadedStamp: Date?
+
+    init(url: URL) { self.url = url }
+
+    func current() throws -> NameIndex {
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+        if let index, stamp == loadedStamp { return index }
+        let loaded = try NameIndex.load(from: url)
+        index = loaded
+        loadedStamp = stamp
+        return loaded
+    }
+}
+
+struct Row {
+    let path: String
+    let name: String
+    let kind: String
+    let score: Int
+}
+
+/// Matches for `query`, best first (dupe: keeps same names together), skipping
+/// items that no longer exist. `limit` 0 means all. `more` is true when matches
+/// were left out by the limit.
+func search(_ query: SearchQuery, in index: NameIndex, precision: MatchPrecision, limit: Int) -> (rows: [Row], more: Bool) {
+    var hits = index.search(query, precision: precision)
+    if !query.advanced.dupe {
+        hits.sort { a, b in
+            if a.score != b.score { return a.score > b.score }
+            let la = index.name(of: a.id).count, lb = index.name(of: b.id).count
+            return la != lb ? la < lb : index.path(of: a.id) < index.path(of: b.id)
+        }
+    }
+    var rows: [Row] = []
+    let fileManager = FileManager.default
+    for (position, hit) in hits.enumerated() {
+        if limit > 0 && rows.count >= limit { return (rows, position < hits.count) }
+        let path = index.path(of: hit.id)
+        guard fileManager.fileExists(atPath: path) else { continue }
+        if query.needsMetadata && !query.acceptsMetadata(EntryMetadata.read(path: path)) { continue }
+        let flags = index.flags(of: hit.id)
+        let kind = flags.contains(.package) ? (path.lowercased().hasSuffix(".app") ? "app" : "package")
+            : (flags.contains(.directory) ? "folder" : (flags.contains(.symlink) ? "symlink" : "file"))
+        rows.append(Row(path: path, name: index.name(of: hit.id), kind: kind, score: hit.score))
+    }
+    return (rows, false)
+}
+
+let appDefaults = UserDefaults(suiteName: "com.kongxiangrui.KongSeek")
+let defaultPrecision: MatchPrecision = appDefaults?.bool(forKey: "matchFolderPath") == true ? .withPath : .fuzzyName
+let defaultIndexURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("KongSeek/name-index.ksidx")
+
+// MARK: - MCP
+
+func runMCP(indexURL: URL) -> Never {
+    let file = IndexFile(url: indexURL)
+    let kindNames = ["file": "文件", "folder": "文件夹", "app": "应用", "package": "包", "symlink": "替身"]
+    let dateFormatter = DateFormatter()
+    dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+    let searchTool = MCPServer.Tool(
+        name: "search_files",
+        description: """
+        Search the user's Mac for files, folders and apps by name with KongSeek's local index (instant; covers the \
+        home folder, iCloud Drive and Applications). Matches name substrings, abbreviations and Chinese pinyin \
+        (full spelling or initials, e.g. "lunyu" or "ly" finds 论语). Every word must match. Syntax: "exact phrase", \
+        -exclude, ext:pdf,docx, path:text (anywhere in the path), in:~/Documents or in:FolderName (below a folder), \
+        parent:~/Desktop (directly inside), size:>10mb, size:1mb..20mb, dm:today, dm:7d, dm:2024-10, dm:>=2024-01-01, \
+        regex:^draft, file:, folder:, dupe: (only duplicated names). A query of only operators (e.g. "dm:today ext:pdf") \
+        lists everything that passes them. Returns absolute paths with kind, size and modification time.
+        """,
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "query": ["type": "string", "description": "Search text using the syntax above, e.g. \"论语 讲义 ext:pdf dm:thisyear\"."] as [String: Any],
+                "limit": ["type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum results (default 30)."] as [String: Any],
+            ] as [String: Any],
+            "required": ["query"],
+        ]
+    ) { arguments in
+        guard let text = (arguments["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+            throw MCPServer.ToolError("query is required")
+        }
+        let limit = min(200, max(1, (arguments["limit"] as? NSNumber)?.intValue ?? 30))
+        let query = SearchQuery(text)
+        guard query.valid else { throw MCPServer.ToolError("Invalid query: " + query.notes.joined(separator: "; ")) }
+        let index: NameIndex
+        do { index = try file.current() } catch {
+            throw MCPServer.ToolError("KongSeek's index could not be read (\(error)). Open the KongSeek app once to build it.")
+        }
+        let found = search(query, in: index, precision: defaultPrecision, limit: limit)
+        guard !found.rows.isEmpty else { return "No files match “\(text)”." }
+        var lines = ["\(found.rows.count) result(s) for “\(text)”" + (found.more ? " (more exist; refine the query or raise limit)" : "") + ":"]
+        for row in found.rows {
+            var details = [kindNames[row.kind] ?? row.kind]
+            var info = stat()
+            if lstat(row.path, &info) == 0 {
+                if row.kind != "folder" { details.append(ByteCountFormatter.string(fromByteCount: Int64(info.st_size), countStyle: .file)) }
+                details.append(dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))))
+            }
+            lines.append("\(row.path)  [\(details.joined(separator: " · "))]")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    let infoTool = MCPServer.Tool(
+        name: "index_info",
+        description: "Report which folders KongSeek's index covers, how many items it holds and when it was last updated.",
+        inputSchema: ["type": "object", "properties": [String: Any]()]
+    ) { _ in
+        let index: NameIndex
+        do { index = try file.current() } catch { throw MCPServer.ToolError("KongSeek's index could not be read: \(error)") }
+        return """
+        Folders: \(index.roots.joined(separator: ", "))
+        Items: \(index.entryCount) (\(index.directoryCount) folders)
+        Updated: \(ISO8601DateFormatter().string(from: index.updated))\(index.isComplete ? "" : "\nThe index is still being built.")
+        """
+    }
+
+    let server = MCPServer(
+        name: "kongseek", version: version,
+        instructions: "Use search_files to find the user's local files by name (Chinese pinyin works). Paths returned can be read with other tools.",
+        tools: [searchTool, infoTool]
+    )
+    while let line = readLine(strippingNewline: true) {
+        if let reply = server.handle(line) {
+            FileHandle.standardOutput.write(Data((reply + "\n").utf8))
+        }
+    }
+    exit(0)
+}
+
+// MARK: - Command line
 
 var limit = 50
 var countOnly = false
@@ -49,13 +193,17 @@ var json = false
 var openFirst = false
 var revealFirst = false
 var info = false
-let appDefaults = UserDefaults(suiteName: "com.kongxiangrui.KongSeek")
-var precision: MatchPrecision = appDefaults?.bool(forKey: "matchFolderPath") == true ? .withPath : .fuzzyName
-var indexURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    .appendingPathComponent("KongSeek/name-index.ksidx")
+var precision = defaultPrecision
+var indexURL = defaultIndexURL
 var terms: [String] = []
 
-var arguments = Array(CommandLine.arguments.dropFirst())
+let arguments = Array(CommandLine.arguments.dropFirst())
+if arguments.first == "mcp" {
+    var url = defaultIndexURL
+    if arguments.count >= 3, arguments[1] == "--index" { url = URL(fileURLWithPath: (arguments[2] as NSString).expandingTildeInPath) }
+    runMCP(indexURL: url)
+}
+
 var position = 0
 func nextValue(_ option: String) -> String {
     position += 1
@@ -89,7 +237,6 @@ while position < arguments.count {
         print(usage)
         exit(0)
     case "--version":
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版"
         print("ks（KongSeek \(version)）")
         exit(0)
     default:
@@ -122,35 +269,7 @@ guard !text.isEmpty else {
 let query = SearchQuery(text)
 guard query.valid else { fail(query.notes.joined(separator: "；")) }
 
-// Highest score first; ties: shorter name, then path (dupe: keeps its grouping).
-var hits = index.search(query, precision: precision)
-if !query.advanced.dupe {
-    hits.sort { a, b in
-        if a.score != b.score { return a.score > b.score }
-        let la = index.name(of: a.id).count, lb = index.name(of: b.id).count
-        return la != lb ? la < lb : index.path(of: a.id) < index.path(of: b.id)
-    }
-}
-
-struct Row {
-    let path: String
-    let name: String
-    let kind: String
-    let score: Int
-}
-
-var rows: [Row] = []
-let fileManager = FileManager.default
-for hit in hits {
-    if limit > 0 && rows.count >= limit && !countOnly { break }
-    let path = index.path(of: hit.id)
-    guard fileManager.fileExists(atPath: path) else { continue }
-    if query.needsMetadata && !query.acceptsMetadata(EntryMetadata.read(path: path)) { continue }
-    let flags = index.flags(of: hit.id)
-    let kind = flags.contains(.package) ? (path.lowercased().hasSuffix(".app") ? "app" : "package")
-        : (flags.contains(.directory) ? "folder" : (flags.contains(.symlink) ? "symlink" : "file"))
-    rows.append(Row(path: path, name: index.name(of: hit.id), kind: kind, score: hit.score))
-}
+let rows = search(query, in: index, precision: precision, limit: countOnly ? 0 : limit).rows
 
 if countOnly {
     print(rows.count)

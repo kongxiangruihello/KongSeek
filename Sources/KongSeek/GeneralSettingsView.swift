@@ -22,6 +22,8 @@ final class GeneralSettingsView: NSView {
     private let logButton = NSButton(title: "更新日志", target: nil, action: nil)
     private let cliButton = NSButton(title: "安装命令行工具 ks…", target: nil, action: nil)
     private let cliLabel = NSTextField(labelWithString: "")
+    private let claudeButton = NSButton(title: "添加到 Claude 桌面版…", target: nil, action: nil)
+    private let claudeLabel = NSTextField(labelWithString: "")
 
     init(updater: Updater, library: SnippetLibrary, diagnosticReport: @escaping () -> String) {
         self.updater = updater
@@ -87,6 +89,13 @@ final class GeneralSettingsView: NSView {
         cliLabel.lineBreakMode = .byTruncatingMiddle
         let cliRow = NSStackView(views: [cliButton, cliLabel])
         cliRow.spacing = 8
+        claudeButton.target = self
+        claudeButton.action = #selector(addToClaude)
+        claudeLabel.font = .systemFont(ofSize: 11)
+        claudeLabel.textColor = .secondaryLabelColor
+        claudeLabel.lineBreakMode = .byTruncatingTail
+        let claudeRow = NSStackView(views: [claudeButton, claudeLabel])
+        claudeRow.spacing = 8
         let transferHelp = NSTextField(wrappingLabelWithString: "设置文件包含各页的设置和文本片段，不含剪贴板历史、最近打开和索引，可用于换机或备份；主目录下的路径会自动换成新电脑的主目录。诊断包含状态报告、更新与构建日志、最近的崩溃报告和设置（不含片段与剪贴板内容），出问题时发给开发者。")
         transferHelp.font = .systemFont(ofSize: 11)
         transferHelp.textColor = .secondaryLabelColor
@@ -100,7 +109,7 @@ final class GeneralSettingsView: NSView {
         let stack = NSStackView(views: [
             versionLabel, sourceLabel,
             heading("更新"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
-            heading("设置与诊断"), transferRow, transferHelp, cliRow,
+            heading("设置与诊断"), transferRow, transferHelp, cliRow, claudeRow,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -179,6 +188,7 @@ final class GeneralSettingsView: NSView {
         rollbackButton.toolTip = state.backups.first.map { "回退到 " + $0.replacingOccurrences(of: ".app", with: "") }
         logButton.isEnabled = FileManager.default.fileExists(atPath: updater.logURL.path)
         cliLabel.stringValue = CommandLineTool.status
+        claudeLabel.stringValue = ClaudeDesktop.status
     }
 
     // MARK: Actions
@@ -245,6 +255,25 @@ final class GeneralSettingsView: NSView {
         refresh()
     }
 
+    @objc private func addToClaude() {
+        let alert = NSAlert()
+        alert.messageText = "让 Claude 桌面版可以用 KongSeek 搜索文件？"
+        alert.informativeText = "在 Claude 的配置文件（~/Library/Application Support/Claude/claude_desktop_config.json）中加入 KongSeek 的 MCP 服务，原文件先备份。之后 Claude 能按文件名（含拼音）搜索你已索引的文件，只读取文件名和路径，不打开、不修改文件。\n\n完成后请退出并重新打开 Claude 桌面版。"
+        alert.addButton(withTitle: "添加")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let done = NSAlert()
+        do {
+            try ClaudeDesktop.add()
+            done.messageText = "已添加。请退出并重新打开 Claude 桌面版。"
+            done.informativeText = "在 Claude 中可以直接说“用 KongSeek 找一下论语讲义的 PDF”。"
+        } catch {
+            done.messageText = "没能添加：\(error.localizedDescription)"
+        }
+        done.runModal()
+        refresh()
+    }
+
     @objc private func exportSettings() {
         SettingsTransfer.exportSettings(library: library)
     }
@@ -299,5 +328,55 @@ enum CommandLineTool {
             return code == -128 ? "已取消。" : "安装失败：\(error[NSAppleScript.errorMessage] as? String ?? "未知错误")"
         }
         return "已安装 ks。在“终端”中输入 ks --help 查看用法。"
+    }
+}
+
+/// Registers `ks mcp` as an MCP server in the Claude desktop app's configuration.
+enum ClaudeDesktop {
+    static let serverName = "kongseek"
+    static var configURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
+    }
+
+    enum ConfigError: LocalizedError {
+        case unreadable, noTool
+        var errorDescription: String? {
+            switch self {
+            case .unreadable: return "Claude 的配置文件不是有效的 JSON，为免损坏，没有修改。"
+            case .noTool: return "此版本未包含 ks，请先更新 KongSeek。"
+            }
+        }
+    }
+
+    private static func readConfig() throws -> [String: Any] {
+        guard let data = try? Data(contentsOf: configURL), !data.isEmpty else { return [:] }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw ConfigError.unreadable }
+        return object
+    }
+
+    static var status: String {
+        guard FileManager.default.fileExists(atPath: configURL.deletingLastPathComponent().path) else { return "未发现 Claude 桌面版" }
+        guard let config = try? readConfig() else { return "Claude 配置文件无法读取" }
+        let entry = (config["mcpServers"] as? [String: Any])?[serverName] as? [String: Any]
+        guard let command = entry?["command"] as? String else { return "未添加" }
+        return command == CommandLineTool.bundled ? "已添加（重新打开 Claude 后生效）" : "已添加，但指向 \(command)"
+    }
+
+    static func add() throws {
+        guard FileManager.default.fileExists(atPath: CommandLineTool.bundled) else { throw ConfigError.noTool }
+        var config: [String: Any]
+        do { config = try readConfig() } catch { throw ConfigError.unreadable }
+        var servers = config["mcpServers"] as? [String: Any] ?? [:]
+        servers[serverName] = ["command": CommandLineTool.bundled, "args": ["mcp"]] as [String: Any]
+        config["mcpServers"] = servers
+        let fm = FileManager.default
+        try fm.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if fm.fileExists(atPath: configURL.path) {
+            let backup = configURL.appendingPathExtension("kongseek-backup")
+            try? fm.removeItem(at: backup)
+            try fm.copyItem(at: configURL, to: backup)
+        }
+        let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try data.write(to: configURL, options: .atomic)
     }
 }
