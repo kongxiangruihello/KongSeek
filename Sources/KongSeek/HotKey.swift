@@ -1,43 +1,122 @@
-import Carbon
-import Foundation
+import AppKit
+import Carbon.HIToolbox
 
-/// A system-wide keyboard shortcut (Carbon hot key: no special permission needed).
+/// A global key combination such as ⌥Space.
+struct Shortcut: Codable, Equatable {
+    var keyCode: UInt32
+    var carbonModifiers: UInt32
+    /// The key's label at recording time, e.g. "F" or "空格".
+    var keyLabel: String
+
+    static let defaultSearch = Shortcut(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(optionKey), keyLabel: "空格")
+
+    var display: String {
+        var text = ""
+        if carbonModifiers & UInt32(controlKey) != 0 { text += "⌃" }
+        if carbonModifiers & UInt32(optionKey) != 0 { text += "⌥" }
+        if carbonModifiers & UInt32(shiftKey) != 0 { text += "⇧" }
+        if carbonModifiers & UInt32(cmdKey) != 0 { text += "⌘" }
+        return text + keyLabel
+    }
+
+    init(keyCode: UInt32, carbonModifiers: UInt32, keyLabel: String) {
+        self.keyCode = keyCode
+        self.carbonModifiers = carbonModifiers
+        self.keyLabel = keyLabel
+    }
+
+    /// Builds a shortcut from a key press. Requires ⌘, ⌥ or ⌃ so plain typing is never captured.
+    init?(event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !flags.intersection([.command, .option, .control]).isEmpty else { return nil }
+        let modifierKeyCodes: Set<UInt16> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+        guard !modifierKeyCodes.contains(event.keyCode) else { return nil }
+        var modifiers: UInt32 = 0
+        if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
+        if flags.contains(.option) { modifiers |= UInt32(optionKey) }
+        if flags.contains(.control) { modifiers |= UInt32(controlKey) }
+        if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
+        self.init(keyCode: UInt32(event.keyCode), carbonModifiers: modifiers, keyLabel: Self.label(for: event))
+    }
+
+    private static func label(for event: NSEvent) -> String {
+        let special: [Int: String] = [
+            kVK_Space: "空格", kVK_Return: "↩", kVK_Tab: "⇥", kVK_Escape: "⎋", kVK_Delete: "⌫",
+            kVK_ForwardDelete: "⌦", kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
+            kVK_Home: "↖", kVK_End: "↘", kVK_PageUp: "⇞", kVK_PageDown: "⇟",
+            kVK_F1: "F1", kVK_F2: "F2", kVK_F3: "F3", kVK_F4: "F4", kVK_F5: "F5", kVK_F6: "F6",
+            kVK_F7: "F7", kVK_F8: "F8", kVK_F9: "F9", kVK_F10: "F10", kVK_F11: "F11", kVK_F12: "F12",
+        ]
+        if let name = special[Int(event.keyCode)] { return name }
+        let characters = event.charactersIgnoringModifiers?.uppercased() ?? ""
+        return characters.isEmpty || characters.unicodeScalars.contains(where: { $0.value < 32 }) ? "键\(event.keyCode)" : characters
+    }
+
+    /// Combinations macOS keeps for itself (they would never reach KongSeek).
+    var isReservedBySystem: Bool {
+        let space = UInt32(kVK_Space)
+        let command = UInt32(cmdKey), option = UInt32(optionKey), control = UInt32(controlKey)
+        let reserved: [(UInt32, UInt32)] = [
+            (space, command),               // Spotlight
+            (space, command | option),      // Finder search window
+            (space, control),               // previous input source
+            (space, control | option),      // next input source
+        ]
+        return reserved.contains { $0.0 == keyCode && $0.1 == carbonModifiers }
+    }
+}
+
+/// The global search shortcut, registered through Carbon (no special permission needed).
 final class HotKey {
-    let title: String
+    private(set) var shortcut: Shortcut?
     private let action: () -> Void
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
 
-    /// Returns nil when the shortcut cannot be registered (e.g. already taken).
-    init?(keyCode: UInt32, modifiers: UInt32, title: String, action: @escaping () -> Void) {
-        self.title = title
+    init(action: @escaping () -> Void) {
         self.action = action
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let handler: EventHandlerUPP = { _, _, userData in
             guard let userData else { return noErr }
-            Unmanaged<HotKey>.fromOpaque(userData).takeUnretainedValue().action()
+            let hotKey = Unmanaged<HotKey>.fromOpaque(userData).takeUnretainedValue()
+            DispatchQueue.main.async { hotKey.action() }
             return noErr
         }
-        let installed = InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
-        guard installed == noErr else { return nil }
-        let identifier = EventHotKeyID(signature: OSType(0x4B53_4B31), id: 1) // "KSK1"
-        let registered = RegisterEventHotKey(keyCode, modifiers, identifier, GetApplicationEventTarget(), 0, &hotKeyRef)
-        guard registered == noErr else {
-            if let handlerRef { RemoveEventHandler(handlerRef) }
-            handlerRef = nil
-            return nil
-        }
+        InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
     }
 
     deinit {
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        unregister()
         if let handlerRef { RemoveEventHandler(handlerRef) }
     }
 
-    /// ⌥Space, or ⌃⌥Space if ⌥Space is taken by another app.
-    static func registerDefault(action: @escaping () -> Void) -> HotKey? {
-        let space = UInt32(kVK_Space)
-        return HotKey(keyCode: space, modifiers: UInt32(optionKey), title: "⌥空格", action: action)
-            ?? HotKey(keyCode: space, modifiers: UInt32(optionKey | controlKey), title: "⌃⌥空格", action: action)
+    var isRegistered: Bool { hotKeyRef != nil }
+
+    /// Registers `shortcut` (nil clears it). Returns false if macOS or another
+    /// app already uses the combination; nothing is registered then.
+    @discardableResult
+    func register(_ newShortcut: Shortcut?) -> Bool {
+        unregister()
+        shortcut = newShortcut
+        guard let newShortcut else { return true }
+        guard !newShortcut.isReservedBySystem else { return false }
+        let identifier = EventHotKeyID(signature: OSType(0x4B53_4B31), id: 1) // "KSK1"
+        let status = RegisterEventHotKey(newShortcut.keyCode, newShortcut.carbonModifiers, identifier, GetApplicationEventTarget(), 0, &hotKeyRef)
+        if status != noErr { hotKeyRef = nil }
+        return status == noErr
+    }
+
+    /// Temporarily releases the combination (while a new one is being recorded).
+    func suspend() {
+        unregister()
+    }
+
+    func resume() {
+        if hotKeyRef == nil, let shortcut { register(shortcut) }
+    }
+
+    private func unregister() {
+        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        hotKeyRef = nil
     }
 }

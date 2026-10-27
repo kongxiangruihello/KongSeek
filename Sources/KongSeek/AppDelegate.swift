@@ -6,13 +6,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var service: IndexService!
     private var searchWindow: SearchWindowController!
-    private var hotKey: HotKey?
+    private var hotKey: HotKey!
+    private let doubleTap = DoubleTapMonitor()
+    private var settingsWindow: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
         searchWindow = SearchWindowController(service: service)
         service.onStateChange = { [weak self] _ in self?.searchWindow.indexStateChanged() }
-        hotKey = HotKey.registerDefault { [weak self] in self?.searchWindow.toggle() }
+        hotKey = HotKey { [weak self] in self?.searchWindow.toggle() }
+        hotKey.register(Preferences.searchShortcut)
+        doubleTap.onDoubleTap = { [weak self] in self?.searchWindow.toggle() }
+        doubleTap.trigger = Preferences.doubleTapModifier
+        doubleTap.refresh()
+        // Ask once for Input Monitoring (needed for the double tap); later the menu
+        // and the settings window show how to grant it.
+        if Preferences.doubleTapModifier != .off && !doubleTap.hasPermission && !UserDefaults.standard.bool(forKey: "askedInputMonitoring") {
+            UserDefaults.standard.set(true, forKey: "askedInputMonitoring")
+            _ = CGRequestListenEventAccess()
+            doubleTap.refresh()
+        }
         setUpStatusItem()
         service.start()
         if !Preferences.hasLaunchedBefore {
@@ -38,8 +51,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Rebuilt each time it opens, so it always shows the current state.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let shortcut = hotKey.map { "（\($0.title)）" } ?? "（快捷键未能注册）"
-        menu.addItem(item("打开搜索" + shortcut, #selector(openSearch)))
+        var ways: [String] = []
+        if let shortcut = hotKey.shortcut { ways.append(hotKey.isRegistered ? shortcut.display : "\(shortcut.display) 被占用") }
+        let trigger = Preferences.doubleTapModifier
+        if trigger != .off { ways.append("连按 \(trigger.title)") }
+        menu.addItem(item("打开搜索" + (ways.isEmpty ? "" : "（\(ways.joined(separator: " 或 "))）"), #selector(openSearch)))
+        if trigger != .off && !doubleTap.isListening {
+            menu.addItem(item("⚠︎ 连按 \(trigger.title) 尚未生效：需要“输入监控”权限…", #selector(openSettings)))
+        }
+        if let shortcut = hotKey.shortcut, !hotKey.isRegistered {
+            menu.addItem(item("⚠︎ \(shortcut.display) 已被占用，点此更换…", #selector(openSettings)))
+        }
         menu.addItem(.separator())
 
         menu.addItem(disabled(stateDescription))
@@ -73,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pathMatch)
         menu.addItem(.separator())
 
+        menu.addItem(item("设置…", #selector(openSettings), key: ","))
         let login = item("登录时自动启动", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
@@ -108,6 +131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSearch() {
         searchWindow.show()
+    }
+
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(hotKey: hotKey, doubleTap: doubleTap) {}
+        }
+        settingsWindow?.show()
     }
 
     @objc private func rebuildIndex() {

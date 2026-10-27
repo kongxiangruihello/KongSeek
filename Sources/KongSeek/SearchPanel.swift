@@ -66,7 +66,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         panel.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
         installKeyMonitor()
-        if !field.stringValue.isEmpty { runSearch() }
+        runSearch() // an empty query lists recently opened items
     }
 
     func hide() {
@@ -174,7 +174,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        let hints = NSTextField(labelWithString: "↩ 打开   ⌘↩ 在访达中显示   ⌘C 拷贝文件   ⌥⌘C 拷贝路径   ⌘1–9 打开第几项")
+        let hints = NSTextField(labelWithString: "↩ 打开   ⌘↩ 在访达中显示   ⌘C 拷贝   ⌥⌘C 拷贝路径   ⌘1–9 打开第几项")
         hints.font = .systemFont(ofSize: 11)
         hints.textColor = .tertiaryLabelColor
         hints.alignment = .right
@@ -271,12 +271,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
         emptyLabel.isHidden = !results.isEmpty
         switch service.state {
-        case .loading:
+        case .loading where !text.isEmpty:
             emptyLabel.stringValue = "正在载入索引…"
-        case .building(let entries) where results.isEmpty:
+        case .building(let entries) where !text.isEmpty:
             emptyLabel.stringValue = "正在建立索引，已收录 \(entries.formatted()) 项。\n首次建立需要一点时间，之后启动即可直接搜索。"
         default:
-            emptyLabel.stringValue = text.isEmpty ? "输入文件名、拼音全拼或首字母\n例如 lunyu、ly、论语 ext:pdf" : "没有找到匹配的文件"
+            emptyLabel.stringValue = text.isEmpty
+                ? "输入文件名、拼音全拼或首字母\n例如 lunyu、ly、论语 ext:pdf\n用 KongSeek 打开过的文件会列在这里"
+                : "没有找到匹配的文件"
         }
     }
 
@@ -290,7 +292,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case .ready(let entries, _):
             parts.append("已索引 \(entries.formatted()) 项")
         }
-        if !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
+        if outcome.isRecentList {
+            if !results.isEmpty { parts.append("最近打开 \(results.count) 项 · ⌘⌫ 从列表移除") }
+        } else if !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
             let shown = results.count < outcome.matchCount ? "显示前 \(results.count) 项" : "\(results.count) 项"
             parts.append("匹配 \(outcome.matchCount.formatted()) 项，\(shown)")
         }
@@ -340,6 +344,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             switch keyCode {
             case 36, 76: // Return, Enter
                 revealSelected()
+                return true
+            case 51: // Delete: remove from the recent list
+                guard outcome.isRecentList, let item = selectedItem else { return false }
+                Preferences.forget(item.path)
+                runSearch()
                 return true
             case 31: // O
                 openSelected()
@@ -447,22 +456,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         return image
     }
 
-    /// The name with the typed words marked (pinyin matches are not marked).
+    /// The name with the parts that matched marked: typed text, pinyin
+    /// (full spelling or initials) or an abbreviation.
     private func highlighted(_ name: String) -> NSAttributedString {
         let result = NSMutableAttributedString(string: name, attributes: [
             .font: NSFont.systemFont(ofSize: 14, weight: .medium),
             .foregroundColor: NSColor.labelColor,
         ])
-        let source = name as NSString
-        for word in outcome.highlightWords where !word.isEmpty {
-            var searchRange = NSRange(location: 0, length: source.length)
-            while searchRange.length > 0 {
-                let found = source.range(of: word, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], range: searchRange)
-                if found.location == NSNotFound { break }
-                result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.35), range: found)
-                let next = found.location + max(1, found.length)
-                searchRange = NSRange(location: next, length: source.length - next)
-            }
+        for range in MatchHighlighter.ranges(in: name, words: outcome.highlightWords) {
+            result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.35), range: range)
         }
         return result
     }

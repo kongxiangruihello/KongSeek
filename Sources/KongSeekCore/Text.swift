@@ -24,7 +24,7 @@ public enum SearchText {
 /// Pinyin spellings used for matching Chinese names with Latin input.
 public enum Pinyin {
     /// Phrase readings that avoid blindly expanding polyphonic characters (copied from 3.2).
-    private static let phraseReadings: [(phrase: String, latin: String, reading: String)] = {
+    static let phraseReadings: [(phrase: String, latin: String, reading: String)] = {
         let readings = [
             "重庆": "chong qing", "重阳": "chong yang", "重新": "chong xin", "重量": "zhong liang",
             "音乐": "yin yue", "乐器": "yue qi", "乐清": "yue qing", "长乐": "chang le", "快乐": "kuai le",

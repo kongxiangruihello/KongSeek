@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import KongSeekCore
 
 struct ResultItem: Equatable {
@@ -10,6 +10,8 @@ struct ResultItem: Equatable {
 
 struct SearchOutcome {
     var items: [ResultItem] = []
+    /// Showing recently opened items because the query is empty.
+    var isRecentList = false
     /// Matches before the display limit and attribute filters.
     var matchCount = 0
     var highlightWords: [String] = []
@@ -170,9 +172,13 @@ final class IndexService {
         searchToken += 1
         let token = searchToken
         let counts = Preferences.openCounts
+        let opened = Preferences.lastOpened
         queue.async { [weak self] in
             guard let self else { return }
-            let outcome = self.runSearch(text, precision: precision, limit: limit, counts: counts)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let outcome = trimmed.isEmpty
+                ? Self.recentItems(counts: counts, opened: opened)
+                : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts)
             DispatchQueue.main.async {
                 guard token == self.searchToken else { return }
                 completion(outcome)
@@ -180,15 +186,37 @@ final class IndexService {
         }
     }
 
-    private func runSearch(_ text: String, precision: MatchPrecision, limit: Int, counts: [String: Int]) -> SearchOutcome {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let index, let session else { return SearchOutcome() }
+    /// Items opened from KongSeek, most used and most recent first: each open
+    /// counts less the longer ago the item was last opened.
+    static func recentItems(counts: [String: Int], opened: [String: Double], limit: Int = 30) -> SearchOutcome {
+        let now = Date().timeIntervalSince1970
+        let fileManager = FileManager.default
+        let ranked = opened.map { path, time -> (String, Double) in
+            let ageDays = max(0, now - time) / 86_400
+            return (path, Double(counts[path] ?? 1) / (1 + ageDays / 7))
+        }.sorted { $0.1 > $1.1 }
+        var items: [ResultItem] = []
+        for (path, _) in ranked where items.count < limit {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory) else { continue }
+            let isPackage = isDirectory.boolValue && NSWorkspace.shared.isFilePackage(atPath: path)
+            items.append(ResultItem(path: path, name: (path as NSString).lastPathComponent, isFolder: isDirectory.boolValue && !isPackage, score: 0))
+        }
+        var outcome = SearchOutcome(items: items)
+        outcome.isRecentList = true
+        outcome.matchCount = items.count
+        return outcome
+    }
+
+    private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int]) -> SearchOutcome {
+        guard let index, let session else { return SearchOutcome() }
         let query = SearchQuery(trimmed)
         var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions)
         let hits = session.search(query, precision: precision)
         outcome.matchCount = hits.count
-        // Highest score first; among equal scores, files opened more often, then
-        // shorter names. Ties are re-ranked group by group, only as far as shown.
+        // Highest score first; among equal scores: applications, then items opened
+        // more often, then recently modified, then shorter names. Ties are
+        // re-ranked group by group, only as far as shown.
         let sorted = hits.sorted { a, b in
             if a.score != b.score { return a.score > b.score }
             return a.id < b.id
@@ -203,12 +231,18 @@ final class IndexService {
             while end < sorted.count && sorted[end].score == score { end += 1 }
             var group = Array(sorted[position..<end])
             if group.count > 1 && group.count <= 2000 {
-                let keys = Dictionary(uniqueKeysWithValues: group.map { hit in
-                    (hit.id, (opens: counts[index.path(of: hit.id)] ?? 0, length: index.name(of: hit.id).count))
+                struct TieKey { let isApp: Bool; let opens: Int; let modified: Double; let length: Int }
+                let keys = Dictionary(uniqueKeysWithValues: group.map { hit -> (Int32, TieKey) in
+                    let name = index.name(of: hit.id)
+                    let path = index.path(of: hit.id)
+                    let isApp = index.flags(of: hit.id).contains(.package) && name.lowercased().hasSuffix(".app")
+                    return (hit.id, TieKey(isApp: isApp, opens: counts[path] ?? 0, modified: Self.modificationTime(path), length: name.count))
                 })
                 group.sort { a, b in
                     let ka = keys[a.id]!, kb = keys[b.id]!
+                    if ka.isApp != kb.isApp { return ka.isApp }
                     if ka.opens != kb.opens { return ka.opens > kb.opens }
+                    if ka.modified != kb.modified { return ka.modified > kb.modified }
                     if ka.length != kb.length { return ka.length < kb.length }
                     return a.id < b.id
                 }
@@ -231,6 +265,15 @@ final class IndexService {
         }
         outcome.items = items
         return outcome
+    }
+}
+
+extension IndexService {
+    /// Modification time without following symlinks; 0 if unreadable.
+    static func modificationTime(_ path: String) -> Double {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return 0 }
+        return Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
     }
 }
 
