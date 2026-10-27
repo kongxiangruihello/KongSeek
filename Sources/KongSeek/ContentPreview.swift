@@ -9,6 +9,8 @@ enum ContentPreview {
         var snippet: Snippet
         /// 1-based PDF page, if known.
         var page: Int?
+        /// From text recognition rather than the file's own text.
+        var recognized = false
     }
 
     enum Outcome {
@@ -26,7 +28,10 @@ enum ContentPreview {
     private static let richTextExtensions: Set<String> = ["docx", "doc", "rtf", "rtfd", "odt", "wordml"]
 
     /// Slow for big files: call off the main thread.
-    static func find(in url: URL, needles: [String]) -> Outcome {
+    static func find(in url: URL, needles: [String], ocr: OCRStore? = nil) -> Outcome {
+        if let hit = ocr?.hit(for: url.path, needles: needles) {
+            return .found(Found(snippet: hit.snippet, page: hit.page, recognized: true))
+        }
         let ext = url.pathExtension.lowercased()
         guard ext == "pdf" || plainTextExtensions.contains(ext) || richTextExtensions.contains(ext) else { return .unsupported }
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .ubiquitousItemDownloadingStatusKey])

@@ -6,6 +6,8 @@ struct ResultItem: Equatable {
     let name: String
     let isFolder: Bool
     let score: Int
+    /// Found in text recognized from a scan (OCR), not in the file's own text.
+    var recognized = false
 }
 
 struct SearchOutcome {

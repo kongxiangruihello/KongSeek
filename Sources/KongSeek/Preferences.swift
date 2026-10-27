@@ -106,4 +106,37 @@ enum Preferences {
         defaults.set(counts, forKey: "openCounts")
         defaults.set(times, forKey: "lastOpened")
     }
+
+    // MARK: - Text recognition (OCR)
+
+    static var ocrEnabled: Bool {
+        get { defaults.object(forKey: "ocrEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "ocrEnabled") }
+    }
+
+    /// Folders whose scanned PDFs and images are recognized. Empty by default:
+    /// recognition is slow, so the user picks where it is worth it.
+    static var ocrFolders: [String] {
+        get { defaults.stringArray(forKey: "ocrFolders") ?? [] }
+        set { defaults.set(newValue, forKey: "ocrFolders") }
+    }
+
+    static var ocrPageLimit: Int {
+        get { (defaults.object(forKey: "ocrPageLimit") as? Int) ?? 200 }
+        set { defaults.set(newValue, forKey: "ocrPageLimit") }
+    }
+
+    static var ocrOnlyOnPower: Bool {
+        get { defaults.object(forKey: "ocrOnlyOnPower") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "ocrOnlyOnPower") }
+    }
+
+    static var ocrDownloadFromICloud: Bool {
+        get { defaults.bool(forKey: "ocrDownloadFromICloud") }
+        set { defaults.set(newValue, forKey: "ocrDownloadFromICloud") }
+    }
+
+    static var ocrSettings: OCRService.Settings {
+        OCRService.Settings(enabled: ocrEnabled, folders: ocrFolders, pageLimit: ocrPageLimit, onlyOnPower: ocrOnlyOnPower, downloadFromICloud: ocrDownloadFromICloud)
+    }
 }

@@ -9,10 +9,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: HotKey!
     private let doubleTap = DoubleTapMonitor()
     private var settingsWindow: SettingsWindowController?
+    private var ocr: OCRService!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
-        searchWindow = SearchWindowController(service: service)
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        ocr = OCRService(directory: support.appendingPathComponent("KongSeek/OCR"))
+        ocr.configure(Preferences.ocrSettings)
+        searchWindow = SearchWindowController(service: service, ocr: ocr)
         service.onStateChange = { [weak self] _ in self?.searchWindow.indexStateChanged() }
         hotKey = HotKey { [weak self] in self?.searchWindow.toggle() }
         hotKey.register(Preferences.searchShortcut)
@@ -107,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settingsWindow = SettingsWindowController(
                 hotKey: hotKey,
                 doubleTap: doubleTap,
+                ocr: ocr,
                 onIndexSettingsChange: { [weak self] in self?.applySettings() },
                 onRebuild: { [weak self] in self?.service.rebuild() },
                 indexStatus: { [weak self] in self?.stateDescription ?? "" }

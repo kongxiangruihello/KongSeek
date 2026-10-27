@@ -36,6 +36,7 @@ final class SearchPanel: NSPanel, QLPreviewPanelDataSource {
 final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     let panel: SearchPanel
     private let service: IndexService
+    private let ocr: OCRService
     private let field = NSTextField()
     private let table = NSTableView()
     private let preview: QLPreviewView
@@ -50,6 +51,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private var snippetHeight: NSLayoutConstraint!
     private var snippetToken = 0
     private var pendingContentSearch: DispatchWorkItem?
+    /// The full-text search in progress: Spotlight results and recognized-text
+    /// (OCR) results arrive separately and are merged.
+    private var contentToken = 0
+    private var spotlightItems: [ResultItem] = []
+    private var spotlightFinished = false
+    private var ocrItems: [ResultItem] = []
+    private var contentQuery = SearchQuery("")
     private var results: [ResultItem] = []
     private var outcome = SearchOutcome()
     private var keyMonitor: Any?
@@ -77,8 +85,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private static let width: CGFloat = 800
     private static let height: CGFloat = 500
 
-    init(service: IndexService) {
+    init(service: IndexService, ocr: OCRService) {
         self.service = service
+        self.ocr = ocr
         panel = SearchPanel(
             contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.height),
             styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
@@ -347,6 +356,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let query = SearchQuery(text)
         guard let queryString = SpotlightQuery.content(for: query) else {
+            contentToken += 1
             contentSearch.stop()
             var empty = SearchOutcome()
             empty.isContent = true
@@ -356,32 +366,74 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         let rules = Preferences.rules
         let roots = NameIndex.effectiveRoots(Preferences.roots, rules: rules)
+        let ocrRoots = roots + Preferences.ocrFolders.map(Paths.canonical)
         let excluded = query.excluded.map(SearchText.fold)
+        contentToken += 1
+        let token = contentToken
+        contentQuery = query
+        spotlightItems = []
+        spotlightFinished = false
+        ocrItems = []
+
+        // Recognized text of scans, searched in memory off the main thread.
+        let store = ocr.store
+        let needles = query.highlightWords
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let hits = store.search(needles, limit: 300) { path in
+                !rules.excludes(path: path, roots: ocrRoots)
+            }
+            let items = hits.compactMap { hit -> ResultItem? in
+                let name = (hit.path as NSString).lastPathComponent
+                let folded = SearchText.fold(name)
+                guard !excluded.contains(where: { folded.contains($0) }), Self.accepts(name: folded, query: query) else { return nil }
+                if query.needsMetadata && !query.acceptsMetadata(EntryMetadata.read(path: hit.path)) { return nil }
+                return ResultItem(path: hit.path, name: name, isFolder: false, score: 0, recognized: true)
+            }
+            DispatchQueue.main.async {
+                guard let self, token == self.contentToken else { return }
+                self.ocrItems = items
+                self.publishContent()
+            }
+        }
+
         let started = contentSearch.search(queryString, scopes: roots) { [weak self] hits, finished in
-            guard let self else { return }
-            let kept = hits.filter { hit in
+            guard let self, token == self.contentToken else { return }
+            self.spotlightItems = hits.filter { hit in
                 guard !rules.excludes(path: hit.path, roots: roots) else { return false }
                 let name = SearchText.fold((hit.path as NSString).lastPathComponent)
                 return !excluded.contains { name.contains($0) }
             }.sorted { a, b in
                 if a.relevance != b.relevance { return a.relevance > b.relevance }
                 return (a.modified ?? .distantPast) > (b.modified ?? .distantPast)
-            }
-            var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions)
-            outcome.isContent = true
-            outcome.gathering = !finished
-            outcome.matchCount = kept.count
-            outcome.items = kept.prefix(200).map { hit in
+            }.map { hit in
                 ResultItem(path: hit.path, name: (hit.path as NSString).lastPathComponent, isFolder: hit.isFolder, score: Int(hit.relevance * 1000))
             }
-            self.show(outcome)
+            self.spotlightFinished = finished
+            self.publishContent()
         }
         if !started {
-            var failed = SearchOutcome()
-            failed.isContent = true
-            failed.notes = ["无法启动 Spotlight 搜索"]
-            show(failed)
+            spotlightFinished = true
+            publishContent(note: "无法启动 Spotlight 搜索")
         }
+    }
+
+    /// Shows scans whose recognized text matches first, then Spotlight's results.
+    private func publishContent(note: String? = nil) {
+        let query = contentQuery
+        var seen = Set(ocrItems.map(\.path))
+        let merged = ocrItems + spotlightItems.filter { seen.insert($0.path).inserted }
+        var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions + (note.map { [$0] } ?? []))
+        outcome.isContent = true
+        outcome.gathering = !spotlightFinished
+        outcome.matchCount = merged.count
+        outcome.items = Array(merged.prefix(200))
+        show(outcome)
+    }
+
+    /// The ext: and -ext: parts of a query, for results that did not come from Spotlight.
+    private static func accepts(name foldedName: String, query: SearchQuery) -> Bool {
+        if !query.extensions.isEmpty && !query.extensions.contains(where: { foldedName.hasSuffix("." + $0) }) { return false }
+        return !query.excludedExtensions.contains { foldedName.hasSuffix("." + $0) }
     }
 
     func runSearch() {
@@ -390,6 +442,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             runContentSearch()
             return
         }
+        contentToken += 1
         contentSearch.stop()
         if let folder = browsedFolder {
             service.browse(folder: folder, filter: field.stringValue) { [weak self] outcome in
@@ -783,7 +836,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let item = results[row]
         cell.configure(
             name: highlighted(item.name),
-            location: Self.displayLocation(of: item.path),
+            location: Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : ""),
             icon: icon(for: item.path),
             shortcut: row < 9 ? "⌘\(row + 1)" : ""
         )
@@ -811,9 +864,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             return
         }
         let needles = outcome.highlightWords
+        let store = ocr.store
         snippetLabel.attributedStringValue = NSAttributedString(string: "正在查找命中位置…", attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 12)])
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let found = ContentPreview.find(in: URL(fileURLWithPath: item.path), needles: needles)
+            let found = ContentPreview.find(in: URL(fileURLWithPath: item.path), needles: needles, ocr: store)
             DispatchQueue.main.async {
                 guard let self, token == self.snippetToken else { return }
                 self.snippetLabel.attributedStringValue = Self.snippetText(found)
@@ -829,6 +883,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             let result = NSMutableAttributedString()
             if let page = found.page {
                 result.append(NSAttributedString(string: "第 \(page) 页  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]))
+            }
+            if found.recognized {
+                result.append(NSAttributedString(string: "识别文字  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.systemOrange]))
             }
             let start = result.length
             result.append(NSAttributedString(string: found.snippet.text, attributes: base))
