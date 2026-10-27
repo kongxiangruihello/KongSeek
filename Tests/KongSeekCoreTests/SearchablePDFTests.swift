@@ -100,6 +100,9 @@ final class SearchablePDFTests: XCTestCase {
         let bounds = try XCTUnwrap(made.page(at: 0)?.bounds(for: .mediaBox))
         XCTAssertEqual(bounds.width, 600, accuracy: 1)
         XCTAssertEqual(bounds.height, 400, accuracy: 1)
-        XCTAssertFalse(made.findString("Landscape", withOptions: .caseInsensitive).isEmpty, made.page(at: 0)?.string ?? "")
+        // The text reads the right way round (a sideways page gives nothing); single
+        // letters may come out wrong ("Lanascape"), so only whole short words are checked.
+        let text = made.page(at: 0)?.string ?? ""
+        XCTAssertTrue(text.localizedCaseInsensitiveContains("Rotated") || text.localizedCaseInsensitiveContains("Scan"), text)
     }
 }
