@@ -109,4 +109,20 @@ final class SessionAndPersistenceTests: XCTestCase {
         try data.prefix(data.count / 2).write(to: file)
         XCTAssertThrowsError(try NameIndex.load(from: file))
     }
+
+    /// An index from an earlier version is searched while the new one is built (0.20).
+    func testOlderFormatLoadsOnlyWhenAsked() throws {
+        let file = URL(fileURLWithPath: root + "-old.kfidx")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try index.save(to: file)
+        var data = try Data(contentsOf: file)
+        let older = NameIndex.fileFormatVersion - 1
+        withUnsafeBytes(of: older.littleEndian) { data.replaceSubrange(4..<8, with: $0) }
+        try data.write(to: file)
+        XCTAssertThrowsError(try NameIndex.load(from: file))
+        let loaded = try NameIndex.load(from: file, acceptingOlderFormats: true)
+        XCTAssertEqual(loaded.loadedFormat, older)
+        XCTAssertEqual(loaded.entryCount, index.entryCount)
+        XCTAssertEqual(loaded.search(["合同"]).count, index.search(["合同"]).count)
+    }
 }

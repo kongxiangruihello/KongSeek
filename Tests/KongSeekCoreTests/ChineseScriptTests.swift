@@ -35,4 +35,24 @@ final class ChineseScriptTests: XCTestCase {
         try store.save(OCRRecord(path: "/x/scan.pdf", size: 1, modified: Date(), pages: ["學而時習之"], totalPages: 1))
         XCTAssertEqual(store.search(["学而"]).map(\.path), ["/x/scan.pdf"])
     }
+
+    // MARK: Variant characters (0.20)
+
+    func testVariantsFoldTogether() {
+        for (variant, standard) in [("峯", "峰"), ("綫裝書", "线装书"), ("説文解字", "说文解字"), ("羣書治要", "群书治要"), ("鷄", "鸡"), ("爲學", "为学")] {
+            XCTAssertEqual(SearchText.fold(variant), SearchText.fold(standard), variant)
+            XCTAssertEqual((SearchText.simplifiedChinese(variant) as NSString).length, (variant as NSString).length, variant)
+        }
+        XCTAssertEqual(SearchText.fold("论语 report"), "论语 report", "simplified text is unchanged")
+    }
+
+    func testVariantNamesFound() throws {
+        let root = Paths.canonical(FileManager.default.temporaryDirectory.appendingPathComponent("variant-\(UUID().uuidString)").path)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try makeTree(root, ["羣書治要.pdf", "説文解字注.pdf", "其他.pdf"])
+        let index = NameIndex.build(roots: [root], rules: .standard(home: root))
+        func names(_ text: String) -> [String] { index.search(SearchQuery(text)).map { index.name(of: $0.id) }.sorted() }
+        XCTAssertEqual(names("群书治要"), ["羣書治要.pdf"])
+        XCTAssertEqual(names("说文"), ["説文解字注.pdf"])
+    }
 }

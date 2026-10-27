@@ -27,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var scanned: ScannedPDFWindowController?
     private var statusWindow: StatusWindowController?
     private var fileList: FileListWindowController?
+    private var tidyWindow: DownloadTidyWindowController?
+    /// Ebooks downloaded in the last month under site names, offered for tidying (0.20).
+    private var tidyCandidates: [String] = []
     /// Files downloaded in the last week, for the menu (refreshed in the background).
     private var recentDownloads: [FileEntry] = []
     private var downloadsTimer: Timer?
@@ -158,6 +161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             downloadsItem.submenu = downloads
             menu.addItem(downloadsItem)
         }
+        if !tidyCandidates.isEmpty {
+            menu.addItem(item("整理新下载的电子书（\(tidyCandidates.count) 本）…", #selector(openTidy)))
+        }
         if Preferences.clipboardEnabled {
             menu.addItem(item(Preferences.clipboardPaused ? "继续记录剪贴板" : "暂停记录剪贴板", #selector(toggleClipboardPause)))
         }
@@ -167,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("立即重建索引", #selector(rebuildIndex)))
         menu.addItem(.separator())
         menu.addItem(item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)))
+        menu.addItem(item("两版讲义对比…", #selector(openCompare)))
         menu.addItem(item("批量重命名…", #selector(openBatchRename)))
         menu.addItem(item("查找重复与相似文件…", #selector(openDuplicates)))
         menu.addItem(item("空间分析…", #selector(openSpace)))
@@ -185,7 +192,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .loading:
             return "正在载入索引…"
         case .building(let entries):
-            return "正在建立索引 · 已收录 \(entries.formatted()) 项"
+            let estimate = service.buildEstimate
+            return estimate > 0
+                ? "正在重建索引 \(min(99, entries * 100 / estimate))% · 期间照常搜索"
+                : "正在建立索引 · 已收录 \(entries.formatted()) 项"
         case .ready(let entries, let updated):
             let time = updated.formatted(date: .omitted, time: .shortened)
             return "已索引 \(entries.formatted()) 项 · 更新于 \(time)"
@@ -453,6 +463,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fileList?.present(source)
     }
 
+    @objc private func openTidy() {
+        if tidyWindow == nil { tidyWindow = DownloadTidyWindowController() }
+        tidyWindow?.present(tidyCandidates)
+    }
+
+    @objc private func openCompare() {
+        CompareWindowController.shared.present(old: nil, new: nil)
+    }
+
     @objc private func chooseFileListFolder() {
         if fileList == nil { fileList = FileListWindowController(service: service) }
         fileList?.chooseFolder()
@@ -474,6 +493,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             downloadsTimer = timer
         }
         service.recentDownloads { [weak self] entries in self?.recentDownloads = entries }
+        service.recentDownloads(days: 30, limit: 300) { [weak self] entries in
+            self?.tidyCandidates = DownloadTidyModel.candidates(entries)
+        }
     }
 
     @objc private func openSpace() {

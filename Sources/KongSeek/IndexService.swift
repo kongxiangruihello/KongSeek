@@ -83,6 +83,11 @@ final class IndexService {
     // Only touched on main.
     private var searchToken = 0
     private(set) var state: IndexState = .loading
+    /// While building: about how many items the finished index will have (the previous
+    /// index's count), for a progress figure; 0 when unknown.
+    private(set) var buildEstimate = 0
+    /// Whether searches are answered (by the previous index) while a new one is built.
+    var searchableWhileBuilding: Bool { buildEstimate > 0 }
     /// Names inside .zip archives, searched along with the index when set.
     var archives: ArchiveIndex?
     var onStateChange: ((IndexState) -> Void)?
@@ -100,6 +105,12 @@ final class IndexService {
             if let saved = try? NameIndex.load(from: storeURL), isUsable(saved) {
                 install(saved, watchingFrom: saved.lastEventID)
             } else {
+                // An index from an earlier version (or with stale event ids) for the same
+                // folders is searched while the new one is built, so search never stops (0.20).
+                if let old = try? NameIndex.load(from: storeURL, acceptingOlderFormats: true), old.rules == rules,
+                   old.roots == NameIndex.effectiveRoots(roots, rules: rules) {
+                    install(old, watchingFrom: FileChangeWatcher.currentEventID, announce: false)
+                }
                 startBuild()
             }
         }
@@ -139,6 +150,8 @@ final class IndexService {
         let roots = self.roots, rules = self.rules
         // Events from this moment on are replayed onto the new index afterwards.
         let since = FileChangeWatcher.currentEventID
+        let estimate = index?.entryCount ?? 0
+        DispatchQueue.main.async { [weak self] in self?.buildEstimate = estimate }
         publish(.building(entries: 0))
         buildQueue.async { [self] in
             let built = NameIndex.build(roots: roots, rules: rules, progress: { [weak self] progress in
@@ -155,7 +168,7 @@ final class IndexService {
         }
     }
 
-    private func install(_ newIndex: NameIndex, watchingFrom eventID: UInt64) {
+    private func install(_ newIndex: NameIndex, watchingFrom eventID: UInt64, announce: Bool = true) {
         index = newIndex
         session = SearchSession(index: newIndex)
         watcher?.stop()
@@ -164,7 +177,7 @@ final class IndexService {
         }
         watcher.start()
         self.watcher = watcher
-        publishReady()
+        if announce { publishReady() }
     }
 
     private func handle(_ batch: FileChangeWatcher.Batch) {

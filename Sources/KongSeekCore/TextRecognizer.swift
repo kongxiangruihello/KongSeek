@@ -22,6 +22,21 @@ public enum TextRecognizer {
         }).joined(separator: "\n")
     }
 
+    /// Recognized lines with their boxes (normalized 0…1, origin at the bottom left,
+    /// as Vision gives them), for laying text over a scanned page (0.20).
+    public static func recognizeLines(_ image: CGImage) throws -> [(text: String, box: CGRect)] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        let supported = (try? request.supportedRecognitionLanguages()) ?? []
+        let languages = preferredLanguages.filter { supported.contains($0) }
+        if !languages.isEmpty { request.recognitionLanguages = languages }
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        return (request.results ?? []).compactMap { observation in
+            observation.topCandidates(1).first.map { (text: $0.string, box: observation.boundingBox) }
+        }
+    }
+
     /// Reading order for horizontal text: rows from the top (Vision's y grows upwards), then left to right.
     static func orderedLines(_ lines: [(text: String, box: CGRect)]) -> [String] {
         lines.sorted { a, b in

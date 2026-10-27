@@ -10,8 +10,9 @@ public enum IndexStoreError: Error, Equatable {
 /// a few large memory copies instead of decoding one JSON string per path (3.2).
 extension NameIndex {
     static let fileMagic: UInt32 = 0x4B46_4E49 // "KFNI"
-    /// 2 (0.16): folded names are also converted to simplified Chinese; older files are rebuilt.
-    public static let fileFormatVersion: UInt32 = 2
+    /// 2 (0.16): folded names are also converted to simplified Chinese; 3 (0.20): variant
+    /// characters too (峯 → 峰). Older files are rebuilt.
+    public static let fileFormatVersion: UInt32 = 3
 
     /// Writes the index atomically (compacting it first).
     public func save(to url: URL) throws {
@@ -42,13 +43,18 @@ extension NameIndex {
         try writer.data.write(to: url, options: .atomic)
     }
 
-    public static func load(from url: URL) throws -> NameIndex {
+    /// With `acceptingOlderFormats`, a file written by an earlier version (same layout,
+    /// older folding) is loaded too, to search while a new index is built (0.20);
+    /// `loadedFormat` then says which it was.
+    public static func load(from url: URL, acceptingOlderFormats: Bool = false) throws -> NameIndex {
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         return try data.withUnsafeBytes { raw -> NameIndex in
             var reader = BinaryReader(base: raw)
             guard try reader.u32() == fileMagic else { throw IndexStoreError.notAnIndex }
             let version = try reader.u32()
-            guard version == fileFormatVersion else { throw IndexStoreError.unsupportedVersion(version) }
+            guard version == fileFormatVersion || (acceptingOlderFormats && version >= 1 && version < fileFormatVersion) else {
+                throw IndexStoreError.unsupportedVersion(version)
+            }
             let lastEventID = try reader.u64()
             let updated = Date(timeIntervalSince1970: Double(bitPattern: try reader.u64()))
             let isComplete = try reader.u8() == 1
@@ -89,6 +95,7 @@ extension NameIndex {
             index.pinyinFull = columns[2]
             index.pinyinInitials = columns[3]
             index.derivedReady = true
+            index.loadedFormat = version
             index.rebuildDirectoryTables()
             return index
         }

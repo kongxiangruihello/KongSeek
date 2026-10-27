@@ -20,8 +20,8 @@ public enum SearchText {
 
     private static let hanFirst: UInt32 = 0x3400, hanLast: UInt32 = 0x9FFF
 
-    /// Simplified form of each traditional character in U+3400–U+9FFF that the system's
-    /// Traditional-Simplified transform maps to exactly one other character there (0 = none).
+    /// Simplified form of each traditional or variant character in U+3400–U+9FFF: the
+    /// system's Traditional-Simplified transform, then OpenCC's character table (0 = none).
     /// One character at a time and length-preserving, so positions in a converted
     /// string are positions in the original (highlighting relies on this).
     private static let simplifiedTable: [UInt16] = {
@@ -48,6 +48,19 @@ public enum SearchText {
                 }
             }
             start = end
+        }
+        // OpenCC's table adds variant forms (峯 → 峰, 綫 → 线, 説 → 说) the system
+        // transform leaves alone, and decides where the two differ (0.20).
+        let scalars = Array(SearchText.openCCPairs.unicodeScalars.filter { $0.value >= SearchText.hanFirst && $0.value <= SearchText.hanLast })
+        var index = 0
+        while index + 1 < scalars.count {
+            SearchText.record(scalars[index], scalars[index + 1], in: &table)
+            index += 2
+        }
+        // One step only: a simplified form that itself maps on (苧 → 苎) is followed.
+        for slot in table.indices where table[slot] != 0 {
+            let next = table[Int(UInt32(table[slot]) - SearchText.hanFirst)]
+            if next != 0 && Int(UInt32(next) - SearchText.hanFirst) != slot { table[slot] = next }
         }
         return table
     }()

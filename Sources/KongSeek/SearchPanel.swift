@@ -614,7 +614,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         switch service.state {
         case .loading where !text.isEmpty:
             emptyLabel.stringValue = "正在载入索引…"
-        case .building(let entries) where !text.isEmpty:
+        case .building(let entries) where !text.isEmpty && !service.searchableWhileBuilding:
             emptyLabel.stringValue = "正在建立索引，已收录 \(entries.formatted()) 项。\n首次建立需要一点时间，之后启动即可直接搜索。"
         default:
             emptyLabel.stringValue = text.isEmpty
@@ -629,7 +629,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case .loading:
             parts.append("正在载入索引")
         case .building(let entries):
-            parts.append("正在建立索引 · \(entries.formatted()) 项")
+            let estimate = service.buildEstimate
+            if estimate > 0 {
+                let percent = min(99, entries * 100 / estimate)
+                parts.append("正在重建索引 \(percent)%（\(entries.formatted()) / 约 \(estimate.formatted()) 项），期间照常搜索")
+            } else {
+                parts.append("正在建立索引 · \(entries.formatted()) 项")
+            }
         case .ready(let entries, _):
             parts.append("已索引 \(entries.formatted()) 项")
         }
@@ -1354,6 +1360,18 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if DuplicateFinder.bookExtensions.contains((item.path as NSString).pathExtension.lowercased()) {
             add("拷贝为参考文献（GB/T 7714）") { [weak self] in
                 self?.statusLabel.stringValue = SearchWindowController.copyReference(for: item.path)
+            }
+        }
+        if !item.isFolder && ["pptx", "pdf", "docx"].contains(ext) {
+            add("与另一版本比较…") { [weak self] in
+                self?.hide()
+                CompareWindowController.shared.present(old: nil, new: URL(fileURLWithPath: item.path))
+            }
+        }
+        if !item.isFolder && ext == "pdf" {
+            add("生成可搜索的 PDF（另存一份）") { [weak self] in
+                self?.hide()
+                SearchablePDFWindowController.shared.start(URL(fileURLWithPath: item.path))
             }
         }
         add("把全部结果放入文件清单（书单、参考文献、批量操作）") { [weak self] in

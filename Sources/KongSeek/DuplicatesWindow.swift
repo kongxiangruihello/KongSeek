@@ -273,6 +273,13 @@ struct DuplicatesView: View {
                 .font(.caption.monospacedDigit()).foregroundColor(.secondary).frame(width: 70, alignment: .trailing)
             Text(file.modified.formatted(date: .abbreviated, time: .shortened))
                 .font(.caption.monospacedDigit()).foregroundColor(.secondary).frame(width: 130, alignment: .trailing)
+            if group.kind == .versions && !isNewest, let newest = model.visible(group).first {
+                Button("对比") {
+                    CompareWindowController.shared.present(old: URL(fileURLWithPath: file.path), new: URL(fileURLWithPath: newest.path))
+                }
+                .controlSize(.small)
+                .help("逐张（逐页）对比这个旧版本与最新版本，看改了哪些内容")
+            }
             Button { model.open(file) } label: { Image(systemName: "arrow.up.forward.square") }.buttonStyle(.borderless).help("打开")
             Button { model.reveal(file) } label: { Image(systemName: "folder") }.buttonStyle(.borderless).help("在访达中显示")
             Button { message = model.trash([file]) } label: { Image(systemName: "trash") }.buttonStyle(.borderless).help("移到废纸篓（可从废纸篓放回）")

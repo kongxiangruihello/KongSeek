@@ -259,6 +259,9 @@ struct ScannedPDFView: View {
             Text((file.path as NSString).lastPathComponent).font(.callout).lineLimit(1).truncationMode(.middle)
             Spacer()
             Text("\(file.pages) 页 · \(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))").font(.caption.monospacedDigit()).foregroundColor(.secondary)
+            Button("生成可搜索 PDF") { SearchablePDFWindowController.shared.start(URL(fileURLWithPath: file.path)) }
+                .controlSize(.small)
+                .help("另存一份带文字层的 PDF，在“预览”等应用中也能搜索、拷贝文字")
             Button { model.open(file.path) } label: { Image(systemName: "arrow.up.forward.square") }.buttonStyle(.borderless).help("打开")
             Button { model.reveal(file.path) } label: { Image(systemName: "magnifyingglass") }.buttonStyle(.borderless).help("在访达中显示")
         }

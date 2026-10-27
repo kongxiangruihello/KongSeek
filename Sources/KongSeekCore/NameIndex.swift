@@ -90,6 +90,9 @@ public final class NameIndex {
     var stemLengths: [UInt16] = []
     var parents: [Int32] = []
     var flags: [UInt8] = []
+    /// The file format this index was loaded from (0 when built here); older formats
+    /// are only searched while a new index is being built (0.20).
+    public internal(set) var loadedFormat: UInt32 = 0
     var deletedCount = 0
     /// Folded names, pinyin and stem lengths exist for every entry.
     var derivedReady = false
