@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import KongSeekCore
+import KongSeekText
 
 /// State of the batch-rename window.
 final class BatchRenameModel: ObservableObject {
@@ -13,8 +14,38 @@ final class BatchRenameModel: ObservableObject {
     /// Tags the last rename added (path after renaming → tags), removed again by undo.
     private var addedTags: [String: [String]] = [:]
 
+    /// Chinese titles from the books' own metadata for names that give only pinyin (0.21).
+    @Published private(set) var ebookTitles: [String: String] = [:]
+    private var titlesLooked = Set<String>()
+
     var previews: [BatchRename.Preview] {
-        BatchRename.plan(items, rule: rule) { FileManager.default.fileExists(atPath: $0) }
+        var rule = self.rule
+        rule.ebookTitles = ebookTitles
+        return BatchRename.plan(items, rule: rule) { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    /// Looks in the PDF / EPUB metadata of ebooks whose names give a pinyin title.
+    func lookUpEbookTitles() {
+        let wanted = items.map(\.path).filter { path in
+            guard !titlesLooked.contains(path) else { return false }
+            let stem = EbookName.splitMark(((path as NSString).lastPathComponent as NSString).deletingPathExtension).stem
+            guard let parsed = EbookName.parse(stem) else { return false }
+            return !EbookName.containsHan(parsed.title)
+        }
+        guard !wanted.isEmpty else { return }
+        titlesLooked.formUnion(wanted)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var found: [String: String] = [:]
+            for path in wanted {
+                let info = BookInfo.read(URL(fileURLWithPath: path))
+                if info.titleSource != nil { found[path] = info.name.title }
+            }
+            DispatchQueue.main.async {
+                guard let self, !found.isEmpty else { return }
+                self.ebookTitles.merge(found) { _, new in new }
+                self.message = "\(found.count) 本书的文件名只有拼音书名，已从书内的文档信息中找到中文书名。"
+            }
+        }
     }
 
     func add(_ urls: [URL]) {
@@ -27,6 +58,7 @@ final class BatchRenameModel: ObservableObject {
             known.insert(path)
         }
         message = nil
+        if rule.mode == .ebook { lookUpEbookTitles() }
     }
 
     func remove(_ paths: Set<String>) {
@@ -215,6 +247,9 @@ struct BatchRenameView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 390)
+            .onChange(of: model.rule.mode) { mode in
+                if mode == .ebook { model.lookUpEbookTitles() }
+            }
             if model.rule.mode == .ebook {
                 HStack {
                     Picker("改为", selection: $model.rule.ebookStyle) {

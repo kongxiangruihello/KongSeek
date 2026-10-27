@@ -64,4 +64,42 @@ final class SearchablePDFTests: XCTestCase {
         XCTAssertThrowsError(try SearchablePDF.make(from: source, to: folder.appendingPathComponent("x.pdf"), isCancelled: { true }))
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("x.pdf").path))
     }
+
+    /// A landscape scan stored sideways with /Rotate 90 comes out upright, with text.
+    func testRotatedPage() throws {
+        let width = 1200, height = 800
+        let bitmap = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        bitmap.setFillColor(.white)
+        bitmap.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "Rotated Landscape Scan",
+                                                                       attributes: [.font: NSFont.systemFont(ofSize: 72), .foregroundColor: NSColor.black]))
+        bitmap.textPosition = CGPoint(x: 80, y: 380)
+        CTLineDraw(line, bitmap)
+        let image = bitmap.makeImage()!
+        let url = folder.appendingPathComponent("rotated.pdf")
+        var box = CGRect(x: 0, y: 0, width: 400, height: 600)
+        let pdf = CGContext(url as CFURL, mediaBox: &box, nil)!
+        pdf.beginPDFPage(nil)
+        // Drawn turned a quarter to the left, so that turning the page right shows it upright.
+        pdf.translateBy(x: 400, y: 0)
+        pdf.rotate(by: .pi / 2)
+        pdf.draw(image, in: CGRect(x: 0, y: 0, width: 600, height: 400))
+        pdf.endPDFPage()
+        pdf.closePDF()
+        let document = try XCTUnwrap(PDFDocument(url: url))
+        document.page(at: 0)?.rotation = 90
+        let turned = folder.appendingPathComponent("turned.pdf")
+        XCTAssertTrue(document.write(to: turned))
+
+        let destination = SearchablePDF.destination(for: turned)
+        let outcome = try SearchablePDF.make(from: turned, to: destination)
+        XCTAssertEqual(outcome.rotated, 1)
+        XCTAssertEqual(outcome.recognized, 1)
+        let made = try XCTUnwrap(PDFDocument(url: destination))
+        let bounds = try XCTUnwrap(made.page(at: 0)?.bounds(for: .mediaBox))
+        XCTAssertEqual(bounds.width, 600, accuracy: 1)
+        XCTAssertEqual(bounds.height, 400, accuracy: 1)
+        XCTAssertFalse(made.findString("Landscape", withOptions: .caseInsensitive).isEmpty, made.page(at: 0)?.string ?? "")
+    }
 }

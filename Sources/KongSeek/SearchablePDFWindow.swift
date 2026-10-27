@@ -9,55 +9,83 @@ final class SearchablePDFModel: ObservableObject {
     @Published private(set) var result: URL?
     @Published private(set) var page = 0
     @Published private(set) var pages = 0
+    /// Batches (0.21): which file of how many.
+    @Published private(set) var fileIndex = 0
+    @Published private(set) var fileCount = 0
     @Published private(set) var running = false
     @Published private(set) var message = ""
+    @Published private(set) var made: [URL] = []
     private let lock = NSLock()
     private var cancelled = false
 
-    func start(_ url: URL) {
+    /// Makes searchable copies one file after another. Files that already have a
+    /// "（可搜索）" copy beside them, and files only in iCloud, are skipped.
+    func start(_ urls: [URL]) {
         guard !running else {
-            message = "正在处理另一个文件，请等它完成或先停止。"
+            message = "正在处理其他文件，请等它完成或先停止。"
             return
         }
-        let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
-        source = url
+        var queue: [URL] = []
+        var inCloud = 0, done = 0
+        for url in urls {
+            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
+            if status == .notDownloaded {
+                try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+                inCloud += 1
+            } else if urls.count > 1, FileManager.default.fileExists(atPath: Self.firstCopy(of: url).path) {
+                done += 1
+            } else {
+                queue.append(url)
+            }
+        }
+        made = []
         result = nil
-        page = 0
-        pages = 0
-        if status == .notDownloaded {
-            try? FileManager.default.startDownloadingUbiquitousItem(at: url)
-            message = "这个文件只在 iCloud 中，已开始下载；下载完成后再试一次。"
+        source = queue.first
+        fileCount = queue.count
+        fileIndex = 0
+        guard !queue.isEmpty else {
+            message = (inCloud > 0 ? "\(inCloud) 个文件只在 iCloud 中，已开始下载；下载完成后再试一次。" : "")
+                + (done > 0 ? "\(done) 个文件已有可搜索版本。" : "")
             return
         }
         setCancelled(false)
         running = true
-        message = "正在逐页识别文字（每页约 1–2 秒）…"
-        let destination = SearchablePDF.destination(for: url)
+        message = "正在逐页识别文字（每页约 1–2 秒）…" + (inCloud > 0 ? "另有 \(inCloud) 个只在 iCloud 中的文件已开始下载，这次先跳过。" : "")
+            + (done > 0 ? "\(done) 个已有可搜索版本，跳过。" : "")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            let outcome: Result<SearchablePDF.Outcome, Error> = Result {
-                try SearchablePDF.make(from: url, to: destination, progress: { done, total in
-                    DispatchQueue.main.async { self.page = done; self.pages = total }
-                }, isCancelled: { self.isCancelled() })
+            var recognized = 0, failures: [String] = []
+            for (number, url) in queue.enumerated() {
+                if self.isCancelled() { break }
+                let destination = SearchablePDF.destination(for: url)
+                DispatchQueue.main.async { self.source = url; self.fileIndex = number + 1; self.page = 0; self.pages = 0 }
+                do {
+                    let outcome = try SearchablePDF.make(from: url, to: destination, progress: { done, total in
+                        DispatchQueue.main.async { self.page = done; self.pages = total }
+                    }, isCancelled: { self.isCancelled() })
+                    recognized += outcome.recognized
+                    DispatchQueue.main.async { self.made.append(destination); self.result = destination }
+                } catch SearchablePDF.Failure.cancelled {
+                    break
+                } catch {
+                    failures.append(url.lastPathComponent)
+                }
             }
             DispatchQueue.main.async {
                 self.running = false
-                switch outcome {
-                case .success(let made):
-                    self.result = destination
-                    var text = "已生成“\(destination.lastPathComponent)”：\(made.recognized) 页加上了文字层"
-                    if made.alreadyText > 0 { text += "，\(made.alreadyText) 页本来就有文字" }
-                    if made.skippedRotated > 0 { text += "，\(made.skippedRotated) 页是旋转的页面，暂未加文字" }
-                    self.message = text + "。原文件未改动。"
-                case .failure(let error):
-                    switch error as? SearchablePDF.Failure {
-                    case .cancelled: self.message = "已停止，未生成文件。"
-                    case .unreadable: self.message = "无法打开这个 PDF（可能已加密）。"
-                    default: self.message = "无法写入新文件（文件夹可能只读）。"
-                    }
-                }
+                let count = self.made.count
+                var text = self.isCancelled() ? "已停止。" : ""
+                text += count == 1 ? "已生成“\(self.made[0].lastPathComponent)”" : "已生成 \(count) 个可搜索的 PDF"
+                text += "，共 \(recognized) 页加上了文字层，原文件未改动。"
+                if !failures.isEmpty { text += "未能处理：" + failures.joined(separator: "、") + "（可能已加密）。" }
+                self.message = text
             }
         }
+    }
+
+    /// The first name a searchable copy gets: "<name>（可搜索）.pdf".
+    static func firstCopy(of url: URL) -> URL {
+        url.deletingLastPathComponent().appendingPathComponent(url.deletingPathExtension().lastPathComponent + "（可搜索）.pdf")
     }
 
     func stop() { setCancelled(true) }
@@ -74,7 +102,8 @@ struct SearchablePDFView: View {
             Text(model.source?.lastPathComponent ?? "").font(.headline).lineLimit(2).truncationMode(.middle)
             if model.running {
                 ProgressView(value: Double(model.page), total: Double(max(1, model.pages))) {
-                    Text(model.pages > 0 ? "第 \(model.page) / \(model.pages) 页" : "正在打开…").font(.caption)
+                    Text((model.fileCount > 1 ? "第 \(model.fileIndex) / \(model.fileCount) 本 · " : "")
+                         + (model.pages > 0 ? "第 \(model.page) / \(model.pages) 页" : "正在打开…")).font(.caption)
                 }
             }
             Text(model.message).font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -84,6 +113,8 @@ struct SearchablePDFView: View {
                 Spacer()
                 if model.running {
                     Button("停止") { model.stop() }
+                } else if model.made.count > 1 {
+                    Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting(model.made) }
                 } else if let result = model.result {
                     Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([result]) }
                     Button("打开") { NSWorkspace.shared.open(result) }.keyboardShortcut(.defaultAction)
@@ -110,11 +141,13 @@ final class SearchablePDFWindowController: NSWindowController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func start(_ url: URL) {
+    func start(_ url: URL) { start([url]) }
+
+    func start(_ urls: [URL]) {
         if window?.isVisible != true { window?.center() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        model.start(url)
+        model.start(urls)
     }
 }

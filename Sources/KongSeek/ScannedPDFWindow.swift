@@ -217,6 +217,11 @@ struct ScannedPDFView: View {
                     Button(model.selected.count == model.folders.count ? "全不选" : "全选") { model.toggleAll() }
                     Text(model.estimate).font(.caption).foregroundColor(.secondary)
                     Spacer()
+                    Button("另存为可搜索 PDF…") {
+                        SearchablePDFWindowController.shared.start(model.selectedFiles.map { URL(fileURLWithPath: $0.path) })
+                    }
+                    .disabled(model.selected.isEmpty)
+                    .help("为所选文件夹中的扫描版 PDF 各另存一份带文字层的副本，在“预览”等应用中也能搜索；已有副本的跳过")
                     Button("识别所选文件夹中的扫描版 PDF") { model.recognizeSelected() }
                         .disabled(model.selected.isEmpty)
                 }

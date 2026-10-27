@@ -68,6 +68,9 @@ public enum BatchRename {
         public var ebookStyle: EbookName.Style = .full
         /// For `.ebook`: turn marks such as "_已读" into Finder tags instead of keeping them in the name.
         public var marksToTags = false
+        /// For `.ebook`: Chinese titles found in the files' own metadata for names that
+        /// give only pinyin (path → title), filled in by the app (0.21).
+        public var ebookTitles: [String: String] = [:]
         public init() {}
     }
 
@@ -150,6 +153,7 @@ public enum BatchRename {
                 let split = EbookName.splitMark(stem)
                 var parsed = EbookName.parse(split.stem)
                 parsed?.mark = ""
+                if parsed != nil, let title = rule.ebookTitles[item.path] { parsed?.title = title }
                 newStem = parsed?.formatted(rule.ebookStyle) ?? split.stem
                 if rule.marksToTags, let tag = EbookName.tag(forMark: split.mark) {
                     tags = [tag]

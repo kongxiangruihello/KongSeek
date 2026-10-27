@@ -87,4 +87,16 @@ final class EbookNameTests: XCTestCase {
         rule.marksToTags = false
         XCTAssertEqual(BatchRename.plan(items, rule: rule) { _ in false }.map(\.newName)[1], "上海摩登_已读.pdf")
     }
+
+    func testMetadataTitleForPinyinName() {
+        let path = "/books/Zhongguo She Hui Si Xiang Shi Zi Liao Xuan Ji_ Xian Qin Juan -- 陆学艺, 王处辉主编 ; 王处辉 -- Di 1 ban, Nanning Shi, China, 2005 -- isbn13 9787219048849 -- .pdf"
+        var rule = BatchRename.Rule()
+        rule.mode = .ebook
+        rule.ebookStyle = .titleAuthor
+        XCTAssertEqual(BatchRename.plan([BatchRename.Item(path: path)], rule: rule) { _ in false }.first?.newName,
+                       "Zhongguo She Hui Si Xiang Shi Zi Liao Xuan Ji_ Xian Qin Juan（陆学艺、王处辉主编）.pdf")
+        rule.ebookTitles = [path: "中国社会思想史资料选辑 先秦卷"]
+        XCTAssertEqual(BatchRename.plan([BatchRename.Item(path: path)], rule: rule) { _ in false }.first?.newName,
+                       "中国社会思想史资料选辑 先秦卷（陆学艺、王处辉主编）.pdf")
+    }
 }

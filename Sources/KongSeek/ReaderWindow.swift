@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import KongSeekCore
+import KongSeekText
 
 /// A small PDF reader (0.18): opens at the page a full-text search hit, with the
 /// words highlighted, and the PDF's own table of contents (bookmarks) beside it.
@@ -17,6 +18,21 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     private let outlineButton = NSButton()
     private var url: URL?
     private var outlineRoot: PDFOutline?
+    /// The sidebar shows the table of contents or every page with a hit (0.21).
+    private let sidebarMode = NSSegmentedControl(labels: ["目录", "命中"], trackingMode: .selectOne, target: nil, action: nil)
+    private let sidebar = NSView()
+    private var hits: [HitItem] = []
+    private var hitWords: [String] = []
+    /// Recognized text of scanned PDFs, so hits on scanned pages are listed too.
+    static var ocrStore: OCRStore?
+
+    /// A page with hits, as an outline item.
+    final class HitItem: NSObject {
+        let hit: PageHits.Hit
+        init(_ hit: PageHits.Hit) { self.hit = hit }
+    }
+
+    private var showingHits: Bool { sidebarMode.selectedSegment == 1 }
     private var loadToken = 0
     private var findResults: [PDFSelection] = []
     private var findIndex = 0
@@ -110,7 +126,23 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
 
         split.isVertical = true
         split.dividerStyle = .thin
-        split.addArrangedSubview(outlineScroll)
+        sidebarMode.selectedSegment = 0
+        sidebarMode.target = self
+        sidebarMode.action = #selector(sidebarModeChanged)
+        sidebarMode.controlSize = .small
+        for view in [sidebarMode, outlineScroll] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            sidebar.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            sidebarMode.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 6),
+            sidebarMode.centerXAnchor.constraint(equalTo: sidebar.centerXAnchor),
+            outlineScroll.topAnchor.constraint(equalTo: sidebarMode.bottomAnchor, constant: 6),
+            outlineScroll.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            outlineScroll.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            outlineScroll.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor),
+        ])
+        split.addArrangedSubview(sidebar)
         split.addArrangedSubview(pdfView)
         split.setHoldingPriority(.defaultLow - 1, forSubviewAt: 1)
 
@@ -156,7 +188,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
             split.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             split.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             split.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            outlineScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            sidebar.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
         ])
     }
 
@@ -172,6 +204,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         window?.representedURL = url
         pdfView.document = nil
         outlineRoot = nil
+        hits = []
+        hitWords = page == nil ? [] : words
         outlineView.reloadData()
         findResults = []
         pageLabel.stringValue = ""
@@ -199,8 +233,13 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         outlineRoot = document.outlineRoot
         outlineView.reloadData()
         let outlineCount = outlineRoot?.numberOfChildren ?? 0
-        setOutlineVisible(outlineCount > 0)
-        outlineButton.isEnabled = outlineCount > 0
+        sidebarMode.setLabel(outlineCount > 0 ? "目录" : "目录（无）", forSegment: 0)
+        sidebarMode.setLabel("命中", forSegment: 1)
+        sidebarMode.setEnabled(!words.isEmpty, forSegment: 1)
+        sidebarMode.selectedSegment = words.isEmpty || outlineCount > 0 ? 0 : 1
+        setOutlineVisible(outlineCount > 0 || !words.isEmpty)
+        outlineButton.isEnabled = outlineCount > 0 || !words.isEmpty
+        if !words.isEmpty { findAllHits(words) }
         let outlineNote = outlineCount > 0 ? "左侧目录 \(outlineCount) 项" : "此 PDF 没有目录（书签）"
         var target: PDFPage?
         if let page, page >= 1, page <= document.pageCount { target = document.page(at: page - 1) }
@@ -241,22 +280,64 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     }
 
     @objc private func toggleOutline() {
-        setOutlineVisible(outlineScroll.isHidden)
+        setOutlineVisible(sidebar.isHidden)
+    }
+
+    @objc private func sidebarModeChanged() {
+        outlineView.reloadData()
+    }
+
+    /// Every page with the words, read in the background from the file (and the
+    /// recognized text of scanned pages), shown under 命中.
+    private func findAllHits(_ words: [String]) {
+        guard let url else { return }
+        let token = loadToken
+        sidebarMode.setLabel("命中（…）", forSegment: 1)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let pages = (try? DocumentText.read(url, maximumPages: 5_000, ocr: ReaderWindowController.ocrStore))?.pages ?? []
+            let found = PageHits.find(in: pages, firstPage: 1, words: words)
+            DispatchQueue.main.async {
+                guard let self, token == self.loadToken else { return }
+                self.hits = found.map(HitItem.init)
+                self.sidebarMode.setLabel("命中（\(found.count) 页）", forSegment: 1)
+                if self.showingHits { self.outlineView.reloadData() }
+                if found.count > 1 {
+                    let note = "全书共 \(found.count) 页有命中，见左侧“命中”"
+                    self.messageLabel.stringValue = self.messageLabel.stringValue.isEmpty ? note : self.messageLabel.stringValue + " · " + note
+                }
+            }
+        }
     }
 
     private func setOutlineVisible(_ visible: Bool) {
-        outlineScroll.isHidden = !visible
+        sidebar.isHidden = !visible
         split.adjustSubviews()
         if visible { split.setPosition(240, ofDividerAt: 0) }
     }
 
     @objc private func outlineClicked() {
+        if let item = outlineView.item(atRow: outlineView.clickedRow) as? HitItem {
+            goToHit(item.hit.page)
+            return
+        }
         guard let item = outlineView.item(atRow: outlineView.clickedRow) as? PDFOutline else { return }
         if let destination = item.destination {
             pdfView.go(to: destination)
         } else if let action = item.action as? PDFActionGoTo {
             pdfView.go(to: action.destination)
         }
+    }
+
+    /// Shows a page from the hit list with its words highlighted.
+    private func goToHit(_ number: Int) {
+        guard let document = pdfView.document, number >= 1, number <= document.pageCount, let page = document.page(at: number - 1) else { return }
+        var marks: [PDFSelection] = []
+        if let text = page.string {
+            marks = TextLocator.ranges(of: hitWords, in: text).compactMap { page.selection(for: $0) }
+        }
+        for mark in marks { mark.color = .systemYellow }
+        pdfView.highlightedSelections = marks.isEmpty ? nil : marks
+        if let first = marks.first { pdfView.go(to: first) } else { pdfView.go(to: page) }
     }
 
     @objc private func find() {
@@ -304,11 +385,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     // MARK: Outline data
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        ((item as? PDFOutline) ?? outlineRoot)?.numberOfChildren ?? 0
+        if showingHits { return item == nil ? hits.count : 0 }
+        return ((item as? PDFOutline) ?? outlineRoot)?.numberOfChildren ?? 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        ((item as? PDFOutline) ?? outlineRoot)?.child(at: index) ?? PDFOutline()
+        if showingHits { return hits[index] }
+        return ((item as? PDFOutline) ?? outlineRoot)?.child(at: index) ?? PDFOutline()
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+        item is HitItem ? 50 : 20
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
@@ -316,6 +403,14 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        if let hit = item as? HitItem {
+            let label = NSTextField(wrappingLabelWithString: "第 \(hit.hit.page) 页" + (hit.hit.count > 1 ? "（\(hit.hit.count) 处）" : "") + "  " + hit.hit.snippet)
+            label.font = .systemFont(ofSize: 11)
+            label.maximumNumberOfLines = 3
+            label.lineBreakMode = .byTruncatingTail
+            label.toolTip = hit.hit.snippet
+            return label
+        }
         let label = NSTextField(labelWithString: (item as? PDFOutline)?.label ?? "")
         label.lineBreakMode = .byTruncatingTail
         label.font = .systemFont(ofSize: 12)

@@ -14,8 +14,8 @@ public enum SearchablePDF {
         public var recognized: Int
         /// Pages that already had text and were copied as they are.
         public var alreadyText: Int
-        /// Rotated pages copied without a text layer.
-        public var skippedRotated: Int
+        /// Pages whose rotation was applied (written upright, 0.21).
+        public var rotated: Int
     }
 
     public enum Failure: Error, Equatable {
@@ -47,7 +47,7 @@ public enum SearchablePDF {
         // Written to a temporary file first, so a cancelled run leaves nothing half-made.
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).pdf")
         guard let context = CGContext(temporary as CFURL, mediaBox: nil, info as CFDictionary) else { throw Failure.cannotWrite }
-        var outcome = Outcome(pages: document.pageCount, recognized: 0, alreadyText: 0, skippedRotated: 0)
+        var outcome = Outcome(pages: document.pageCount, recognized: 0, alreadyText: 0, rotated: 0)
         for index in 0..<document.pageCount {
             if isCancelled() {
                 context.closePDF()
@@ -55,18 +55,24 @@ public enum SearchablePDF {
                 throw Failure.cancelled
             }
             progress(index + 1, document.pageCount)
-            guard let page = document.page(at: index) else { continue }
+            guard let page = document.page(at: index), let ref = page.pageRef else { continue }
             autoreleasepool {
-                var box = page.bounds(for: .mediaBox)
+                // Each page is written upright, as it is shown: a rotated page (a landscape
+                // scan) gets a box the other way round, and the recognized text fits it (0.21).
+                let rotated = abs(Int(ref.rotationAngle)) % 180 == 90
+                if ref.rotationAngle % 360 != 0 { outcome.rotated += 1 }
+                let media = ref.getBoxRect(.mediaBox)
+                var box = CGRect(x: 0, y: 0, width: rotated ? media.height : media.width, height: rotated ? media.width : media.height)
                 let boxData = Data(bytes: &box, count: MemoryLayout<CGRect>.size) as CFData
                 context.beginPDFPage([kCGPDFContextMediaBox: boxData] as CFDictionary)
-                page.draw(with: .mediaBox, to: context)
+                context.saveGState()
+                context.concatenate(ref.getDrawingTransform(.mediaBox, rect: box, rotate: 0, preserveAspectRatio: true))
+                context.drawPDFPage(ref)
+                context.restoreGState()
                 let existing = page.string?.filter { !$0.isWhitespace } ?? ""
                 if existing.count >= ScannedPDFs.minimumCharacters {
                     outcome.alreadyText += 1
-                } else if page.rotation % 360 != 0 {
-                    outcome.skippedRotated += 1
-                } else if let image = render(page, box: box), let lines = try? TextRecognizer.recognizeLines(image), !lines.isEmpty {
+                } else if let image = render(ref, box: box), let lines = try? TextRecognizer.recognizeLines(image), !lines.isEmpty {
                     overlay(lines, in: box, context: context)
                     outcome.recognized += 1
                 }
@@ -83,8 +89,8 @@ public enum SearchablePDF {
         return outcome
     }
 
-    /// The page as a picture about 2400 pixels on its long side, on white.
-    static func render(_ page: PDFPage, box: CGRect) -> CGImage? {
+    /// The page as a picture about 2400 pixels on its long side, on white, upright.
+    static func render(_ page: CGPDFPage, box: CGRect) -> CGImage? {
         guard box.width > 1, box.height > 1 else { return nil }
         let scale = min(4, 2400 / max(box.width, box.height))
         let width = Int(box.width * scale), height = Int(box.height * scale)
@@ -92,9 +98,10 @@ public enum SearchablePDF {
                                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
         context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.interpolationQuality = .high
         context.scaleBy(x: scale, y: scale)
-        context.translateBy(x: -box.minX, y: -box.minY)
-        page.draw(with: .mediaBox, to: context)
+        context.concatenate(page.getDrawingTransform(.mediaBox, rect: box, rotate: 0, preserveAspectRatio: true))
+        context.drawPDFPage(page)
         return context.makeImage()
     }
 

@@ -28,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusWindow: StatusWindowController?
     private var fileList: FileListWindowController?
     private var tidyWindow: DownloadTidyWindowController?
+    private var quoteFinder: QuoteFinderWindowController?
+    private var libraryCheck: LibraryCheckWindowController?
     /// Ebooks downloaded in the last month under site names, offered for tidying (0.20).
     private var tidyCandidates: [String] = []
     /// Files downloaded in the last week, for the menu (refreshed in the background).
@@ -41,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         ocr = OCRService(directory: support.appendingPathComponent("KongSeek/OCR"))
         ocr.configure(Preferences.ocrSettings)
+        ReaderWindowController.ocrStore = ocr.store
         searchWindow = SearchWindowController(service: service, ocr: ocr)
         searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
         searchWindow.onFileList = { [weak self] source in self?.openFileList(source) }
@@ -173,11 +176,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("立即重建索引", #selector(rebuildIndex)))
         menu.addItem(.separator())
         menu.addItem(item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)))
+        menu.addItem(item("引文查证…", #selector(openQuoteFinder)))
         menu.addItem(item("两版讲义对比…", #selector(openCompare)))
         menu.addItem(item("批量重命名…", #selector(openBatchRename)))
         menu.addItem(item("查找重复与相似文件…", #selector(openDuplicates)))
         menu.addItem(item("空间分析…", #selector(openSpace)))
         menu.addItem(item("查找扫描版 PDF…", #selector(openScannedPDFs)))
+        menu.addItem(item("书库体检…", #selector(openLibraryCheck)))
         menu.addItem(item("状态与诊断…", #selector(openStatus)))
         menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(openSettings), key: ","))
@@ -461,6 +466,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func openFileList(_ source: FileListSource) {
         if fileList == nil { fileList = FileListWindowController(service: service) }
         fileList?.present(source)
+    }
+
+    @objc private func openQuoteFinder() {
+        if quoteFinder == nil { quoteFinder = QuoteFinderWindowController(ocr: ocr.store) }
+        // A quotation just copied (4–300 characters of text) is filled in, not yet checked.
+        if let model = quoteFinder?.model, model.quote.isEmpty, let copied = NSPasteboard.general.string(forType: .string),
+           (4...300).contains(copied.trimmingCharacters(in: .whitespacesAndNewlines).count) {
+            model.quote = copied.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        quoteFinder?.present()
+    }
+
+    @objc private func openLibraryCheck() {
+        if libraryCheck == nil {
+            libraryCheck = LibraryCheckWindowController(service: service)
+            libraryCheck?.model.openDuplicates = { [weak self] in self?.openDuplicates() }
+        }
+        libraryCheck?.present()
     }
 
     @objc private func openTidy() {
