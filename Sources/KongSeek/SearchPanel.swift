@@ -49,6 +49,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private var contentMode = false
     private let contentSearch = ContentSearch()
     private let modeButton = NSButton(title: "名称", target: nil, action: nil)
+    /// "?": lists the search syntax with examples.
+    private let helpButton = NSButton()
     private let snippetLabel = NSTextField(wrappingLabelWithString: "")
     private var snippetHeight: NSLayoutConstraint!
     private var snippetToken = 0
@@ -260,7 +262,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        let hints = NSTextField(labelWithString: "↩ 打开   → 进入文件夹   ⌘↩ 在访达中显示   ⌘Y 快速查看   ⌘K 更多操作")
+        let hints = NSTextField(labelWithString: "↩ 打开   → 进入文件夹   ⌘↩ 在访达中显示   ⌘Y 快速查看   ⌘K 更多操作   ⌘S 收藏搜索   ? 语法")
         hints.font = .systemFont(ofSize: 11)
         hints.textColor = .tertiaryLabelColor
         hints.alignment = .right
@@ -271,6 +273,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         modeButton.font = .systemFont(ofSize: 12, weight: .medium)
         modeButton.target = self
         modeButton.action = #selector(toggleMode)
+        helpButton.isBordered = false
+        helpButton.bezelStyle = .regularSquare
+        helpButton.imagePosition = .imageOnly
+        helpButton.image = NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: "搜索语法")?
+            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
+        helpButton.contentTintColor = .secondaryLabelColor
+        helpButton.toolTip = "搜索语法与例子（也可输入 ?）"
+        helpButton.target = self
+        helpButton.action = #selector(showSyntaxHelpFromButton)
         modeButton.toolTip = "⇥ 切换按名称 / 按内容（全文）搜索"
         snippetLabel.font = .systemFont(ofSize: 12)
         snippetLabel.textColor = .labelColor
@@ -287,7 +298,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         definitionScroll.hasVerticalScroller = true
         definitionScroll.isHidden = true
 
-        for view in [searchIcon, field, modeButton, topLine, scroll, middleLine, snippetLabel, preview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        for view in [searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -301,7 +312,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
             field.topAnchor.constraint(equalTo: background.topAnchor, constant: 16),
             field.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 10),
-            field.trailingAnchor.constraint(equalTo: modeButton.leadingAnchor, constant: -10),
+            field.trailingAnchor.constraint(equalTo: helpButton.leadingAnchor, constant: -8),
+            helpButton.trailingAnchor.constraint(equalTo: modeButton.leadingAnchor, constant: -8),
+            helpButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
+            helpButton.widthAnchor.constraint(equalToConstant: 22),
             modeButton.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
             modeButton.centerYAnchor.constraint(equalTo: field.centerYAnchor),
             modeButton.widthAnchor.constraint(equalToConstant: 52),
@@ -492,6 +506,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     func runSearch() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         webRows = []
+        if browsedFolder == nil && (text == "?" || text == "？") {
+            contentToken += 1
+            contentSearch.stop()
+            showSyntaxHelp()
+            return
+        }
         if browsedFolder == nil, let word = DictionaryLookup.word(in: field.stringValue) {
             contentToken += 1
             contentSearch.stop()
@@ -525,6 +545,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let previousRow = table.selectedRow
         outcome = newOutcome
         results = webRows + newOutcome.items
+        // An empty field lists saved searches above recently opened items.
+        if newOutcome.isRecentList && browsedFolder == nil { results = savedSearchRows + results }
         // Nothing found: offer the web searches marked as fallbacks.
         let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if results.isEmpty && browsedFolder == nil && !query.isEmpty && !newOutcome.gathering && !newOutcome.isRecentList {
@@ -670,6 +692,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 return true
             case 51: // ⌘⌫: remove from the recent list, or move to the Trash
                 guard let item = selectedItem else { return false }
+                if let fill = item.fill {
+                    if fill.isSaved {
+                        Preferences.savedSearches.removeAll { $0 == fill.text }
+                        statusLabel.stringValue = "已从收藏中移除“\(fill.text)”"
+                        runSearch()
+                    }
+                    return true
+                }
                 if outcome.isRecentList {
                     Preferences.forget(item.path)
                     runSearch()
@@ -680,6 +710,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             case 6: // ⌘Z: put back what was just moved to the Trash
                 guard actions.canUndoTrash else { return false }
                 statusLabel.stringValue = actions.undoTrash()
+                return true
+            case 1: // ⌘S: save this search
+                saveCurrentSearch()
                 return true
             case 31: // ⌘O: open (folders in Finder)
                 openSelected()
@@ -740,6 +773,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func open(row: Int) {
         guard row >= 0 && row < results.count else { return }
         let item = results[row]
+        if let fill = item.fill {
+            apply(fill)
+            return
+        }
         if let link = item.link {
             hide()
             NSWorkspace.shared.open(link)
@@ -880,6 +917,64 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         } else {
             quickLook.makeKeyAndOrderFront(nil)
         }
+    }
+
+    // MARK: - Syntax help and saved searches
+
+    @objc private func showSyntaxHelpFromButton() {
+        if field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty { field.stringValue = "?" }
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.moveToEndOfDocument(nil)
+        showSyntaxHelp()
+    }
+
+    private func showSyntaxHelp() {
+        var help = SearchOutcome(items: SyntaxHelp.rows)
+        help.notes = ["搜索语法：单击或按 ↩ 把例子加入搜索框（可组合多条，如 合同 ext:pdf dm:thisyear）"]
+        help.matchCount = help.items.count
+        show(help)
+        statusLabel.stringValue = help.notes[0]
+    }
+
+    /// Puts a saved search or a syntax example into the field and searches.
+    private func apply(_ fill: QueryFill) {
+        var base = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if fill.replace || base == "?" || base == "？" { base = "" }
+        let prefix = base.isEmpty ? "" : base + " "
+        // Without a value to type over, leave the caret after a space, ready for the next word.
+        let text = prefix + fill.text + (fill.select == nil && !fill.isSaved ? " " : "")
+        field.stringValue = text
+        panel.makeFirstResponder(field)
+        if let editor = field.currentEditor() {
+            let whole = text as NSString
+            var range = NSRange(location: whole.length, length: 0)
+            if let sample = fill.select {
+                let found = whole.range(of: sample, options: .backwards)
+                if found.location != NSNotFound { range = found }
+            }
+            editor.selectedRange = range
+        }
+        runSearch()
+    }
+
+    private var savedSearchRows: [ResultItem] {
+        Preferences.savedSearches.map { text in
+            ResultItem(path: "saved:" + text, name: text, isFolder: false, score: 0,
+                       fill: QueryFill(text: text, replace: true, select: nil, explanation: "收藏的搜索", isSaved: true))
+        }
+    }
+
+    private func saveCurrentSearch() {
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text != "?", text != "？" else {
+            statusLabel.stringValue = "先输入要收藏的搜索，再按 ⌘S"
+            return
+        }
+        var saved = Preferences.savedSearches
+        saved.removeAll { $0 == text }
+        saved.insert(text, at: 0)
+        Preferences.savedSearches = saved
+        statusLabel.stringValue = "已收藏“\(text)”：清空搜索框时显示在最上面"
     }
 
     // MARK: - Folders
@@ -1024,7 +1119,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let item = results[row]
         let location: String
         let image: NSImage
-        if let link = item.link {
+        if let fill = item.fill {
+            location = fill.isSaved ? "收藏的搜索 · ↩ 搜索 · ⌘⌫ 移除" : fill.explanation
+            image = NSImage(systemSymbolName: fill.isSaved ? "star" : "text.magnifyingglass", accessibilityDescription: fill.isSaved ? "收藏的搜索" : "语法") ?? NSImage()
+        } else if let link = item.link {
             location = link.host ?? link.scheme ?? ""
             image = NSImage(systemSymbolName: "globe", accessibilityDescription: "网页搜索") ?? NSImage()
         } else if item.definition != nil {
@@ -1065,7 +1163,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func updatePreview() {
         let selected = selectedItem
         definitionScroll.isHidden = selected?.isFile ?? true
-        if let item = selected, !item.isFile {
+        if let item = selected, let fill = item.fill {
+            definitionView.string = fill.isSaved
+                ? "↩ 搜索：\(fill.text)\n\n⌘⌫ 从收藏中移除。在任意搜索时按 ⌘S 可收藏当前搜索。"
+                : "\(fill.text)\n\n\(fill.explanation)\n\n↩ 或单击：加入搜索框" + (fill.select.map { "，并选中“\($0)”方便直接改写" } ?? "") + "。"
+            definitionView.scrollToBeginningOfDocument(nil)
+        } else if let item = selected, !item.isFile {
             definitionView.string = item.definition.map { $0.isEmpty ? "系统词典中没有“\(item.name)”。\n可在“词典”App 的设置中启用更多词典（如现代汉语词典、牛津英汉汉英词典），或用汉典查询。" : $0 }
                 ?? "↩ 在浏览器中打开：\n\(item.link?.absoluteString ?? "")"
             definitionView.scrollToBeginningOfDocument(nil)

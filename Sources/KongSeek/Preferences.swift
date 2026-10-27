@@ -49,6 +49,12 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "updateProxy") }
     }
 
+    /// Searches saved with ⌘S, shown when the search field is empty.
+    static var savedSearches: [String] {
+        get { defaults.stringArray(forKey: "savedSearches") ?? [] }
+        set { defaults.set(Array(newValue.prefix(30)), forKey: "savedSearches") }
+    }
+
     /// Let Claude (ks mcp) search inside and read documents, not just names.
     static var mcpReadContent: Bool {
         get { defaults.object(forKey: "mcpReadContent") as? Bool ?? true }

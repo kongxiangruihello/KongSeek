@@ -15,9 +15,15 @@ public enum BatchRename {
     }
 
     public enum Mode: String, CaseIterable, Identifiable {
-        case replace, template
+        case replace, template, ebook
         public var id: String { rawValue }
-        public var title: String { self == .replace ? "查找替换" : "按模板编号" }
+        public var title: String {
+            switch self {
+            case .replace: return "查找替换"
+            case .template: return "按模板编号"
+            case .ebook: return "电子书名称整理"
+            }
+        }
     }
 
     public enum Order: String, CaseIterable, Identifiable {
@@ -58,6 +64,8 @@ public enum BatchRename {
         /// Leave the extension alone (the rule applies to the part before it).
         public var keepExtension = true
         public var script: Script = .unchanged
+        /// For `.ebook`: how the short name is written.
+        public var ebookStyle: EbookName.Style = .full
         public init() {}
     }
 
@@ -109,7 +117,9 @@ public enum BatchRename {
         var emptyStems = Set<Int>()
         for (index, item) in ordered.enumerated() {
             let ext = (item.name as NSString).pathExtension
-            let stem = rule.keepExtension && !ext.isEmpty ? (item.name as NSString).deletingPathExtension : item.name
+            // Ebook names always keep their extension.
+            let keepExtension = rule.keepExtension || rule.mode == .ebook
+            let stem = keepExtension && !ext.isEmpty ? (item.name as NSString).deletingPathExtension : item.name
             var newStem: String
             switch rule.mode {
             case .replace:
@@ -130,6 +140,8 @@ public enum BatchRename {
                     .replacingOccurrences(of: "{n}", with: padded)
                     .replacingOccurrences(of: "{date}", with: item.modified.map(formatter.string(from:)) ?? "")
                     .replacingOccurrences(of: "{parent}", with: (item.folder as NSString).lastPathComponent)
+            case .ebook:
+                newStem = EbookName.parse(stem)?.formatted(rule.ebookStyle) ?? stem
             }
             switch rule.script {
             case .unchanged: break
@@ -138,7 +150,7 @@ public enum BatchRename {
             }
             newStem = newStem.trimmingCharacters(in: .whitespaces)
             if newStem.isEmpty { emptyStems.insert(index) }
-            let newName = rule.keepExtension && !ext.isEmpty ? newStem + "." + ext : newStem
+            let newName = keepExtension && !ext.isEmpty ? newStem + "." + ext : newStem
             previews.append(Preview(item: item, newName: newName, problem: nil))
         }
 

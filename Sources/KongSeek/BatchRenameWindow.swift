@@ -136,6 +136,7 @@ struct BatchRenameView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Button("添加文件…") { addFiles() }
+                Button("添加文件夹中的文件…") { addFolderContents() }
                 Button("使用访达中选中的文件") { model.addFinderSelection() }
                 Button("移除所选") { model.remove(selection); selection.removeAll() }.disabled(selection.isEmpty)
                 Button("清空") { model.items.removeAll(); selection.removeAll() }.disabled(model.items.isEmpty)
@@ -200,8 +201,19 @@ struct BatchRenameView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 260)
-            if model.rule.mode == .replace {
+            .frame(width: 390)
+            if model.rule.mode == .ebook {
+                HStack {
+                    Picker("改为", selection: $model.rule.ebookStyle) {
+                        ForEach(EbookName.Style.allCases) { Text($0.title).tag($0) }
+                    }
+                    .frame(width: 320)
+                    Spacer()
+                }
+                Text("把 Anna's Archive、Z-Library 等网站下载的长文件名（含 ISBN、校验码、拼音转写、丛书名）整理为简短的书名。没有这些网站标记的文件名（如自己起的“作者--书名”）保持不变；末尾的“_已读”等标记会保留。")
+                    .font(.caption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if model.rule.mode == .replace {
                 HStack {
                     TextField("查找", text: $model.rule.find).textFieldStyle(.roundedBorder)
                     Image(systemName: "arrow.right").foregroundColor(.secondary)
@@ -234,6 +246,25 @@ struct BatchRenameView: View {
                 .frame(width: 180)
             }
         }
+    }
+
+    /// Every file directly inside the chosen folders (not subfolders, not hidden files).
+    private func addFolderContents() {
+        let panel = NSOpenPanel()
+        panel.title = "选择文件夹：添加其中的所有文件"
+        panel.prompt = "添加"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let fm = FileManager.default
+        var files: [URL] = []
+        for folder in panel.urls {
+            let contents = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])) ?? []
+            files += contents.filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true }
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        }
+        model.add(files)
     }
 
     private func addFiles() {

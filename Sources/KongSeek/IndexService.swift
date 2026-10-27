@@ -14,14 +14,28 @@ struct ResultItem: Equatable {
     var definition: String? = nil
     /// A file inside a .zip archive: its path in the archive (`path` is the archive).
     var innerPath: String? = nil
+    /// A row that fills the search field instead of opening something: a saved
+    /// search, or an example from the syntax help.
+    var fill: QueryFill? = nil
 
-    var isFile: Bool { link == nil && definition == nil }
+    var isFile: Bool { link == nil && definition == nil && fill == nil }
     var isInArchive: Bool { innerPath != nil }
 
     static func web(_ link: QuickLink, query: String) -> ResultItem? {
         guard let url = link.url(for: query) else { return nil }
         return ResultItem(path: url.absoluteString, name: "用 \(link.name) 搜索“\(query)”", isFolder: false, score: 0, link: url)
     }
+}
+
+/// What a saved-search or syntax-help row puts into the search field.
+struct QueryFill: Equatable {
+    var text: String
+    /// Replace what is typed (saved searches, whole examples) rather than add to it.
+    var replace: Bool
+    /// Select this part of `text` after filling it (an example value to type over).
+    var select: String?
+    var explanation: String
+    var isSaved = false
 }
 
 struct SearchOutcome {
