@@ -20,6 +20,7 @@ let usage = """
   path:讲义          路径中含有         in:~/Documents  in:论语   在某文件夹（及子文件夹）中
   parent:~/Desktop   直接在某文件夹中   file:  folder:            只要文件 / 只要文件夹
   size:>10mb  size:1mb..20mb  size:empty        dm:today  dm:7d  dm:2024-10  dm:>=2024-01-01
+  dc:7d  dc:2024-10  创建时间（下载的文件即下载时间），写法同 dm:
   regex:^第.+讲\\.pdf$                         dupe:   同名文件
   最近一周  大于100MB  标签:工作
 
@@ -120,7 +121,7 @@ func runMCP(indexURL: URL) -> Never {
         home folder, iCloud Drive and Applications). Matches name substrings, abbreviations and Chinese pinyin \
         (full spelling or initials, e.g. "lunyu" or "ly" finds 论语). Every word must match. Syntax: "exact phrase", \
         -exclude, ext:pdf,docx, path:text (anywhere in the path), in:~/Documents or in:FolderName (below a folder), \
-        parent:~/Desktop (directly inside), size:>10mb, size:1mb..20mb, dm:today, dm:7d, dm:2024-10, dm:>=2024-01-01, \
+        parent:~/Desktop (directly inside), size:>10mb, size:1mb..20mb, dm:today, dm:7d, dm:2024-10, dm:>=2024-01-01, dc:7d (created; for downloads, when downloaded), \
         regex:^draft, file:, folder:, dupe: (only duplicated names). A query of only operators (e.g. "dm:today ext:pdf") \
         lists everything that passes them. Returns absolute paths with kind, size and modification time.
         """,
@@ -327,10 +328,49 @@ func runMCP(indexURL: URL) -> Never {
         return header + "\n\n" + part.text + footer
     }
 
+    let citeTool = MCPServer.Tool(
+        name: "cite_book",
+        description: """
+        Make a GB/T 7714—2015 reference (Chinese standard, monograph [M]) for an ebook file in the folders KongSeek indexes, from its file name (as Anna's Archive and Z-Library write them: title, authors, publisher, year, place) and, for EPUB, the book's own metadata (local files only). Says which parts are missing and whether the place of publication was inferred from a well-known publisher. Check the result against the book's copyright page before using it.
+        """,
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "path": ["type": "string", "description": "Absolute path of a .pdf, .epub, .mobi, .azw3 or .djvu file (~ allowed)."] as [String: Any],
+            ] as [String: Any],
+            "required": ["path"],
+        ]
+    ) { arguments in
+        guard let raw = (arguments["path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            throw MCPServer.ToolError("path is required")
+        }
+        let index: NameIndex
+        do { index = try file.current() } catch {
+            throw MCPServer.ToolError("KongSeek's index could not be read (\(error)). Open the KongSeek app once to build it.")
+        }
+        let path = Paths.canonical(raw)
+        guard !index.rules.excludes(path: path, roots: index.roots) else {
+            throw MCPServer.ToolError("This file is outside the folders KongSeek indexes (or in an excluded folder).")
+        }
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: path) else { throw MCPServer.ToolError("No such file.") }
+        let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
+        var epub: EpubMetadata?
+        if url.pathExtension.lowercased() == "epub", (try? contentAllowed()) != nil {
+            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
+            if status != .notDownloaded { epub = EpubMetadata.read(url) }
+        }
+        let result = Citation.book(EbookName.parse(stem), fallbackTitle: stem, epub: epub)
+        var lines = [result.text]
+        if !result.missing.isEmpty { lines.append("Missing: " + result.missing.joined(separator: "、")) }
+        lines += result.notes.map { "Note: " + $0 }
+        return lines.joined(separator: "\n")
+    }
+
     let duplicatesTool = MCPServer.Tool(
         name: "find_duplicates",
         description: """
-        Find files the user keeps more than once in the folders KongSeek indexes: byte-identical copies, and versions of one document ("x (1)", "x副本", "x [自动保存]", "x_v2", "x 2024-10-01"…, same kind of file) with how much of each older version's text is in the newest. Read-only: it never deletes; the user can clean up in KongSeek › 查找重复与相似文件. Largest savings first.
+        Find files the user keeps more than once in the folders KongSeek indexes: byte-identical copies; versions of one document ("x (1)", "x副本", "x [自动保存]", "x_v2", "x 2024-10-01"…, same kind of file) with how much of each older version's text is in the newest; and ebooks kept in several files (PDF and EPUB, traditional and simplified editions, downloads from different sites; matched by title). Read-only: it never deletes; the user can clean up in KongSeek › 查找重复与相似文件. Largest savings first.
         """,
         inputSchema: [
             "type": "object",
@@ -338,6 +378,7 @@ func runMCP(indexURL: URL) -> Never {
                 "folder": ["type": "string", "description": "Only below this folder (absolute or ~). Default: everything indexed."] as [String: Any],
                 "min_size_mb": ["type": "number", "minimum": 0, "description": "Ignore files smaller than this many MB (default 1)."] as [String: Any],
                 "include_versions": ["type": "boolean", "description": "Also list versions of the same document (default true; reads their text)."] as [String: Any],
+                "include_books": ["type": "boolean", "description": "Also list ebooks kept in several files (default true; by title only)."] as [String: Any],
                 "limit": ["type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum groups (default 20)."] as [String: Any],
             ] as [String: Any],
         ]
@@ -352,6 +393,7 @@ func runMCP(indexURL: URL) -> Never {
         }
         let minimum = Int64(max(0, (arguments["min_size_mb"] as? NSNumber)?.doubleValue ?? 1) * 1_000_000)
         let includeVersions = arguments["include_versions"] as? Bool ?? true
+        let includeBooks = arguments["include_books"] as? Bool ?? true
         let limit = min(100, max(1, (arguments["limit"] as? NSNumber)?.intValue ?? 20))
         let files = index.fileEntries(under: folder, minimumSize: max(1, minimum))
         let identical = DuplicateFinder.identical(files, minimumSize: max(1, minimum))
@@ -367,19 +409,30 @@ func runMCP(indexURL: URL) -> Never {
             }
             groups += DuplicateFinder.versions(files, identical: identical, minimumSize: max(1, minimum), text: reader)
         }
+        let versionCount = groups.count - identical.count
+        if includeBooks {
+            groups += DuplicateFinder.sameBooks(files, identical: identical, versions: Array(groups.dropFirst(identical.count)), minimumSize: max(1, minimum))
+        }
         guard !groups.isEmpty else { return "No duplicates among \(files.count) files of at least \(ByteCountFormatter.string(fromByteCount: max(1, minimum), countStyle: .file))." }
         func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
         let saving = identical.reduce(Int64(0)) { $0 + $1.reclaimable }
         var lines = ["\(identical.count) group(s) of identical files (removing the extra copies frees \(size(saving)))"
-                     + (includeVersions ? ", \(groups.count - identical.count) group(s) of versions" : "") + ", among \(files.count) files:"]
+                     + (includeVersions ? ", \(versionCount) group(s) of versions" : "")
+                     + (includeBooks ? ", \(groups.count - identical.count - versionCount) book(s) kept in several files" : "") + ", among \(files.count) files:"]
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         for (number, group) in groups.prefix(limit).enumerated() {
             lines.append("")
-            lines.append("\(number + 1). " + (group.kind == .identical ? "Identical, \(group.files.count) copies of \(size(group.files[0].size)) each:" : "Versions of one document:"))
+            let title: String
+            switch group.kind {
+            case .identical: title = "Identical, \(group.files.count) copies of \(size(group.files[0].size)) each:"
+            case .versions: title = "Versions of one document:"
+            case .sameBook: title = "One book in \(group.files.count) files (check the editions before removing any):"
+            }
+            lines.append("\(number + 1). " + title)
             for (position, entry) in group.files.enumerated() {
                 var details = [size(entry.size), formatter.string(from: entry.modified)]
-                if position == 0 { details.append("newest") }
+                if position == 0 && group.kind != .sameBook { details.append("newest") }
                 if !entry.isLocal { details.append("only in iCloud") }
                 if let share = group.similarity[entry.path] { details.append("\(Int((share * 100).rounded()))% of its text is in the newest") }
                 lines.append("   \(entry.path)  [\(details.joined(separator: " · "))]")
@@ -392,9 +445,9 @@ func runMCP(indexURL: URL) -> Never {
     let server = MCPServer(
         name: "kongseek", version: version,
         instructions: """
-        KongSeek indexes the user's files. search_files finds files by name (Chinese pinyin works); search_content finds documents by the words inside them; read_file reads a document's text (PDF by page). The user's files are mostly Chinese; prefer Chinese search words when the user writes in Chinese.
+        KongSeek indexes the user's files. search_files finds files by name (Chinese pinyin works); search_content finds documents by the words inside them; read_file reads a document's text (PDF by page); cite_book makes a GB/T 7714 reference for an ebook. The user's files are mostly Chinese; prefer Chinese search words when the user writes in Chinese.
         """,
-        tools: [searchTool, contentTool, readTool, duplicatesTool, infoTool]
+        tools: [searchTool, contentTool, readTool, duplicatesTool, citeTool, infoTool]
     )
     func answer(_ line: String) {
         if let reply = server.handle(line) {

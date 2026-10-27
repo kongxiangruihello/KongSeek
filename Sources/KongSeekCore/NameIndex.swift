@@ -473,7 +473,8 @@ public final class NameIndex {
                 let flag = self.flags[Int(id)]
                 let isFolder = flag & EntryFlags.directory.rawValue != 0 && flag & EntryFlags.package.rawValue == 0
                 let modified = Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9)
-                return attributes.accepts(isDirectory: isFolder, size: Int64(info.st_size), modified: modified)
+                let created = Date(timeIntervalSince1970: Double(info.st_birthtimespec.tv_sec) + Double(info.st_birthtimespec.tv_nsec) / 1e9)
+                return attributes.accepts(isDirectory: isFolder, size: Int64(info.st_size), modified: modified, created: created)
             }
         }
         if advanced.dupe { hits = duplicates(hits) }

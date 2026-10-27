@@ -1077,6 +1077,26 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     // MARK: - Action menu (⌘K)
 
+    /// Copies a GB/T 7714 reference for an ebook, from its file name and (EPUB) its
+    /// own metadata, and says what is missing (0.17).
+    static func copyReference(for path: String) -> String {
+        let url = URL(fileURLWithPath: path)
+        let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
+        var epub: EpubMetadata?
+        if url.pathExtension.lowercased() == "epub" {
+            // Never wait for an iCloud download here.
+            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
+            if status != .notDownloaded { epub = EpubMetadata.read(url) }
+        }
+        let result = Citation.book(EbookName.parse(stem), fallbackTitle: stem, epub: epub)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(result.text, forType: .string)
+        var message = "已拷贝参考文献：" + result.text
+        if !result.missing.isEmpty { message += "（缺" + result.missing.joined(separator: "、") + "，请补全）" }
+        if !result.notes.isEmpty { message += "（" + result.notes.joined(separator: "；") + "）" }
+        return message
+    }
+
     private func showActionMenu() {
         guard let item = selectedItem, item.isFile, table.selectedRow >= 0 else { return }
         let menu = NSMenu()
@@ -1130,6 +1150,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             add(isRead ? "取消“已读”标签" : "标为已读（访达标签）") { [weak self] in
                 let done = FinderTags.set(FinderTags.read, on: item.path, adding: !isRead)
                 self?.statusLabel.stringValue = !done ? "无法更改标签" : (isRead ? "已取消“已读”：\(item.name)" : "已标为已读：\(item.name)（搜索 标签:已读 可找出全部）")
+            }
+        }
+        if DuplicateFinder.bookExtensions.contains((item.path as NSString).pathExtension.lowercased()) {
+            add("拷贝为参考文献（GB/T 7714）") { [weak self] in
+                self?.statusLabel.stringValue = SearchWindowController.copyReference(for: item.path)
             }
         }
         add("批量重命名…") { [weak self] in

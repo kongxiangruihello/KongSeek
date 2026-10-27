@@ -7,6 +7,7 @@ import Foundation
 ///     parent:~/Desktop directly inside a folder; parent:论语 directly inside a folder named 论语
 ///     size:>10mb  size:<=500kb  size:1mb..20mb  size:empty  size:large
 ///     dm:today  dm:thisweek  dm:7d  dm:2024  dm:2024-10  dm:>=2024-10-01  dm:2024-01..2024-03
+///     dc:7d            created (a downloaded file: downloaded) in that range, same values as dm: (0.17)
 ///     regex:^第.+讲   the name (or, when the pattern has "/", the path) matches (-regex: excludes)
 ///     file:  folder:   only files / only folders
 ///     dupe:            only files whose name occurs more than once among the results
@@ -34,7 +35,7 @@ public struct AdvancedFilters: Sendable {
     }
 
     /// Operator names the lexer recognizes (besides ext:, which 3.2 already had).
-    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "regex", "dupe", "file", "folder"]
+    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "dc", "datecreated", "regex", "dupe", "file", "folder"]
 
     /// Applies one operator token. Returns a value to treat as an ordinary word
     /// (file:合同 = files whose name matches 合同), if any.
@@ -84,6 +85,15 @@ public struct AdvancedFilters: Sendable {
             if let start = range.start { attributes.modifiedFrom = max(attributes.modifiedFrom ?? start, start) }
             if let end = range.end { attributes.modifiedBefore = min(attributes.modifiedBefore ?? end, end) }
             descriptions.append("修改时间：\(value)")
+        case "dc", "datecreated":
+            guard needValue(), noExclusion() else { return nil }
+            guard let range = Self.dateRange(value, now: now, calendar: calendar) else {
+                errors.append("无法识别 dc:\(value)（例：dc:today、dc:7d、dc:2024-10、dc:>=2024-01-01）")
+                return nil
+            }
+            if let start = range.start { attributes.createdFrom = max(attributes.createdFrom ?? start, start) }
+            if let end = range.end { attributes.createdBefore = min(attributes.createdBefore ?? end, end) }
+            descriptions.append("创建（下载）时间：\(value)")
         case "regex":
             guard needValue() else { return nil }
             guard let regex = CompiledRegex(value) else {
@@ -311,7 +321,7 @@ public final class CompiledRegex: @unchecked Sendable {
     }
 }
 
-/// size: and dm: bounds.
+/// size:, dm: and dc: bounds.
 public struct AttributeFilters: Sendable, Equatable {
     /// Inclusive byte bounds; a size filter excludes folders.
     public var minimumSize: Int64?
@@ -319,14 +329,18 @@ public struct AttributeFilters: Sendable, Equatable {
     /// Modified at or after `modifiedFrom` and before `modifiedBefore`.
     public var modifiedFrom: Date?
     public var modifiedBefore: Date?
+    /// Created at or after `createdFrom` and before `createdBefore` (dc:).
+    public var createdFrom: Date?
+    public var createdBefore: Date?
 
     public init() {}
 
-    public var isActive: Bool { hasSize || hasDate }
+    public var isActive: Bool { hasSize || hasDate || hasCreated }
     var hasSize: Bool { minimumSize != nil || maximumSize != nil }
     var hasDate: Bool { modifiedFrom != nil || modifiedBefore != nil }
+    var hasCreated: Bool { createdFrom != nil || createdBefore != nil }
 
-    public func accepts(isDirectory: Bool, size: Int64, modified: Date?) -> Bool {
+    public func accepts(isDirectory: Bool, size: Int64, modified: Date?, created: Date? = nil) -> Bool {
         if hasSize {
             if isDirectory { return false }
             if let minimumSize, size < minimumSize { return false }
@@ -337,10 +351,15 @@ public struct AttributeFilters: Sendable, Equatable {
             if let modifiedFrom, modified < modifiedFrom { return false }
             if let modifiedBefore, modified >= modifiedBefore { return false }
         }
+        if hasCreated {
+            guard let created else { return false }
+            if let createdFrom, created < createdFrom { return false }
+            if let createdBefore, created >= createdBefore { return false }
+        }
         return true
     }
 
     public func accepts(_ metadata: EntryMetadata) -> Bool {
-        accepts(isDirectory: metadata.isDirectory, size: metadata.size, modified: metadata.modified)
+        accepts(isDirectory: metadata.isDirectory, size: metadata.size, modified: metadata.modified, created: metadata.created)
     }
 }

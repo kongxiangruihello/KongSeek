@@ -71,6 +71,8 @@ public enum SpotlightQuery {
         let iso = ISO8601DateFormatter()
         if let from = attributes.modifiedFrom { parts.append("kMDItemFSContentChangeDate >= $time.iso(\(iso.string(from: from)))") }
         if let before = attributes.modifiedBefore { parts.append("kMDItemFSContentChangeDate < $time.iso(\(iso.string(from: before)))") }
+        if let from = attributes.createdFrom { parts.append("kMDItemFSCreationDate >= $time.iso(\(iso.string(from: from)))") }
+        if let before = attributes.createdBefore { parts.append("kMDItemFSCreationDate < $time.iso(\(iso.string(from: before)))") }
         if query.advanced.kind == .folders || (attributes.hasSize && query.advanced.kind == .any) {
             parts.append(query.advanced.kind == .folders ? "kMDItemContentType == \"public.folder\"" : "kMDItemContentType != \"public.folder\"")
         } else if query.advanced.kind == .files {

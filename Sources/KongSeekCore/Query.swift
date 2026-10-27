@@ -38,13 +38,16 @@ public struct EntryMetadata: Sendable {
     public var modified: Date?
     public var contentType: UTType?
     public var tags: [String]
+    /// Creation date (for a downloaded file, when it was downloaded); for dc: (0.17).
+    public var created: Date?
 
-    public init(isDirectory: Bool, size: Int64, modified: Date?, contentType: UTType?, tags: [String]) {
+    public init(isDirectory: Bool, size: Int64, modified: Date?, contentType: UTType?, tags: [String], created: Date? = nil) {
         self.isDirectory = isDirectory
         self.size = size
         self.modified = modified
         self.contentType = contentType
         self.tags = tags
+        self.created = created
     }
 
     /// Reads the attributes from disk the way 3.2 `Entry.init` did
@@ -52,7 +55,7 @@ public struct EntryMetadata: Sendable {
     public static func read(path: String) -> EntryMetadata {
         var url = URL(fileURLWithPath: path)
         url.removeAllCachedResourceValues()
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isPackageKey, .contentTypeKey, .tagNamesKey, .labelNumberKey])
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isPackageKey, .contentTypeKey, .tagNamesKey, .labelNumberKey, .creationDateKey])
         let colorNames = [1: "灰色", 2: "绿色", 3: "紫色", 4: "蓝色", 5: "黄色", 6: "红色", 7: "橙色"]
         var tags = values?.tagNames ?? []
         if let color = colorNames[values?.labelNumber ?? 0], !tags.contains(color) { tags.append(color) }
@@ -61,7 +64,8 @@ public struct EntryMetadata: Sendable {
             size: Int64(values?.fileSize ?? 0),
             modified: values?.contentModificationDate,
             contentType: values?.contentType ?? UTType(filenameExtension: url.pathExtension),
-            tags: tags
+            tags: tags,
+            created: values?.creationDate
         )
     }
 }

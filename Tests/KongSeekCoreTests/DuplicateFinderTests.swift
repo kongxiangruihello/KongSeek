@@ -106,4 +106,42 @@ final class DuplicateFinderTests: XCTestCase {
         XCTAssertEqual(index.fileEntries(under: folder + "/a").map(\.name).sorted(), ["1.pdf", "2.pdf"])
         XCTAssertTrue(index.fileEntries().allSatisfy(\.isLocal))
     }
+
+    // MARK: One book, several files (0.17)
+
+    func testBookKeys() {
+        let key = "华夏边缘历史记忆与族群认同"
+        for name in ["华夏边缘：历史记忆与族群认同 (王明珂) (Z-Library).pdf",
+                     "華夏邊緣--歷史記憶與族群認同 by 王明珂 (z-lib.org).pdf",
+                     "华夏边缘：历史记忆与族群认同 【著名历史人类学家王明珂成名作，人文社科必读经典，全新修订再版】 .epub",
+                     "华夏边缘：历史记忆与族群认同_已读.pdf"] {
+            XCTAssertEqual(DuplicateFinder.bookKey(name), key, name)
+        }
+        XCTAssertNotEqual(DuplicateFinder.bookKey("羌在漢藏之間——一個華夏邊緣的歷史人類學研究 (王明珂) (z-lib.org).pdf"), key)
+        XCTAssertEqual(DuplicateFinder.bookKey("孔子与《论语》 Kong zi yu _ lun yu _ -- 成积春,宋立林主编 -- 9787040500288 -- 5ba8e6b83786f540ddc4ddbcd7cf8a88 -- Anna’s Archive.pdf"), "孔子与论语")
+        XCTAssertEqual(DuplicateFinder.bookKey("论语译注（带完整书签）.pdf"), "论语译注")
+        XCTAssertNil(DuplicateFinder.bookKey("1.pdf"))
+        XCTAssertNil(DuplicateFinder.bookKey("2024.pdf"))
+        XCTAssertNil(DuplicateFinder.bookKey("scan.pdf"), "short Latin names say nothing")
+    }
+
+    func testSameBooks() {
+        let now = Date()
+        let files = [
+            FileEntry(path: "/e/华夏边缘：历史记忆与族群认同 (王明珂) (Z-Library).pdf", size: 16_400_000, modified: now),
+            FileEntry(path: "/e/華夏邊緣--歷史記憶與族群認同 by 王明珂 (z-lib.org).pdf", size: 9_000_000, modified: now, isLocal: false),
+            FileEntry(path: "/e/华夏边缘：历史记忆与族群认同 【修订再版】 .epub", size: 1_100_000, modified: now),
+            FileEntry(path: "/e/羌在漢藏之間 (王明珂) (z-lib.org).pdf", size: 277_000_000, modified: now),
+            FileEntry(path: "/a/讲义.pdf", size: 2_000_000, modified: now),
+            FileEntry(path: "/b/讲义.pdf", size: 2_000_000, modified: now),
+            FileEntry(path: "/c/论语.docx", size: 2_000_000, modified: now),
+            FileEntry(path: "/c/论语.pdf", size: 2_000_000, modified: now),
+        ]
+        let groups = DuplicateFinder.sameBooks(files)
+        XCTAssertEqual(groups.count, 1, "same names in two folders and non-book formats do not count")
+        XCTAssertEqual(groups[0].kind, .sameBook)
+        XCTAssertEqual(groups[0].files.map(\.size), [16_400_000, 9_000_000, 1_100_000], "largest first")
+        let identical = DuplicateGroup(kind: .identical, files: [files[0], FileEntry(path: "/x/华夏边缘：历史记忆与族群认同 (王明珂) (Z-Library).pdf", size: 16_400_000, modified: now)])
+        XCTAssertEqual(DuplicateFinder.sameBooks(files + [identical.files[1]], identical: [identical])[0].files.count, 3, "extra identical copies left out")
+    }
 }

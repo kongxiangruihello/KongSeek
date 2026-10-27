@@ -19,6 +19,8 @@ public struct EbookName: Equatable, Sendable {
     public var publisher: String?
     public var year: String?
     public var isbn: String?
+    /// Place of publication, when the name gives it ("北京_高等教育出版社"); for citations (0.17).
+    public var place: String?
     /// The user's own mark at the end, such as "_已读".
     public var mark: String = ""
 
@@ -35,13 +37,14 @@ public struct EbookName: Equatable, Sendable {
         }
     }
 
-    public init(title: String, authors: String? = nil, publisher: String? = nil, year: String? = nil, isbn: String? = nil, mark: String = "") {
+    public init(title: String, authors: String? = nil, publisher: String? = nil, year: String? = nil, isbn: String? = nil, mark: String = "", place: String? = nil) {
         self.title = title
         self.authors = authors
         self.publisher = publisher
         self.year = year
         self.isbn = isbn
         self.mark = mark
+        self.place = place
     }
 
     public func formatted(_ style: Style) -> String {
@@ -111,10 +114,22 @@ public struct EbookName: Equatable, Sendable {
         result.isbn = isbn
         for part in rest {
             if result.publisher == nil, isPublisher(part) {
-                // "北京_高等教育出版社" → 高等教育出版社
-                result.publisher = part.components(separatedBy: "_").last?.trimmingCharacters(in: .whitespaces)
+                // "北京_高等教育出版社" → 高等教育出版社, published in 北京
+                let pieces = part.components(separatedBy: "_").map { $0.trimmingCharacters(in: .whitespaces) }
+                result.publisher = pieces.last
+                if pieces.count > 1, let first = pieces.first, containsHan(first), first.count <= 6 { result.place = first }
             } else if let year = year(in: part), isEdition(part) {
                 result.year = result.year ?? year
+                // "Di 1 ban, 北京 Beijing, 2018": the Chinese place name, if any.
+                if result.place == nil {
+                    for piece in part.components(separatedBy: ",") {
+                        let han = piece.unicodeScalars.filter { (0x3400...0x9FFF).contains($0.value) }.map(String.init).joined()
+                        if han.count >= 2 && han.count <= 6 && !piece.contains("版") {
+                            result.place = han
+                            break
+                        }
+                    }
+                }
             } else if result.authors == nil {
                 result.authors = cleanAuthors(part)
             }

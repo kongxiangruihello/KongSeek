@@ -26,6 +26,9 @@ public struct DuplicateGroup: Equatable, Sendable {
         case identical
         /// Version names of one document ("x (1)", "x副本", "x_v2", "x 2024-10-01"…).
         case versions
+        /// One book in several files: other formats (PDF, EPUB…), traditional and
+        /// simplified editions, or downloads from different sites (0.17).
+        case sameBook
     }
 
     public var kind: Kind
@@ -185,6 +188,54 @@ public enum DuplicateFinder {
             progress?(number + 1, total)
         }
         return groups.sorted { $0.reclaimable != $1.reclaimable ? $0.reclaimable > $1.reclaimable : $0.files[0].path < $1.files[0].path }
+    }
+
+    // MARK: One book, several files
+
+    /// Extensions of ebooks.
+    public static let bookExtensions: Set<String> = ["pdf", "epub", "mobi", "azw", "azw3", "djvu", "fb2", "caj", "kfx"]
+
+    /// The book a file name refers to: the title as the ebook sites write it (see
+    /// `EbookName`), in simplified characters, without notes in brackets
+    /// ("【…】", "（带完整书签）", "(z-lib.org)"), reading marks or punctuation.
+    /// "華夏邊緣--歷史記憶與族群認同 by 王明珂 (z-lib.org).pdf" and
+    /// "华夏边缘：历史记忆与族群认同 【…】.epub" both give "华夏边缘历史记忆与族群认同".
+    /// Nil for names too short to tell books apart.
+    public static func bookKey(_ name: String) -> String? {
+        let decoded = name.removingPercentEncoding ?? name
+        let stem = EbookName.splitMark((decoded as NSString).deletingPathExtension).stem
+        var title = EbookName.parse(stem)?.title ?? stem
+        // Notes in brackets; 《》 only lose the brackets (孔子与《论语》).
+        title = title.replacingOccurrences(of: #"[【\[(（][^】\])）]*[】\])）]"#, with: "", options: .regularExpression)
+        let folded = SearchText.fold(title)
+        let key = folded.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(String.init).joined()
+        let hasHan = SearchText.containsCJK(key)
+        guard key.count >= (hasHan ? 2 : 6), key.contains(where: { !$0.isNumber }) else { return nil }
+        return key
+    }
+
+    /// Groups of ebook files that hold the same book (by `bookKey`) under different
+    /// names, largest first. Extra copies of identical files are left out, as are
+    /// groups that are just one version group already found.
+    public static func sameBooks(_ files: [FileEntry], identical: [DuplicateGroup] = [], versions: [DuplicateGroup] = [],
+                                 minimumSize: Int64 = 1) -> [DuplicateGroup] {
+        let extraCopies = Set(identical.flatMap { $0.files.dropFirst().map(\.path) })
+        let versionSets = versions.map { Set($0.files.map(\.path)) }
+        var byKey: [String: [FileEntry]] = [:]
+        for file in files where file.size >= minimumSize && !extraCopies.contains(file.path)
+            && bookExtensions.contains((file.path as NSString).pathExtension.lowercased()) {
+            if let key = bookKey(file.name) { byKey[key, default: []].append(file) }
+        }
+        var groups: [DuplicateGroup] = []
+        for members in byKey.values where members.count > 1 {
+            // The same name in several folders is not news here (dupe: lists those).
+            if Set(members.map(\.name)).count == 1 { continue }
+            let paths = Set(members.map(\.path))
+            if versionSets.contains(where: { paths.isSubset(of: $0) }) { continue }
+            groups.append(DuplicateGroup(kind: .sameBook, files: members.sorted { $0.size != $1.size ? $0.size > $1.size : $0.path < $1.path }))
+        }
+        func total(_ group: DuplicateGroup) -> Int64 { group.files.reduce(0) { $0 + $1.size } }
+        return groups.sorted { total($0) != total($1) ? total($0) > total($1) : $0.files[0].path < $1.files[0].path }
     }
 
     // MARK: Text similarity

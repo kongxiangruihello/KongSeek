@@ -139,6 +139,12 @@ final class AdvancedQueryTests: XCTestCase {
         XCTAssertEqual(names("dm:2020"), ["其他/old.txt"])
         XCTAssertEqual(names("dm:<2021"), ["其他/old.txt"])
         XCTAssertEqual(names("old dm:today"), [])
+        // dc: (0.17): creation date, which for a download is when it was downloaded.
+        try FileManager.default.setAttributes([.creationDate: date("2019-03-01")], ofItemAtPath: root + "/孟子/第一讲.pdf")
+        XCTAssertEqual(names("dc:2019"), ["孟子/第一讲.pdf"])
+        XCTAssertEqual(names("dc:today ext:pdf"), ["论语/草稿/第一讲.pdf", "论语/讲义/第一讲.pdf"])
+        XCTAssertEqual(SearchQuery("dc:7d").advanced.descriptions, ["创建（下载）时间：7d"])
+        XCTAssertFalse(SearchQuery("dc:soon").valid)
         XCTAssertEqual(names("in:不存在"), [])
 
         let dupes = index.search(SearchQuery("dupe:")).map { String(index.path(of: $0.id).dropFirst(root.count + 1)) }

@@ -13,6 +13,7 @@ final class DuplicatesModel: ObservableObject {
     @Published var scope: Scope = .everything
     @Published var minimumSize: Int64 = 1_000_000
     @Published var includeVersions = true
+    @Published var includeBooks = true
     @Published private(set) var running = false
     @Published private(set) var status = "选择范围后点“开始查找”。只读取文件内容做比较，不会改动任何文件。"
     @Published private(set) var groups: [DuplicateGroup] = []
@@ -47,6 +48,7 @@ final class DuplicatesModel: ObservableObject {
         let folder: String? = { if case .folder(let path) = scope { return path } else { return nil } }()
         let minimum = minimumSize
         let versions = includeVersions
+        let books = includeBooks
         service.fileEntries(under: folder, minimumSize: minimum) { [weak self] files in
             guard let self else { return }
             self.status = "共 \(files.count.formatted()) 个文件，正在比较内容…"
@@ -55,23 +57,30 @@ final class DuplicatesModel: ObservableObject {
                     if done % 20 == 0 || done == total { self.report("正在比较大小相同的文件：\(done) / \(total)") }
                 }, isCancelled: self.isCancelled)
                 var all = identical
+                var versionGroups: [DuplicateGroup] = []
                 if versions && !self.isCancelled() {
-                    let found = DuplicateFinder.versions(files, identical: identical, minimumSize: minimum, text: Self.text, progress: { done, total in
+                    versionGroups = DuplicateFinder.versions(files, identical: identical, minimumSize: minimum, text: Self.text, progress: { done, total in
                         self.report("正在读取并比较不同版本的文字：\(done) / \(total) 组")
                     }, isCancelled: self.isCancelled)
-                    all += found
+                    all += versionGroups
+                }
+                var bookGroups: [DuplicateGroup] = []
+                if books && !self.isCancelled() {
+                    bookGroups = DuplicateFinder.sameBooks(files, identical: identical, versions: versionGroups, minimumSize: minimum)
+                    all += bookGroups
                 }
                 DispatchQueue.main.async {
                     self.groups = all
                     self.running = false
                     let identicalCount = identical.count
-                    let versionCount = all.count - identicalCount
+                    let versionCount = versionGroups.count
                     if self.isCancelled() {
                         self.status = "已停止。以下是停止前找到的结果。"
                     } else if all.isEmpty {
                         self.status = "没有找到重复或相似的文件（\(files.count.formatted()) 个文件，不小于 \(Self.label(minimum))）。"
                     } else {
                         self.status = "找到 \(identicalCount) 组完全相同的文件" + (versions ? "、\(versionCount) 组同一文件的不同版本" : "")
+                            + (books ? "、\(bookGroups.count) 本书有多个文件（不同格式、繁简或来源）" : "")
                             + "；删除重复副本可腾出 \(ByteCountFormatter.string(fromByteCount: self.reclaimable, countStyle: .file))。"
                     }
                 }
@@ -197,8 +206,10 @@ struct DuplicatesView: View {
                 ForEach(DuplicatesModel.sizes, id: \.0) { Text($0.1).tag($0.0) }
             }
             .frame(width: 130)
-            Toggle("也找同一文件的不同版本", isOn: $model.includeVersions)
-                .help("名称相同、只差“副本”“(1)”“[自动保存]”“_v2”或日期的文件；会读取文字计算相似度，较慢")
+            Toggle("不同版本", isOn: $model.includeVersions)
+                .help("同一文件的不同版本：名称相同、只差“副本”“(1)”“[自动保存]”“_v2”或日期；会读取文字计算相似度，较慢")
+            Toggle("同一本书", isOn: $model.includeBooks)
+                .help("同一本电子书的多个文件：PDF 与 EPUB 等不同格式、繁体与简体、不同网站下载的版本（按书名判断，不读内容）")
             Spacer()
             if model.running {
                 ProgressView().controlSize(.small)
@@ -214,10 +225,13 @@ struct DuplicatesView: View {
         let extra = files.dropFirst().reduce(Int64(0)) { $0 + $1.size }
         let size = ByteCountFormatter.string(fromByteCount: extra, countStyle: .file)
         return HStack {
-            if group.kind == .identical {
+            switch group.kind {
+            case .identical:
                 Text("完全相同 · \(files.count) 个 · 每个 \(ByteCountFormatter.string(fromByteCount: files[0].size, countStyle: .file)) · 可腾出 \(size)")
-            } else {
+            case .versions:
                 Text("同一文件的 \(files.count) 个版本 · 旧版本共 \(size)")
+            case .sameBook:
+                Text("同一本书的 \(files.count) 个文件 · 共 \(ByteCountFormatter.string(fromByteCount: files.reduce(Int64(0)) { $0 + $1.size }, countStyle: .file)) · 请打开核对版本后再决定保留哪个")
             }
             Spacer()
             if model.canKeepNewest(group) {
@@ -236,7 +250,11 @@ struct DuplicatesView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(file.name).lineLimit(1).truncationMode(.middle)
-                    if isNewest { badge("最新", .green) }
+                    if isNewest && group.kind != .sameBook { badge("最新", .green) }
+                    if group.kind == .sameBook {
+                        badge((file.path as NSString).pathExtension.uppercased(), .purple)
+                        if SearchText.simplifiedChinese(file.name) != file.name { badge("繁体", .brown) }
+                    }
                     if !file.isLocal { badge("仅在 iCloud", .gray) }
                     if group.kind == .versions && !isNewest {
                         if let share = group.similarity[file.path] {
