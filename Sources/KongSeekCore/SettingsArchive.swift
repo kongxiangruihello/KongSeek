@@ -15,7 +15,7 @@ public struct SettingsArchive {
     public static let transferableKeys: Set<String> = [
         "roots", "includeHidden", "matchFolderPath", "archiveSearch",
         "searchShortcut", "searchShortcutCleared", "doubleTapModifier",
-        "ocrEnabled", "ocrFolders", "ocrPageLimit", "ocrOnlyOnPower", "ocrDownloadFromICloud",
+        "ocrEnabled", "ocrFolders", "ocrPageLimit", "ocrOnlyOnPower", "ocrDownloadFromICloud", "ocrUseLiveText",
         "clipboardEnabled", "clipboardShortcut", "clipboardShortcutCleared", "clipboardRetentionDays",
         "clipboardMaximumItems", "autoPaste", "clipboardOCR", "clipboardExcludedApps", "cleanupOperations",
         "quickLinks", "lookupShortcut", "lookupShortcutCleared", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",

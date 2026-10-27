@@ -11,14 +11,19 @@ enum KongReviewLink {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
     }
 
+    /// Opens KongReview's capture window with the text and, when given, the book's
+    /// title and author, the place (第 23 页), a note (the full reference) and tags.
+    /// KongReview's kongreview://add takes all of these (KongReview SettingsView, 0.22).
     @discardableResult
-    static func send(text: String, title: String? = nil) -> Bool {
+    static func send(text: String, title: String? = nil, author: String? = nil, location: String? = nil,
+                     note: String? = nil, tags: [String] = []) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         var parts = ["text=" + encode(String(trimmed.prefix(20_000)))]
-        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-            parts.append("title=" + encode(title))
+        for (key, value) in [("title", title), ("author", author), ("location", location), ("note", note)] {
+            if let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty { parts.append(key + "=" + encode(value)) }
         }
+        if !tags.isEmpty { parts.append("tags=" + encode(tags.joined(separator: ","))) }
         guard let url = URL(string: "kongreview://add?" + parts.joined(separator: "&")) else { return false }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true

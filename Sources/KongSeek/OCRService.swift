@@ -15,6 +15,8 @@ final class OCRService {
         var onlyOnPower = true
         /// Ask iCloud to download files that are only in the cloud, then recognize them.
         var downloadFromICloud = false
+        /// Recognize with VisionKit's Live Text engine, which reads vertical text (0.22).
+        var useLiveText = false
     }
 
     /// Progress, read on the main thread.
@@ -118,7 +120,7 @@ final class OCRService {
                     return
                 }
                 self.update { $0.pausedReason = nil; $0.pending = candidates.count - index }
-                self.recognize(url, pageLimit: settings.pageLimit, generation: current)
+                self.recognize(url, pageLimit: settings.pageLimit, useLiveText: settings.useLiveText, generation: current)
             }
             self.update { $0.pending = 0; $0.currentFile = nil }
         }
@@ -159,7 +161,10 @@ final class OCRService {
         return (result, inCloud)
     }
 
-    private func recognize(_ url: URL, pageLimit: Int, generation: Int) {
+    private func recognize(_ url: URL, pageLimit: Int, useLiveText: Bool = false, generation: Int) {
+        func read(_ image: CGImage) throws -> String {
+            try (useLiveText ? LiveTextRecognizer.recognize(image) : TextRecognizer.recognize(image))
+        }
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
         let name = url.lastPathComponent
         var pages: [String] = []
@@ -180,7 +185,7 @@ final class OCRService {
                     update { $0.currentFile = name; $0.currentPage = index + 1; $0.currentPages = count }
                     let text: String = try autoreleasepool {
                         guard let page = document.page(at: index), let image = Self.render(page) else { return "" }
-                        return try TextRecognizer.recognize(image)
+                        return try read(image)
                     }
                     pages.append(text)
                 }
@@ -193,7 +198,7 @@ final class OCRService {
                         kCGImageSourceThumbnailMaxPixelSize: 4000
                       ] as CFDictionary) else { throw CocoaError(.fileReadCorruptFile) }
                 // Icons and tiny pictures carry no useful text.
-                pages.append(try (image.width >= 200 && image.height >= 100 ? TextRecognizer.recognize(image) : ""))
+                pages.append(try (image.width >= 200 && image.height >= 100 ? read(image) : ""))
             }
             guard generation == self.generation else { return }
             try store.save(OCRRecord(path: url.path, size: values?.fileSize ?? 0, modified: values?.contentModificationDate ?? .distantPast,

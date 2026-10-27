@@ -55,6 +55,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let ocrEnabledCheckbox = NSButton(checkboxWithTitle: "识别所选文件夹中扫描版 PDF 和图片的文字，供全文搜索", target: nil, action: nil)
     private let ocrPowerCheckbox = NSButton(checkboxWithTitle: "只在接通电源时识别", target: nil, action: nil)
     private let ocrCloudCheckbox = NSButton(checkboxWithTitle: "先下载只存于 iCloud 的文件再识别（占用本机空间）", target: nil, action: nil)
+    private let ocrLiveTextCheckbox = NSButton(checkboxWithTitle: "用“实况文本”引擎识别（能读竖排古籍；先在阅读窗口用“识别试验”比较）", target: nil, action: nil)
     private let ocrPagePopup = NSPopUpButton()
     private let ocrStatusLabel = NSTextField(wrappingLabelWithString: "")
     private let ocrPauseButton = NSButton(title: "暂停", target: nil, action: nil)
@@ -314,7 +315,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         for limit in Self.pageLimits { ocrPagePopup.addItem(withTitle: "\(limit) 页") }
         ocrPagePopup.target = self
         ocrPagePopup.action = #selector(ocrPageLimitChanged)
-        for checkbox in [ocrEnabledCheckbox, ocrPowerCheckbox, ocrCloudCheckbox] {
+        for checkbox in [ocrEnabledCheckbox, ocrPowerCheckbox, ocrCloudCheckbox, ocrLiveTextCheckbox] {
             checkbox.target = self
             checkbox.action = #selector(ocrCheckboxChanged(_:))
         }
@@ -328,7 +329,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         let findScanned = NSButton(title: "查找扫描版 PDF…", target: self, action: #selector(findScannedPDFs))
         findScanned.toolTip = "在已索引的文件夹中找出没有文字层的 PDF，按文件夹列出，一键加入上面的列表"
 
-        let views: [NSView] = [ocrEnabledCheckbox, scroll, add, remove, findScanned, note, pageLabel, ocrPagePopup, ocrPowerCheckbox, ocrCloudCheckbox, ocrStatusLabel, ocrPauseButton, check, clear]
+        let views: [NSView] = [ocrEnabledCheckbox, scroll, add, remove, findScanned, note, pageLabel, ocrPagePopup, ocrPowerCheckbox, ocrCloudCheckbox, ocrLiveTextCheckbox, ocrStatusLabel, ocrPauseButton, check, clear]
         for view in views {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
@@ -357,7 +358,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             ocrPowerCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             ocrCloudCheckbox.topAnchor.constraint(equalTo: ocrPowerCheckbox.bottomAnchor, constant: 6),
             ocrCloudCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            ocrStatusLabel.topAnchor.constraint(equalTo: ocrCloudCheckbox.bottomAnchor, constant: 10),
+            ocrLiveTextCheckbox.topAnchor.constraint(equalTo: ocrCloudCheckbox.bottomAnchor, constant: 6),
+            ocrLiveTextCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            ocrStatusLabel.topAnchor.constraint(equalTo: ocrLiveTextCheckbox.bottomAnchor, constant: 10),
             ocrStatusLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             ocrStatusLabel.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
             ocrPauseButton.topAnchor.constraint(equalTo: ocrStatusLabel.bottomAnchor, constant: 8),
@@ -379,6 +382,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         ocrEnabledCheckbox.state = Preferences.ocrEnabled ? .on : .off
         ocrPowerCheckbox.state = Preferences.ocrOnlyOnPower ? .on : .off
         ocrCloudCheckbox.state = Preferences.ocrDownloadFromICloud ? .on : .off
+        ocrLiveTextCheckbox.state = Preferences.ocrUseLiveText ? .on : .off
         ocrPagePopup.selectItem(at: Self.pageLimits.firstIndex(of: Preferences.ocrPageLimit) ?? 1)
         ocrPauseButton.title = ocr.paused ? "继续" : "暂停"
         ocrStatusLabel.stringValue = ocrStatusText
@@ -442,6 +446,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         case ocrEnabledCheckbox: Preferences.ocrEnabled = sender.state == .on
         case ocrPowerCheckbox: Preferences.ocrOnlyOnPower = sender.state == .on
         case ocrCloudCheckbox: Preferences.ocrDownloadFromICloud = sender.state == .on
+        case ocrLiveTextCheckbox: Preferences.ocrUseLiveText = sender.state == .on
         default: break
         }
         ocrSettingsChanged()

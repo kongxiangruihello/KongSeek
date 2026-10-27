@@ -140,6 +140,12 @@ final class QuoteFinderModel: ObservableObject {
         status = withQuote ? "已拷贝原文和出处。" : "已拷贝出处：\(reference(result))"
     }
 
+    /// Opens KongReview's capture window with the passage and its source (0.22).
+    func sendToKongReview(_ result: Result) {
+        KongReviewLink.send(text: result.excerpt, title: result.title, author: result.book?.authors,
+                            location: result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" }, note: reference(result))
+    }
+
     func pasteFromClipboard() {
         if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty { quote = text }
     }
@@ -181,6 +187,9 @@ struct QuoteFinderView: View {
                         Button("打开到此处") { model.open(result) }.controlSize(.small)
                         Button("拷贝出处") { model.copy(result, withQuote: false) }.controlSize(.small)
                         Button("拷贝原文和出处") { model.copy(result, withQuote: true) }.controlSize(.small)
+                        if KongReviewLink.isInstalled {
+                            Button("送到 KongReview") { model.sendToKongReview(result) }.controlSize(.small)
+                        }
                     }
                     Text(result.excerpt).font(.callout).foregroundColor(.secondary).lineLimit(3)
                     Text(SearchWindowController.displayLocation(of: result.path)).font(.caption2).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)

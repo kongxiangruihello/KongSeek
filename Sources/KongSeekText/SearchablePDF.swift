@@ -90,7 +90,7 @@ public enum SearchablePDF {
     }
 
     /// The page as a picture about 2400 pixels on its long side, on white, upright.
-    static func render(_ page: CGPDFPage, box: CGRect) -> CGImage? {
+    public static func render(_ page: CGPDFPage, box: CGRect) -> CGImage? {
         guard box.width > 1, box.height > 1 else { return nil }
         let scale = min(4, 2400 / max(box.width, box.height))
         let width = Int(box.width * scale), height = Int(box.height * scale)

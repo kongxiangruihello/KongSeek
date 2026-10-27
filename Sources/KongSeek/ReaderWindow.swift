@@ -161,6 +161,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         zoomOutButton.toolTip = "缩小（⌘−）"
         zoomInButton.toolTip = "放大（⌘+）；⌘0 适合窗口"
         for button in [zoomOutButton, zoomInButton] { button.bezelStyle = .texturedRounded }
+        let trialButton = NSButton(title: "识别试验", target: self, action: #selector(recognitionTrial))
+        trialButton.toolTip = "用两种识别引擎识别当前页，比较效果（如竖排古籍）"
+        trialButton.bezelStyle = .texturedRounded
         let previewButton = NSButton(title: "用“预览”打开", target: self, action: #selector(openInPreview))
         let revealButton = NSButton(title: "在访达中显示", target: self, action: #selector(reveal))
         for button in [previewButton, revealButton] { button.bezelStyle = .texturedRounded }
@@ -170,7 +173,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         messageLabel.textColor = .secondaryLabelColor
         messageLabel.lineBreakMode = .byTruncatingTail
 
-        let bar = NSStackView(views: [outlineButton, pageLabel, messageLabel, NSView(), zoomOutButton, zoomInButton, findField, previewButton, revealButton])
+        let bar = NSStackView(views: [outlineButton, pageLabel, messageLabel, NSView(), zoomOutButton, zoomInButton, findField, trialButton, previewButton, revealButton])
         bar.spacing = 8
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
         messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -369,6 +372,12 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         pdfView.go(to: current)
         pdfView.setCurrentSelection(current, animate: true)
         messageLabel.stringValue = "第 \(findIndex + 1) / \(findResults.count) 处（↩ 下一处）"
+    }
+
+    @objc private func recognitionTrial() {
+        guard let document = pdfView.document, let page = pdfView.currentPage, let ref = page.pageRef else { return }
+        let number = document.index(for: page) + 1
+        RecognitionTrialWindowController.shared.run(page: ref, title: "\(url?.lastPathComponent ?? "") · 第 \(number) 页")
     }
 
     @objc private func openInPreview() {

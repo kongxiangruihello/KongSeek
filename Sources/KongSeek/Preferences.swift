@@ -198,8 +198,15 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "ocrDownloadFromICloud") }
     }
 
+    /// Recognize with the Live Text engine (reads vertical text; 0.22).
+    static var ocrUseLiveText: Bool {
+        get { defaults.bool(forKey: "ocrUseLiveText") }
+        set { defaults.set(newValue, forKey: "ocrUseLiveText") }
+    }
+
     static var ocrSettings: OCRService.Settings {
-        OCRService.Settings(enabled: ocrEnabled, folders: ocrFolders, pageLimit: ocrPageLimit, onlyOnPower: ocrOnlyOnPower, downloadFromICloud: ocrDownloadFromICloud)
+        OCRService.Settings(enabled: ocrEnabled, folders: ocrFolders, pageLimit: ocrPageLimit, onlyOnPower: ocrOnlyOnPower,
+                            downloadFromICloud: ocrDownloadFromICloud, useLiveText: ocrUseLiveText)
     }
 
     // MARK: - Clipboard history

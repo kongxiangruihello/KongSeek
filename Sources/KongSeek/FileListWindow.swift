@@ -168,14 +168,31 @@ final class FileListModel: ObservableObject {
         status = "已拷贝 \(books.count) 条参考文献（按作者拼音排序）" + (incomplete > 0 ? "；其中 \(incomplete) 条缺出版地、出版者或出版年，请补全。" : "。")
     }
 
-    func exportList(window: NSWindow?) {
+    /// The book list as an Excel workbook (bold, frozen header, column widths; 0.22) or as CSV.
+    func exportList(window: NSWindow?, excel: Bool = true) {
         let rows = targets
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.commaSeparatedText]
-        panel.nameFieldStringValue = "书单.csv"
-        panel.message = "导出为 CSV 表格（Excel、Numbers 可直接打开）"
+        panel.allowedContentTypes = [excel ? (UTType(filenameExtension: "xlsx") ?? .data) : .commaSeparatedText]
+        panel.nameFieldStringValue = excel ? "书单.xlsx" : "书单.csv"
+        panel.message = excel ? "导出为 Excel 表格" : "导出为 CSV 表格（Excel、Numbers 可直接打开）"
         let save: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
+            if excel {
+                let header = ["书名", "作者", "出版社", "出版年", "格式", "大小（MB）", "阅读状态", "文件名", "位置"].map { XLSXWriter.Cell.text($0) }
+                let body = rows.map { row -> [XLSXWriter.Cell] in
+                    [.text(row.title), .text(row.authors), .text(row.publisher), .text(row.year), .text(row.format),
+                     .number((Double(row.size) / 100_000).rounded() / 10), .text(row.state), .text(row.name), .text(row.path)]
+                }
+                do {
+                    try? FileManager.default.removeItem(at: url)
+                    try XLSXWriter.write(rows: [header] + body, columnWidths: [40, 22, 22, 8, 8, 11, 10, 40, 60], sheetName: "书单", to: url)
+                    self?.status = "已导出 \(rows.count) 项到 \(url.lastPathComponent)"
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                } catch {
+                    self?.status = "导出失败：\(error.localizedDescription)"
+                }
+                return
+            }
             func field(_ text: String) -> String { "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
             var lines = [["书名", "作者", "出版社", "出版年", "格式", "大小（MB）", "阅读状态", "文件名", "位置"].map(field).joined(separator: ",")]
             for row in rows {
@@ -248,6 +265,10 @@ struct FileListView: View {
                 }
             }
             Table(model.shown, selection: $model.selection, sortOrder: $model.sortOrder) {
+                TableColumn("封面", value: \.name, comparator: .localizedStandard) { row in
+                    ThumbnailView(path: row.path, size: 40)
+                }
+                .width(36)
                 TableColumn("书名 / 文件", value: \.title, comparator: .localizedStandard) { row in
                     Text(row.title).help(row.name)
                 }
@@ -281,7 +302,11 @@ struct FileListView: View {
                     }
                 }
                 .frame(width: 250)
-                Button("导出书单…") { model.exportList(window: window()) }
+                Menu("导出书单") {
+                    Button("Excel 表格（.xlsx）…") { model.exportList(window: window(), excel: true) }
+                    Button("CSV 表格…") { model.exportList(window: window(), excel: false) }
+                }
+                .frame(width: 110)
                 Menu("阅读状态") {
                     ForEach(FinderTags.readingStates, id: \.self) { state in
                         Button(state) { model.setState(state) }
@@ -290,6 +315,10 @@ struct FileListView: View {
                     Button("清除") { model.setState(nil) }
                 }
                 .frame(width: 110)
+                Button("打包…") {
+                    CoursePackageWindowController.shared.start(paths: model.targets.map(\.path), name: model.heading)
+                }
+                .help("把所选（或全部）文件复制到一个文件夹或打成 zip，方便发给学生或拷进 U 盘")
                 Spacer()
                 Button("移到废纸篓…") { model.trash() }
             }

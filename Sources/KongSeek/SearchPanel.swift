@@ -1085,6 +1085,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             self?.hide()
             self?.onFileList?(.query(text))
         })
+        menu.addItem(ClosureMenuItem(title: "打包课程材料（复制到文件夹或 zip）…", key: "") { [weak self] in
+            guard let self else { return }
+            let name = Preferences.savedSearchNames[text] ?? text
+            self.hide()
+            self.service.search(text, precision: Preferences.precision, limit: 3_000) { outcome in
+                let paths = outcome.items.filter { $0.isFile && !$0.isFolder && !$0.isInArchive }.map(\.path)
+                CoursePackageWindowController.shared.start(paths: paths, name: name)
+            }
+        })
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "从收藏中移除", key: "") { [weak self] in
             Preferences.savedSearches.removeAll { $0 == text }
@@ -1226,7 +1235,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     /// Copies the sentence around the hit with where it comes from: a GB/T 7714
     /// reference with the page for ebooks, otherwise the file name and page (0.18).
-    private func copyQuotation(_ item: ResultItem) {
+    /// `toKongReview`: instead of copying, opens KongReview's capture window with the
+    /// sentence, the book's title and author, the page, and the reference as a note (0.22).
+    private func copyQuotation(_ item: ResultItem, toKongReview: Bool = false) {
         let needles = outcome.highlightWords
         let page = hitPage(for: item)
         let store = ocr.store
@@ -1241,8 +1252,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             let sentence = Quotation.sentence(in: source, needles: needles)
             let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
             let origin: String
+            var book: EbookName?
             if DuplicateFinder.bookExtensions.contains(ext) {
                 let info = BookInfo.read(url)
+                book = info.name
                 origin = Citation.make(Preferences.citationStyle, name: info.name, fallbackTitle: info.name.title, page: page).text
             } else {
                 origin = "《\(stem)》" + (page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" } ?? "")
@@ -1251,6 +1264,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 guard let self else { return }
                 guard let sentence else {
                     self.statusLabel.stringValue = "未能提取命中的句子"
+                    return
+                }
+                if toKongReview {
+                    let place = page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" }
+                    KongReviewLink.send(text: sentence, title: book?.title ?? stem, author: book?.authors, location: place, note: origin)
+                    self.hide()
                     return
                 }
                 let text = "“\(sentence)”\n\(origin)"
@@ -1329,6 +1348,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         menu.addItem(.separator())
         if lastHit?.path == item.path {
             add(hitPage.map { "拷贝引文（含出处，第 \($0) \(ext == "pptx" ? "张" : "页")）" } ?? "拷贝引文（含出处）") { [weak self] in self?.copyQuotation(item) }
+            if KongReviewLink.isInstalled {
+                add("引文送到 KongReview 摘录（带书名、作者、页码）") { [weak self] in self?.copyQuotation(item, toKongReview: true) }
+            }
         }
         add("拷贝文件", "c") { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .file) ?? "" }
         add("拷贝路径", "c", [.command, .option]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .path) ?? "" }

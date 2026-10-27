@@ -44,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ocr = OCRService(directory: support.appendingPathComponent("KongSeek/OCR"))
         ocr.configure(Preferences.ocrSettings)
         ReaderWindowController.ocrStore = ocr.store
+        NotificationCenter.default.addObserver(forName: .ocrSettingsChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.ocr.configure(Preferences.ocrSettings)
+        }
         searchWindow = SearchWindowController(service: service, ocr: ocr)
         searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
         searchWindow.onFileList = { [weak self] source in self?.openFileList(source) }
