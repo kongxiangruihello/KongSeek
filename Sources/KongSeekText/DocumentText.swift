@@ -65,7 +65,8 @@ public enum DocumentText {
             guard downloadWait > 0, (values?.fileSize ?? 0) <= 200_000_000 else { throw Failure.notDownloaded }
             try download(url, wait: downloadWait)
         }
-        guard (values?.fileSize ?? 0) <= 300_000_000 else { throw Failure.tooLarge }
+        // .pptx/.xlsx: only the XML text parts are read, however large the pictures make the file.
+        guard (values?.fileSize ?? 0) <= 300_000_000 || ext == "pptx" || ext == "xlsx" else { throw Failure.tooLarge }
         let record = ocr?.record(for: path)
 
         if ext == "pdf" {

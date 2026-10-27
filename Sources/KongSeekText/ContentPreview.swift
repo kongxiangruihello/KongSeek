@@ -37,7 +37,8 @@ public enum ContentPreview {
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .ubiquitousItemDownloadingStatusKey])
         if values?.ubiquitousItemDownloadingStatus == .notDownloaded { return .notDownloaded }
         let size = values?.fileSize ?? 0
-        guard size <= 300_000_000 else { return .unsupported }
+        // .pptx/.xlsx are zip archives whose size is mostly pictures; only their small XML text parts are read.
+        guard size <= 300_000_000 || ext == "pptx" || ext == "xlsx" else { return .unsupported }
 
         if ext == "pdf" {
             guard let document = PDFDocument(url: url) else { return .notFound }
