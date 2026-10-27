@@ -43,3 +43,17 @@ final class QuotationTests: XCTestCase {
         XCTAssertEqual(Set(index.recentlyCreated(since: since, downloadedOnly: false).map(\.name)), ["新书.pdf", "自己写的.docx"])
     }
 }
+
+final class TextLocatorTests: XCTestCase {
+    func testAcrossLineBreaks() {
+        let text = "子曰：“克己复\n礼为仁。一日克己 复礼，天下归仁焉。”"
+        let ranges = TextLocator.ranges(of: ["克己复礼"], in: text)
+        XCTAssertEqual(ranges.count, 2)
+        let ns = text as NSString
+        XCTAssertEqual(ns.substring(with: ranges[0]), "克己复\n礼")
+        XCTAssertEqual(ns.substring(with: ranges[1]), "克己 复礼")
+        XCTAssertEqual(TextLocator.ranges(of: ["克己復禮"], in: text).count, 2, "traditional input")
+        XCTAssertEqual(TextLocator.ranges(of: ["孟子"], in: text), [])
+        XCTAssertEqual(TextLocator.ranges(of: ["Ren"], in: "a REN b 🎉 ren").map { ("a REN b 🎉 ren" as NSString).substring(with: $0) }, ["REN", "ren"])
+    }
+}

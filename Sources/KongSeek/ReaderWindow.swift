@@ -137,22 +137,17 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         pdfView.document = document
         outlineRoot = document.outlineRoot
         outlineView.reloadData()
-        let hasOutline = (outlineRoot?.numberOfChildren ?? 0) > 0
-        setOutlineVisible(hasOutline)
-        outlineButton.isEnabled = hasOutline
-        messageLabel.stringValue = hasOutline ? "" : "此 PDF 没有目录（书签）"
+        let outlineCount = outlineRoot?.numberOfChildren ?? 0
+        setOutlineVisible(outlineCount > 0)
+        outlineButton.isEnabled = outlineCount > 0
+        let outlineNote = outlineCount > 0 ? "左侧目录 \(outlineCount) 项" : "此 PDF 没有目录（书签）"
         var target: PDFPage?
         if let page, page >= 1, page <= document.pageCount { target = document.page(at: page - 1) }
-        // Only the target page is searched, so a long book opens at once.
+        // Only the target page is searched, so a long book opens at once; line breaks
+        // inside the words are allowed (TextLocator).
         var marks: [PDFSelection] = []
         if let target, let text = target.string {
-            for word in words.flatMap(SearchText.scriptVariants) where !word.isEmpty {
-                var from = text.startIndex
-                while from < text.endIndex, let range = text.range(of: word, options: [.caseInsensitive, .widthInsensitive], range: from..<text.endIndex) {
-                    if let selection = target.selection(for: NSRange(range, in: text)) { marks.append(selection) }
-                    from = range.upperBound
-                }
-            }
+            marks = TextLocator.ranges(of: words, in: text).compactMap { target.selection(for: $0) }
         }
         for mark in marks { mark.color = .systemYellow }
         pdfView.highlightedSelections = marks.isEmpty ? nil : marks
@@ -160,8 +155,18 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
             pdfView.go(to: first)
         } else if let target {
             pdfView.go(to: target)
-            if !words.isEmpty, let page { messageLabel.stringValue = "命中在第 \(page) 页（扫描页的识别文字无法在页面上标出）" }
         }
+        // Say plainly what happened, so it is clear whether this is the hit.
+        var parts: [String] = []
+        if let page, target != nil {
+            let shown = words.joined(separator: " ")
+            parts.append(marks.isEmpty
+                ? "命中在第 \(page) 页；此页的文字层中没有“\(shown)”（多为扫描页，命中来自识别文字），未能标黄"
+                : "命中在第 \(page) 页，已标黄 \(marks.count) 处")
+        }
+        parts.append(outlineNote)
+        messageLabel.stringValue = parts.joined(separator: " · ")
+        messageLabel.toolTip = messageLabel.stringValue
         pageChanged()
     }
 
