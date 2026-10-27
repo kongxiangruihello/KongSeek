@@ -22,6 +22,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private var outcome = SearchOutcome()
     private var keyMonitor: Any?
     private let icons = NSCache<NSString, NSImage>()
+    /// When the panel was last shown, and how often it took focus back since then.
+    private var shownAt = Date.distantPast
+    private var focusReclaims = 0
 
     private static let width: CGFloat = 800
     private static let height: CGFloat = 500
@@ -56,7 +59,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             panel.setFrameOrigin(origin)
         }
         updateStatus()
+        shownAt = Date()
+        focusReclaims = 0
         panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
         panel.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
         installKeyMonitor()
@@ -69,8 +75,27 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         panel.orderOut(nil)
     }
 
+    /// Hides the panel when the user moves to another window. Right after it is
+    /// shown, macOS can hand keyboard focus straight back to the app that was in
+    /// front (seen on the first ⌥Space after launch); the panel then takes focus
+    /// back instead of disappearing.
     func windowDidResignKey(_ notification: Notification) {
-        hide()
+        guard panel.isVisible else { return }
+        if Date().timeIntervalSince(shownAt) < 0.8 && focusReclaims < 3 {
+            focusReclaims += 1
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+                self.panel.makeKeyAndOrderFront(nil)
+                self.panel.makeFirstResponder(self.field)
+                self.field.currentEditor()?.moveToEndOfDocument(nil)
+            }
+            return
+        }
+        // Let a focus change settle (e.g. Quick Look's preview briefly taking it).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            self.hide()
+        }
     }
 
     // MARK: - Setup
