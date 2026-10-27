@@ -235,8 +235,17 @@ func runMCP(indexURL: URL) -> Never {
             throw MCPServer.ToolError("Spotlight could not run this search.")
         }
         var seen = Set(recognized.map(\.path))
+        // Documents (PDF, Word, slides, text) before code and data files such as .json or .swift,
+        // which Spotlight ranks just as high; then Spotlight's relevance, then newest.
+        let documentTypes: Set<String> = ["pdf", "doc", "docx", "pages", "ppt", "pptx", "key", "xls", "xlsx", "numbers",
+                                          "rtf", "rtfd", "odt", "txt", "md", "markdown", "epub", "tex"]
+        func isDocument(_ path: String) -> Bool { documentTypes.contains((path as NSString).pathExtension.lowercased()) }
         let spotlightPaths = found.filter { !$0.isFolder && keep($0.path, isFolder: false) }
-            .sorted { $0.relevance != $1.relevance ? $0.relevance > $1.relevance : ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
+            .sorted { a, b in
+                let da = isDocument(a.path), db = isDocument(b.path)
+                if da != db { return da }
+                return a.relevance != b.relevance ? a.relevance > b.relevance : (a.modified ?? .distantPast) > (b.modified ?? .distantPast)
+            }
             .map(\.path).filter { seen.insert($0).inserted }
         let total = recognized.count + spotlightPaths.count
         guard total > 0 else { return "No documents contain “\(text)”. (Spotlight must have indexed the files; scanned PDFs need KongSeek's text recognition.)" }
@@ -248,7 +257,8 @@ func runMCP(indexURL: URL) -> Never {
         for path in spotlightPaths.prefix(max(0, limit - recognized.count)) {
             switch ContentPreview.find(in: URL(fileURLWithPath: path), needles: needles, ocr: ocr) {
             case .found(let place):
-                lines.append("\(path)" + (place.page.map { "  [第 \($0) 页]" } ?? ""))
+                let unit = (path as NSString).pathExtension.lowercased() == "pptx" ? "张幻灯片" : "页"
+                lines.append("\(path)" + (place.page.map { "  [第 \($0) \(unit)]" } ?? ""))
                 lines.append("    " + place.snippet.text)
             case .notDownloaded:
                 lines.append("\(path)  [only in iCloud, not downloaded]")
@@ -263,13 +273,13 @@ func runMCP(indexURL: URL) -> Never {
     let readTool = MCPServer.Tool(
         name: "read_file",
         description: """
-        Read the text of a document in the folders KongSeek indexes: PDF (by page; scanned pages use KongSeek's recognized text), Word, RTF, OpenDocument, plain text and Markdown (UTF-8 or GB18030), and recognized images. Long documents come in parts: the reply ends with the start_page (PDF) or offset (other files) to continue from.
+        Read the text of a document in the folders KongSeek indexes: PDF (by page; scanned pages use KongSeek's recognized text), PowerPoint .pptx (by slide, with speaker notes), Word, Excel .xlsx, RTF, OpenDocument, plain text and Markdown (UTF-8 or GB18030), and recognized images. Files kept only in iCloud are downloaded first. Long documents come in parts: the reply ends with the start_page (PDF) or offset (other files) to continue from.
         """,
         inputSchema: [
             "type": "object",
             "properties": [
                 "path": ["type": "string", "description": "Absolute path, as returned by search_files or search_content (~ allowed)."] as [String: Any],
-                "start_page": ["type": "integer", "minimum": 1, "description": "PDF: first page to read (default 1)."] as [String: Any],
+                "start_page": ["type": "integer", "minimum": 1, "description": "PDF or .pptx: first page / slide to read (default 1)."] as [String: Any],
                 "offset": ["type": "integer", "minimum": 0, "description": "Other files: character offset to start at (default 0)."] as [String: Any],
                 "max_characters": ["type": "integer", "minimum": 1000, "maximum": 100000, "description": "Maximum characters returned (default 20000)."] as [String: Any],
             ] as [String: Any],
@@ -295,7 +305,9 @@ func runMCP(indexURL: URL) -> Never {
         let pages: DocumentText.Pages
         do {
             // Enough pages to fill the reply; excerpt() stops at the character limit.
-            pages = try DocumentText.read(URL(fileURLWithPath: path), firstPage: startPage, maximumPages: max(5, maximum / 400), ocr: currentOCR())
+            // Files kept only in iCloud are downloaded first (up to 200 MB, waiting up to a minute).
+            pages = try DocumentText.read(URL(fileURLWithPath: path), firstPage: startPage, maximumPages: max(5, maximum / 400),
+                                          ocr: currentOCR(), downloadWait: 60)
         } catch let failure as DocumentText.Failure {
             throw MCPServer.ToolError(failure.message)
         }
@@ -303,7 +315,8 @@ func runMCP(indexURL: URL) -> Never {
         var header = path
         if pages.isPaged {
             let last = (part.nextPage ?? (pages.totalPages + 1)) - 1
-            header += "\nPDF, \(pages.totalPages) pages; showing pages \(pages.firstPage)–\(max(pages.firstPage, last))"
+            let kind = pages.unit == "页" ? "PDF, \(pages.totalPages) pages; showing pages" : "Presentation, \(pages.totalPages) slides; showing slides"
+            header += "\n\(kind) \(pages.firstPage)–\(max(pages.firstPage, last))"
         } else {
             let length = pages.pages.first?.count ?? 0
             header += "\n\(length) characters; showing \(offset)–\(part.nextOffset ?? length)"

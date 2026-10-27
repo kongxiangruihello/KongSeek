@@ -102,4 +102,63 @@ final class DocumentTextTests: XCTestCase {
         try Data([1, 2, 3]).write(to: odd)
         XCTAssertThrowsError(try DocumentText.read(odd)) { XCTAssertEqual($0 as? DocumentText.Failure, .unsupported("xyz")) }
     }
+
+    // MARK: PowerPoint and Excel
+
+    /// Zips `parts` (path inside the archive → XML) into `name`, as Office does.
+    private func makeOffice(_ name: String, _ parts: [String: String]) throws -> URL {
+        let source = folder.appendingPathComponent(name + "-parts")
+        for (path, xml) in parts {
+            let url = source.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try xml.write(to: url, atomically: true, encoding: .utf8)
+        }
+        let output = folder.appendingPathComponent(name)
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = source
+        zip.arguments = ["-r", "-q", output.path, "."]
+        try zip.run()
+        zip.waitUntilExit()
+        XCTAssertEqual(zip.terminationStatus, 0)
+        return output
+    }
+
+    private func slide(_ paragraphs: [String]) -> String {
+        let body = paragraphs.map { "<a:p><a:r><a:rPr lang=\"zh-CN\"/><a:t>\($0)</a:t></a:r></a:p>" }.joined()
+        return #"<?xml version="1.0" encoding="UTF-8"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody>"#
+            + body + "</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+    }
+
+    func testSlidesInNumberOrderWithNotes() throws {
+        let notes = #"<?xml version="1.0" encoding="UTF-8"?><p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>先讲“学”字</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:txBody><a:p><a:fld type="slidenum"><a:t>1</a:t></a:fld></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#
+        let url = try makeOffice("《论语》导读.pptx", [
+            "ppt/slides/slide1.xml": slide(["学而第一", "学而时习之"]),
+            "ppt/slides/slide2.xml": slide(["为政第二"]),
+            "ppt/slides/slide10.xml": slide(["尧曰第二十"]),
+            "ppt/notesSlides/notesSlide1.xml": notes,
+            "[Content_Types].xml": "<Types/>",
+        ])
+        let slides = try OfficeText.slides(of: url)
+        XCTAssertEqual(slides, ["学而第一\n学而时习之\n【备注】先讲“学”字", "为政第二", "尧曰第二十"])
+
+        let read = try DocumentText.read(url, firstPage: 2, maximumPages: 1)
+        XCTAssertTrue(read.isPaged)
+        XCTAssertEqual(read.totalPages, 3)
+        XCTAssertEqual(read.pages, ["为政第二"])
+        let part = DocumentText.excerpt(read, maximumCharacters: 1000)
+        XCTAssertTrue(part.text.hasPrefix("--- 第 2 张幻灯片 ---"), part.text)
+        XCTAssertEqual(part.nextPage, 3)
+
+        guard case .found(let place) = ContentPreview.find(in: url, needles: ["为政"]) else { return XCTFail("not found") }
+        XCTAssertEqual(place.page, 2)
+    }
+
+    func testSpreadsheetSharedStrings() throws {
+        let url = try makeOffice("课表.xlsx", [
+            "xl/sharedStrings.xml": #"<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2"><si><t>论语导读</t></si><si><r><t>星期</t></r><r><t>三</t></r></si></sst>"#,
+        ])
+        XCTAssertEqual(try OfficeText.spreadsheet(of: url), "论语导读\n星期三")
+        XCTAssertEqual(try DocumentText.read(url).pages, ["论语导读\n星期三"])
+    }
 }

@@ -11,6 +11,8 @@ public enum DocumentText {
         case isFolder
         /// Only in iCloud; reading it would start a download.
         case notDownloaded
+        /// The download from iCloud was started but has not finished yet.
+        case downloading
         case unsupported(String)
         case tooLarge
         case unreadable
@@ -21,8 +23,9 @@ public enum DocumentText {
             switch self {
             case .notFound: return "The file does not exist."
             case .isFolder: return "This is a folder; use search_files with in:\"<folder>\" to list it."
-            case .notDownloaded: return "The file is only in iCloud and not downloaded to this Mac. Open it once in Finder to download it."
-            case .unsupported(let ext): return "Reading .\(ext) files is not supported (PDF, Word, RTF, OpenDocument, Pages-exported text, plain text and recognized scans are)."
+            case .notDownloaded: return "The file is only in iCloud and not downloaded to this Mac (or is larger than 200 MB). Open it once in Finder to download it."
+            case .downloading: return "The file is being downloaded from iCloud; try read_file again in a minute."
+            case .unsupported(let ext): return "Reading .\(ext) files is not supported (PDF, Word, PowerPoint .pptx, Excel .xlsx, RTF, OpenDocument, plain text and recognized scans are; Pages and Keynote files are not)."
             case .tooLarge: return "The file is too large to read (over 300 MB)."
             case .unreadable: return "The file could not be read (damaged or protected?)."
             case .noText(let pages): return "This is a scanned PDF (\(pages) pages) without a text layer, and KongSeek has not recognized its text. In KongSeek › 设置 › 文字识别, add its folder to recognize it."
@@ -40,20 +43,28 @@ public enum DocumentText {
         public var isPaged: Bool
         /// Pages whose text came from KongSeek's recognition (scans).
         public var recognizedPages: [Int] = []
+        /// What a page is called in headers: 页, or 张幻灯片 for presentations.
+        public var unit = "页"
     }
 
     static let pagedLimit = 2_000
 
     /// Pages `firstPage`…`firstPage + maximumPages - 1` of a PDF, or the whole text
     /// of another document.
-    public static func read(_ url: URL, firstPage: Int = 1, maximumPages: Int = 50, ocr: OCRStore? = nil) throws -> Pages {
+    /// With `downloadWait` > 0, a file that is only in iCloud (up to 200 MB) is
+    /// downloaded first, waiting up to that many seconds.
+    public static func read(_ url: URL, firstPage: Int = 1, maximumPages: Int = 50, ocr: OCRStore? = nil,
+                            downloadWait: TimeInterval = 0) throws -> Pages {
         let path = url.path
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else { throw Failure.notFound }
         let ext = url.pathExtension.lowercased()
         if isDirectory.boolValue && !["rtfd"].contains(ext) { throw Failure.isFolder }
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .ubiquitousItemDownloadingStatusKey])
-        if values?.ubiquitousItemDownloadingStatus == .notDownloaded { throw Failure.notDownloaded }
+        if values?.ubiquitousItemDownloadingStatus == .notDownloaded {
+            guard downloadWait > 0, (values?.fileSize ?? 0) <= 200_000_000 else { throw Failure.notDownloaded }
+            try download(url, wait: downloadWait)
+        }
         guard (values?.fileSize ?? 0) <= 300_000_000 else { throw Failure.tooLarge }
         let record = ocr?.record(for: path)
 
@@ -81,6 +92,18 @@ public enum DocumentText {
             return Pages(pages: pages, totalPages: total, firstPage: first, isPaged: true, recognizedPages: recognized)
         }
 
+        if ext == "pptx" {
+            let slides: [String]
+            do { slides = try OfficeText.slides(of: url) } catch { throw Failure.unreadable }
+            let total = slides.count
+            let first = max(1, min(firstPage, max(1, total)))
+            let last = min(total, first + max(1, maximumPages) - 1)
+            let shown = total == 0 ? [] : Array(slides[(first - 1)..<last])
+            return Pages(pages: shown, totalPages: total, firstPage: first, isPaged: true, unit: "张幻灯片")
+        }
+        if ext == "xlsx" {
+            do { return Pages(pages: [try OfficeText.spreadsheet(of: url)], totalPages: 1, firstPage: 1, isPaged: false) } catch { throw Failure.unreadable }
+        }
         if let record, OCRStoreImage.isImage(ext) {
             return Pages(pages: [record.pages.joined(separator: "\n")], totalPages: 1, firstPage: 1, isPaged: false, recognizedPages: [1])
         }
@@ -94,6 +117,20 @@ public enum DocumentText {
             return Pages(pages: [text], totalPages: 1, firstPage: 1, isPaged: false)
         }
         throw Failure.unsupported(ext.isEmpty ? "(no extension)" : ext)
+    }
+
+    /// Asks iCloud for the file and waits until it is on this Mac.
+    static func download(_ url: URL, wait: TimeInterval) throws {
+        do { try FileManager.default.startDownloadingUbiquitousItem(at: url) } catch { throw Failure.notDownloaded }
+        let deadline = Date().addingTimeInterval(wait)
+        var current = url
+        while Date() < deadline {
+            current.removeAllCachedResourceValues()
+            let status = (try? current.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
+            if status == .current || status == .downloaded { return }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        throw Failure.downloading
     }
 
     /// Whether any page (checked up to 30) has a text layer.
@@ -112,7 +149,7 @@ public enum DocumentText {
             var used = 0
             for (index, page) in pages.pages.enumerated() {
                 let number = pages.firstPage + index
-                let header = "--- 第 \(number) 页" + (pages.recognizedPages.contains(number) ? "（识别文字）" : "") + " ---"
+                let header = "--- 第 \(number) \(pages.unit)" + (pages.recognizedPages.contains(number) ? "（识别文字）" : "") + " ---"
                 let body = page.isEmpty ? "（此页无文字）" : page
                 if used > 0 && used + header.count + body.count > maximumCharacters {
                     return (parts.joined(separator: "\n"), number, nil)

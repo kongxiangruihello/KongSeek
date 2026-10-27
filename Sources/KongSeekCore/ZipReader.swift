@@ -120,6 +120,13 @@ public enum ZipReader {
 
     /// Writes one entry to `destination` (a file path).
     public static func extract(_ entry: Entry, from url: URL, to destination: URL, maximumSize: UInt64 = 1_000_000_000) throws {
+        let output = try data(entry, from: url, maximumSize: maximumSize)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try output.write(to: destination, options: .atomic)
+    }
+
+    /// One entry's contents in memory (e.g. an XML part of a .pptx).
+    public static func data(_ entry: Entry, from url: URL, maximumSize: UInt64 = 1_000_000_000) throws -> Data {
         guard !entry.isEncrypted else { throw ZipError.encrypted }
         guard entry.uncompressedSize <= maximumSize, entry.compressedSize <= maximumSize else { throw ZipError.tooLarge }
         let handle = try FileHandle(forReadingFrom: url)
@@ -141,8 +148,7 @@ public enum ZipReader {
         default:
             throw ZipError.unsupportedMethod(entry.method)
         }
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try output.write(to: destination, options: .atomic)
+        return output
     }
 
     /// Raw DEFLATE (what zip uses) through Apple's Compression framework, whose ZLIB codec is raw deflate.

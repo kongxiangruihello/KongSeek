@@ -33,7 +33,7 @@ public enum ContentPreview {
             return .found(Found(snippet: hit.snippet, page: hit.page, recognized: true))
         }
         let ext = url.pathExtension.lowercased()
-        guard ext == "pdf" || plainTextExtensions.contains(ext) || richTextExtensions.contains(ext) else { return .unsupported }
+        guard ext == "pdf" || ext == "pptx" || ext == "xlsx" || plainTextExtensions.contains(ext) || richTextExtensions.contains(ext) else { return .unsupported }
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .ubiquitousItemDownloadingStatusKey])
         if values?.ubiquitousItemDownloadingStatus == .notDownloaded { return .notDownloaded }
         let size = values?.fileSize ?? 0
@@ -49,8 +49,18 @@ public enum ContentPreview {
             return .notFound
         }
 
+        if ext == "pptx" {
+            guard let slides = try? OfficeText.slides(of: url) else { return .notFound }
+            for (index, slide) in slides.enumerated() {
+                if let snippet = Snippet.find(in: slide, needles: needles) { return .found(Found(snippet: snippet, page: index + 1)) }
+            }
+            return .notFound
+        }
+
         let text: String?
-        if plainTextExtensions.contains(ext) {
+        if ext == "xlsx" {
+            text = try? OfficeText.spreadsheet(of: url)
+        } else if plainTextExtensions.contains(ext) {
             guard size <= 30_000_000, let data = try? Data(contentsOf: url) else { return .notFound }
             text = String(data: data, encoding: .utf8) ?? decodeGB18030(data)
         } else {
