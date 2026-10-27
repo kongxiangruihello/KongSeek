@@ -11,6 +11,8 @@ final class GeneralSettingsView: NSView {
     private let sourceLabel = NSTextField(wrappingLabelWithString: "")
     private let autoCheckbox = NSButton(checkboxWithTitle: "自动检查更新（启动后，及每 6 小时）", target: nil, action: nil)
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private let proxyField = NSTextField()
+    private let proxyNote = NSTextField(labelWithString: "")
     private let notesScroll = NSTextView.scrollableTextView()
     private var notesView: NSTextView { notesScroll.documentView as! NSTextView }
     private let checkButton = NSButton(title: "检查更新", target: nil, action: nil)
@@ -57,6 +59,17 @@ final class GeneralSettingsView: NSView {
             button.bezelStyle = .rounded
         }
         installButton.keyEquivalent = ""
+        proxyField.placeholderString = "自动（使用系统代理）"
+        proxyField.stringValue = Preferences.updateProxy
+        proxyField.target = self
+        proxyField.action = #selector(proxyChanged)
+        proxyField.cell?.sendsActionOnEndEditing = true
+        proxyField.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        proxyNote.font = .systemFont(ofSize: 11)
+        proxyNote.textColor = .secondaryLabelColor
+        proxyNote.lineBreakMode = .byTruncatingTail
+        let proxyRow = NSStackView(views: [NSTextField(labelWithString: "代理："), proxyField, proxyNote])
+        proxyRow.spacing = 6
         let updateRow = NSStackView(views: [checkButton, installButton, localButton, rollbackButton, logButton])
         updateRow.spacing = 6
 
@@ -77,7 +90,7 @@ final class GeneralSettingsView: NSView {
         }
         let stack = NSStackView(views: [
             versionLabel, sourceLabel,
-            heading("更新"), autoCheckbox, statusLabel, notesScroll, updateRow,
+            heading("更新"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
             heading("设置与诊断"), transferRow, transferHelp,
         ])
         stack.orientation = .vertical
@@ -93,7 +106,7 @@ final class GeneralSettingsView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
             notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            notesScroll.heightAnchor.constraint(equalToConstant: 120),
+            notesScroll.heightAnchor.constraint(equalToConstant: 80),
             transferHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
             statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
@@ -107,6 +120,17 @@ final class GeneralSettingsView: NSView {
         sourceLabel.stringValue = "签名：\(Updater.signingDescription())\n源码文件夹："
             + (state.sourceRoot.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "未找到（应在 ~/Developer/kongseek）")
         autoCheckbox.state = Preferences.autoCheckUpdates ? .on : .off
+        let typed = Preferences.updateProxy.trimmingCharacters(in: .whitespaces)
+        if typed.isEmpty {
+            proxyNote.stringValue = "系统代理：" + (Updater.systemProxy ?? "无（直连）")
+            proxyNote.textColor = .secondaryLabelColor
+        } else if ProxySettings.normalized(typed) == nil {
+            proxyNote.stringValue = "格式不对，例：127.0.0.1:7890"
+            proxyNote.textColor = .systemRed
+        } else {
+            proxyNote.stringValue = "如 Clash 默认 127.0.0.1:7890"
+            proxyNote.textColor = .secondaryLabelColor
+        }
 
         var status: String
         switch state.phase {
@@ -152,6 +176,11 @@ final class GeneralSettingsView: NSView {
     @objc private func autoChanged() {
         Preferences.autoCheckUpdates = autoCheckbox.state == .on
         if Preferences.autoCheckUpdates { updater.startAutomaticChecks() } else { updater.stopAutomaticChecks() }
+    }
+
+    @objc private func proxyChanged() {
+        Preferences.updateProxy = proxyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        refresh()
     }
 
     @objc private func checkNow() {

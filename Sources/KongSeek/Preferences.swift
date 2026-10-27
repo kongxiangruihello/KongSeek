@@ -43,6 +43,12 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "autoCheckUpdates") }
     }
 
+    /// Proxy for update downloads, e.g. "127.0.0.1:7890"; empty means the system proxy (or none).
+    static var updateProxy: String {
+        get { defaults.string(forKey: "updateProxy") ?? "" }
+        set { defaults.set(newValue, forKey: "updateProxy") }
+    }
+
     /// List the files inside .zip archives in the index, so a search finds them too.
     static var archiveSearch: Bool {
         get { defaults.object(forKey: "archiveSearch") as? Bool ?? true }

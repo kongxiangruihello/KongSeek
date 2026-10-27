@@ -71,3 +71,26 @@ final class SettingsArchiveTests: XCTestCase {
         XCTAssertEqual(ReleaseNotes.version(inInfoPlist: plist), "0.9.0")
     }
 }
+
+final class ProxySettingsTests: XCTestCase {
+    func testSystemProxy() {
+        XCTAssertNil(ProxySettings.gitProxy(fromSystem: [:]))
+        XCTAssertNil(ProxySettings.gitProxy(fromSystem: ["HTTPSEnable": 0, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 7890]))
+        XCTAssertEqual(ProxySettings.gitProxy(fromSystem: ["HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 7890]), "http://127.0.0.1:7890")
+        XCTAssertEqual(ProxySettings.gitProxy(fromSystem: ["HTTPEnable": 1, "HTTPProxy": "proxy.lan", "HTTPPort": 8080]), "http://proxy.lan:8080")
+        XCTAssertEqual(ProxySettings.gitProxy(fromSystem: ["SOCKSEnable": 1, "SOCKSProxy": "127.0.0.1", "SOCKSPort": 7891]), "socks5h://127.0.0.1:7891")
+    }
+
+    func testTypedProxy() {
+        XCTAssertEqual(ProxySettings.normalized(" 127.0.0.1:7890 "), "http://127.0.0.1:7890")
+        XCTAssertEqual(ProxySettings.normalized("socks5h://127.0.0.1:7891"), "socks5h://127.0.0.1:7891")
+        XCTAssertNil(ProxySettings.normalized(""))
+        XCTAssertNil(ProxySettings.normalized("ftp://x:1"))
+        XCTAssertNil(ProxySettings.normalized("127.0.0.1 7890"))
+    }
+
+    func testConnectionFailure() {
+        XCTAssertTrue(ProxySettings.isConnectionFailure("fatal: unable to access 'https://github.com/x/': Failed to connect to github.com port 443 after 75021 ms: Couldn't connect to server"))
+        XCTAssertFalse(ProxySettings.isConnectionFailure("fatal: couldn't find remote ref main"))
+    }
+}

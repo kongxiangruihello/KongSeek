@@ -18,7 +18,7 @@ public struct SettingsArchive {
         "ocrEnabled", "ocrFolders", "ocrPageLimit", "ocrOnlyOnPower", "ocrDownloadFromICloud",
         "clipboardEnabled", "clipboardShortcut", "clipboardShortcutCleared", "clipboardRetentionDays",
         "clipboardMaximumItems", "autoPaste", "clipboardOCR", "clipboardExcludedApps", "cleanupOperations",
-        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "snippetExpansion", "autoCheckUpdates",
+        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "snippetExpansion", "autoCheckUpdates", "updateProxy",
     ]
 
     public var defaults: [String: Any]
@@ -149,5 +149,44 @@ public enum ReleaseNotes {
     public static func version(inInfoPlist data: Data) -> String? {
         let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         return plist?["CFBundleShortVersionString"] as? String
+    }
+}
+
+/// The proxy git should use for GitHub: one typed in Settings, or else the HTTPS /
+/// HTTP / SOCKS proxy in the system network settings (what Clash, Surge and similar
+/// apps set with "系统代理"). git does not read the macOS proxy settings by itself.
+public enum ProxySettings {
+    /// A proxy URL for git's http.proxy from the dictionary CFNetworkCopySystemProxySettings returns.
+    public static func gitProxy(fromSystem settings: [String: Any]) -> String? {
+        func enabled(_ key: String) -> Bool { (settings[key] as? NSNumber)?.intValue == 1 }
+        func address(_ hostKey: String, _ portKey: String) -> String? {
+            guard let host = settings[hostKey] as? String, !host.isEmpty else { return nil }
+            let port = (settings[portKey] as? NSNumber)?.intValue
+            return port.map { "\(host):\($0)" } ?? host
+        }
+        if enabled("HTTPSEnable"), let value = address("HTTPSProxy", "HTTPSPort") { return "http://" + value }
+        if enabled("HTTPEnable"), let value = address("HTTPProxy", "HTTPPort") { return "http://" + value }
+        if enabled("SOCKSEnable"), let value = address("SOCKSProxy", "SOCKSPort") { return "socks5h://" + value }
+        return nil
+    }
+
+    /// A proxy typed by hand: "127.0.0.1:7890" becomes "http://127.0.0.1:7890";
+    /// http, https, socks5 and socks5h URLs are kept. Nil when empty or not usable.
+    public static func normalized(_ typed: String) -> String? {
+        let text = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !text.contains(where: { $0.isWhitespace }) else { return nil }
+        let withScheme = text.contains("://") ? text : "http://" + text
+        guard let url = URL(string: withScheme), let scheme = url.scheme?.lowercased(),
+              ["http", "https", "socks5", "socks5h", "socks4"].contains(scheme),
+              let host = url.host, !host.isEmpty else { return nil }
+        return withScheme
+    }
+
+    /// True when git's output says the server could not be reached at all.
+    public static func isConnectionFailure(_ output: String) -> Bool {
+        let markers = ["Failed to connect", "Couldn't connect", "Could not resolve host", "Connection timed out",
+                       "Operation timed out", "Connection refused", "Proxy CONNECT aborted", "SSL_ERROR_SYSCALL",
+                       "LibreSSL SSL_connect", "Network is unreachable", "超过"]
+        return markers.contains { output.contains($0) }
     }
 }

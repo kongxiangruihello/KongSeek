@@ -1,5 +1,6 @@
 import AppKit
 import Security
+import CFNetwork
 import KongSeekCore
 
 /// Updates KongSeek from its own source folder (adapted from KongFetch 4.3/4.7).
@@ -88,6 +89,29 @@ final class Updater {
         return "已签名"
     }
 
+    // MARK: Network
+
+    /// The proxy typed in Settings, else the system's HTTPS/HTTP/SOCKS proxy; nil for a direct connection.
+    static var proxy: String? {
+        if let typed = ProxySettings.normalized(Preferences.updateProxy) { return typed }
+        return systemProxy
+    }
+
+    static var systemProxy: String? {
+        guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else { return nil }
+        return ProxySettings.gitProxy(fromSystem: settings)
+    }
+
+    /// Explains a failed fetch in words a user can act on.
+    private static func fetchFailure(_ output: String) -> String {
+        guard ProxySettings.isConnectionFailure(output) else { return "从 GitHub 获取更新失败（详情见更新日志）" }
+        if let proxy {
+            return "通过代理 \(proxy) 仍连不上 GitHub。请确认代理软件正在运行、端口正确。"
+        }
+        return "这台 Mac 直连不上 GitHub（中国大陆常见）。如果你用代理软件，请打开它的“系统代理”，或在下面填写代理地址；"
+            + "否则请在源码更新后点“用本地源码重新构建”。"
+    }
+
     // MARK: Checking
 
     /// Checks shortly after launch and then every six hours.
@@ -114,9 +138,10 @@ final class Updater {
         set { $0.phase = .checking }
         queue.async { [weak self] in
             guard let self else { return }
-            let fetch = self.git(["fetch", "--quiet", "origin", "main"], root)
+            let fetch = self.fetch(root)
             guard fetch.status == 0 else {
-                self.set { $0.phase = .failed("连不上 GitHub，稍后再试（详情见更新日志）"); $0.lastCheck = Date() }
+                let message = Self.fetchFailure(fetch.output)
+                self.set { $0.phase = .failed(message); $0.lastCheck = Date() }
                 return
             }
             let running = Self.version
@@ -158,7 +183,8 @@ final class Updater {
             self.log("==== \(fromLocalSource ? "从本地源码重新构建" : "更新") 开始 \(Date())")
             do {
                 if !fromLocalSource {
-                    try self.step(self.git(["fetch", "--quiet", "origin", "main"], root), "无法连接 GitHub")
+                    let fetch = self.fetch(root)
+                    guard fetch.status == 0 else { throw UpdateError(Self.fetchFailure(fetch.output)) }
                     try self.bringSourceUpToDate(root)
                 }
                 self.set { $0.phase = .updating("正在测试并编译（约一两分钟）…") }
@@ -330,10 +356,19 @@ final class Updater {
 
     // MARK: Processes
 
-    private func git(_ arguments: [String], _ root: String, logOutput: Bool = true) -> (status: Int32, output: String) {
-        // Give up on a transfer slower than 1 KB/s for 20 seconds, and on any git command after 2 minutes.
+    /// `git fetch origin main`, through the proxy when there is one. Stopped after 45
+    /// seconds: an unreachable GitHub otherwise takes 75 seconds or more to fail.
+    private func fetch(_ root: String) -> (status: Int32, output: String) {
+        let proxy = Self.proxy
+        log("连接 GitHub：" + (proxy.map { "经代理 \($0)" } ?? "直连"))
+        let proxyOptions = proxy.map { ["-c", "http.proxy=\($0)"] } ?? []
+        return git(proxyOptions + ["fetch", "--quiet", "origin", "main"], root, timeout: 45)
+    }
+
+    private func git(_ arguments: [String], _ root: String, timeout: TimeInterval = 120, logOutput: Bool = true) -> (status: Int32, output: String) {
+        // Give up on a transfer slower than 1 KB/s for 20 seconds.
         run("/usr/bin/git", ["-C", root, "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20"] + arguments, root,
-            timeout: 120, logOutput: logOutput)
+            timeout: timeout, logOutput: logOutput)
     }
 
     /// Runs a command to completion, appending it (and its output) to the update log.
