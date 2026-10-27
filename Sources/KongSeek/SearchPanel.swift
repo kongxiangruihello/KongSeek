@@ -40,7 +40,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let service: IndexService
     private let ocr: OCRService
     private let field = NSTextField()
-    private let table = NSTableView()
+    private let table = ResultTable()
     private let preview: QLPreviewView
     private let statusLabel = NSTextField(labelWithString: "")
     private let emptyLabel = NSTextField(labelWithString: "")
@@ -259,6 +259,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
         table.target = self
         table.doubleAction = #selector(openSelected)
+        table.onContextMenu = { [weak self] row, point in
+            guard let self, self.results.indices.contains(row), !self.results[row].isHeader else { return }
+            self.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            if let fill = self.results[row].fill, fill.isSaved {
+                self.showSavedSearchMenu(fill.text, at: point)
+            } else {
+                self.showActionMenu(at: point)
+            }
+        }
         table.refusesFirstResponder = true
 
         let scroll = scrollView
@@ -279,11 +288,29 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        let hints = NSTextField(labelWithString: "↩ 打开   → 进入文件夹   ⌘↩ 在访达中显示   ⌘Y 快速查看   ⌘K 更多操作   ⌘S 收藏搜索   ? 语法")
-        hints.font = .systemFont(ofSize: 11)
-        hints.textColor = .tertiaryLabelColor
-        hints.alignment = .right
-        hints.lineBreakMode = .byTruncatingHead
+        // The shortcuts below the list are also buttons, for the mouse (0.22).
+        func hint(_ title: String, _ action: Selector, _ tip: String) -> NSButton {
+            let button = NSButton(title: title, target: self, action: action)
+            button.bezelStyle = .recessed
+            button.showsBorderOnlyWhileMouseInside = true
+            button.controlSize = .small
+            button.attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
+            button.toolTip = tip
+            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            return button
+        }
+        let hints = NSStackView(views: [
+            hint("↩ 打开", #selector(hintOpen), "打开所选（双击也可以）"),
+            hint("→ 进入文件夹", #selector(hintEnterFolder), "浏览所选文件夹的内容"),
+            hint("⌘↩ 在访达中显示", #selector(hintReveal), "在访达中显示所选"),
+            hint("⌘Y 快速查看", #selector(hintQuickLook), "快速查看所选"),
+            hint("⌘K 更多操作", #selector(hintActions), "更多操作（右键单击结果也可以）"),
+            hint("⌘S 收藏搜索", #selector(hintSave), "收藏当前搜索"),
+            hint("? 语法", #selector(showSyntaxHelpFromButton), "搜索语法速查"),
+        ])
+        hints.spacing = 2
+        hints.setHuggingPriority(.defaultHigh, for: .horizontal)
+        hints.detachesHiddenViews = true
 
         modeButton.bezelStyle = .recessed
         modeButton.setButtonType(.momentaryPushIn)
@@ -320,7 +347,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             background.addSubview(view)
         }
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        hints.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
+        hints.setClippingResistancePriority(.defaultLow - 1, for: .horizontal)
 
         NSLayoutConstraint.activate([
             searchIcon.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
@@ -997,6 +1024,23 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
     }
 
+    // MARK: - Buttons below the list (0.22)
+
+    @objc private func hintOpen() { openSelected() }
+
+    @objc private func hintEnterFolder() {
+        if let item = selectedItem, item.isFolder { enterFolder(item) } else { statusLabel.stringValue = "先选中一个文件夹" }
+    }
+
+    @objc private func hintReveal() { revealSelected() }
+    @objc private func hintQuickLook() { toggleQuickLook() }
+
+    @objc private func hintActions() {
+        if let fill = selectedItem?.fill, fill.isSaved { showSavedSearchMenu(fill.text) } else { showActionMenu() }
+    }
+
+    @objc private func hintSave() { saveCurrentSearch() }
+
     private func toggleQuickLook() {
         guard let item = selectedItem, item.isFile else { return }
         let quickLook = QLPreviewPanel.shared()!
@@ -1076,7 +1120,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     /// ⌘K on a saved search: name it (a course, a project), or remove it (0.19).
-    private func showSavedSearchMenu(_ text: String) {
+    private func showSavedSearchMenu(_ text: String, at point: NSPoint? = nil) {
         let menu = NSMenu()
         menu.addItem(ClosureMenuItem(title: Preferences.savedSearchNames[text] == nil ? "命名…" : "重命名…", key: "") { [weak self] in
             self?.askName(for: text)
@@ -1101,7 +1145,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             self?.runSearch()
         })
         let rect = table.rect(ofRow: max(0, table.selectedRow))
-        menu.popUp(positioning: nil, at: NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
+        menu.popUp(positioning: nil, at: point ?? NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
     }
 
     /// Asks for a name for a saved search, such as "《论语》导读"; empty removes the name.
@@ -1295,7 +1339,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         return message
     }
 
-    private func showActionMenu() {
+    /// ⌘K, a right-click on a result, or the 更多操作 button below the list.
+    private func showActionMenu(at point: NSPoint? = nil) {
         guard let item = selectedItem, item.isFile, table.selectedRow >= 0 else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
@@ -1313,7 +1358,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             add("拷贝压缩包内路径", "c", [.command, .option]) { [weak self] in self?.copyFromArchive(item, as: .path) }
             add("拷贝名称", "c", [.command, .shift]) { [weak self] in self?.copyFromArchive(item, as: .name) }
             let rect = table.rect(ofRow: table.selectedRow)
-            menu.popUp(positioning: nil, at: NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
+            menu.popUp(positioning: nil, at: point ?? NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
             return
         }
         if item.isFolder {
@@ -1417,7 +1462,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         add("移到废纸篓", "\u{8}") { [weak self] in self?.trash(item) }
 
         let rect = table.rect(ofRow: table.selectedRow)
-        menu.popUp(positioning: nil, at: NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
+        menu.popUp(positioning: nil, at: point ?? NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
     }
 
     // MARK: - Table
@@ -1716,5 +1761,17 @@ final class ResultCellView: NSTableCellView {
         locationLabel.stringValue = location
         iconView.image = icon
         shortcutLabel.stringValue = shortcut
+    }
+}
+
+/// The result list; a right-click selects the row and asks for its menu (0.22).
+final class ResultTable: NSTableView {
+    var onContextMenu: ((Int, NSPoint) -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        if row >= 0 { onContextMenu?(row, point) }
+        return nil
     }
 }
