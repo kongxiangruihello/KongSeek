@@ -486,7 +486,7 @@ public final class NameIndex {
     /// minus those inside excluded ones, ascending. Folders named by name match
     /// every indexed folder with that name.
     func scopeCandidates(_ scopes: [ScopeFilter], within candidates: [Int32]?) -> [Int32] {
-        var allowed: Set<Int32>? = candidates.map(Set.init)
+        var allowed: Set<Int32>? = candidates.map { Set($0) }
         var excluded = Set<Int32>()
         for scope in scopes {
             var members = Set<Int32>()
