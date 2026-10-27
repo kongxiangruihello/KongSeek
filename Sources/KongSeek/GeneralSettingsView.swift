@@ -24,6 +24,7 @@ final class GeneralSettingsView: NSView {
     private let cliLabel = NSTextField(labelWithString: "")
     private let claudeButton = NSButton(title: "添加到 Claude 桌面版…", target: nil, action: nil)
     private let claudeLabel = NSTextField(labelWithString: "")
+    private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
     init(updater: Updater, library: SnippetLibrary, diagnosticReport: @escaping () -> String) {
         self.updater = updater
@@ -96,6 +97,9 @@ final class GeneralSettingsView: NSView {
         claudeLabel.lineBreakMode = .byTruncatingTail
         let claudeRow = NSStackView(views: [claudeButton, claudeLabel])
         claudeRow.spacing = 8
+        contentCheckbox.target = self
+        contentCheckbox.action = #selector(contentChanged)
+        contentCheckbox.toolTip = "关闭后，Claude 只能按文件名搜索（search_files），不能搜索正文（search_content）或读取文件（read_file）。"
         let transferHelp = NSTextField(wrappingLabelWithString: "设置文件包含各页的设置和文本片段，不含剪贴板历史、最近打开和索引，可用于换机或备份；主目录下的路径会自动换成新电脑的主目录。诊断包含状态报告、更新与构建日志、最近的崩溃报告和设置（不含片段与剪贴板内容），出问题时发给开发者。")
         transferHelp.font = .systemFont(ofSize: 11)
         transferHelp.textColor = .secondaryLabelColor
@@ -109,7 +113,7 @@ final class GeneralSettingsView: NSView {
         let stack = NSStackView(views: [
             versionLabel, sourceLabel,
             heading("更新"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
-            heading("设置与诊断"), transferRow, transferHelp, cliRow, claudeRow,
+            heading("设置与诊断"), transferRow, transferHelp, cliRow, claudeRow, contentCheckbox,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -189,6 +193,7 @@ final class GeneralSettingsView: NSView {
         logButton.isEnabled = FileManager.default.fileExists(atPath: updater.logURL.path)
         cliLabel.stringValue = CommandLineTool.status
         claudeLabel.stringValue = ClaudeDesktop.status
+        contentCheckbox.state = Preferences.mcpReadContent ? .on : .off
     }
 
     // MARK: Actions
@@ -255,10 +260,14 @@ final class GeneralSettingsView: NSView {
         refresh()
     }
 
+    @objc private func contentChanged() {
+        Preferences.mcpReadContent = contentCheckbox.state == .on
+    }
+
     @objc private func addToClaude() {
         let alert = NSAlert()
         alert.messageText = "让 Claude 桌面版可以用 KongSeek 搜索文件？"
-        alert.informativeText = "在 Claude 的配置文件（~/Library/Application Support/Claude/claude_desktop_config.json）中加入 KongSeek 的 MCP 服务，原文件先备份。之后 Claude 能按文件名（含拼音）搜索你已索引的文件，只读取文件名和路径，不打开、不修改文件。\n\n完成后请退出并重新打开 Claude 桌面版。"
+        alert.informativeText = "在 Claude 的配置文件（~/Library/Application Support/Claude/claude_desktop_config.json）中加入 KongSeek 的 MCP 服务，原文件先备份。之后 Claude 能按文件名（含拼音）和正文内容搜索你已索引的文件，并读取文件正文（只读，不修改任何文件；正文读取可在本页关闭）。\n\n完成后请退出并重新打开 Claude 桌面版。"
         alert.addButton(withTitle: "添加")
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }

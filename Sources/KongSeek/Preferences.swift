@@ -49,6 +49,12 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "updateProxy") }
     }
 
+    /// Let Claude (ks mcp) search inside and read documents, not just names.
+    static var mcpReadContent: Bool {
+        get { defaults.object(forKey: "mcpReadContent") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "mcpReadContent") }
+    }
+
     /// List the files inside .zip archives in the index, so a search finds them too.
     static var archiveSearch: Bool {
         get { defaults.object(forKey: "archiveSearch") as? Bool ?? true }

@@ -19,9 +19,12 @@ let package = Package(
     ],
     targets: [
         .target(name: "KongSeekCore"),
-        .executableTarget(name: "KongSeek", dependencies: ["KongSeekCore"]),
-        // ks: command-line search over the app's saved index.
-        .executableTarget(name: "ks", dependencies: ["KongSeekCore"]),
+        // KongSeekText: document text (PDFKit, AppKit rich text) and Spotlight full-text search,
+        // shared by the app and ks.
+        .target(name: "KongSeekText", dependencies: ["KongSeekCore"]),
+        .executableTarget(name: "KongSeek", dependencies: ["KongSeekCore", "KongSeekText"]),
+        // ks: command-line search over the app's saved index, and the MCP server.
+        .executableTarget(name: "ks", dependencies: ["KongSeekCore", "KongSeekText"]),
         .target(name: "KongSeekLegacy32"),
         .target(name: "KongSeekTestSupport"),
         .executableTarget(
@@ -30,7 +33,7 @@ let package = Package(
         ),
         .testTarget(
             name: "KongSeekCoreTests",
-            dependencies: ["KongSeekCore", "KongSeekLegacy32", "KongSeekTestSupport"]
+            dependencies: ["KongSeekCore", "KongSeekText", "KongSeekLegacy32", "KongSeekTestSupport"]
         ),
     ]
 )

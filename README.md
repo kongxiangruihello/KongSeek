@@ -55,7 +55,8 @@ macOS 菜单栏文件搜索工具：随时唤出，按文件名、拼音全拼�
 
 命令行：设置 › 通用 › 安装命令行工具 ks 后，在“终端”中输入 `ks 合同 ext:pdf`，`ks --help` 查看选项。
 
-Claude：设置 › 通用 › “添加到 Claude 桌面版…”，重新打开 Claude 后，可以直接让 Claude 按文件名（含拼音和上面的语法）找文件。
+Claude：设置 › 通用 › “添加到 Claude 桌面版…”，重新打开 Claude 后，可以直接让 Claude 按文件名（含拼音和上面的语法）找文件，
+按内容全文搜索（`search_content`），并读取文件正文（`read_file`，PDF 按页）。只读；正文读取可在 设置 › 通用 中关闭。
 原理是 `ks mcp`（MCP 服务，只读文件名和路径）；其他支持 MCP 的应用可填命令 `/Applications/KongSeek.app/Contents/MacOS/ks`、参数 `mcp`。
 
 搜索结果可以直接拖到微信、邮件、访达等处。
@@ -124,7 +125,8 @@ Claude：设置 › 通用 › “添加到 Claude 桌面版…”，重新打�
 ```
 Sources/KongSeekCore         搜索引擎（无 AppKit，有单元测试）：名称索引、匹配与拼音、查询语法、索引文件、FSEvents
 Sources/KongSeek             应用：菜单栏、全局快捷键、搜索窗口、预览
-Sources/ks                   命令行搜索工具（读取应用保存的索引）
+Sources/KongSeekText         文档正文读取（PDF、Word、文本）与 Spotlight 全文搜索，应用与 ks 共用
+Sources/ks                   命令行搜索工具与 MCP 服务（读取应用保存的索引）
 Sources/KongSeekLegacy32     KongFetch 3.2 的匹配与查询代码原样副本，只作测试和基准的对照
 Sources/KongSeekTestSupport  测试与基准用的合成目录树
 Sources/ksbench              性能基准：swift run -c release ksbench synth|new|legacy <目录>

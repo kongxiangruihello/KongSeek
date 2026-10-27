@@ -1,5 +1,6 @@
 import Foundation
 import KongSeekCore
+import KongSeekText
 
 // ks: search KongSeek's name index from the terminal, or (`ks mcp`) serve it to
 // Claude and other MCP clients over stdio.
@@ -171,10 +172,154 @@ func runMCP(indexURL: URL) -> Never {
         """
     }
 
+    // MARK: Content (search_content, read_file)
+
+    /// Whether the user lets MCP clients read file contents (设置 › 通用).
+    func contentAllowed() throws {
+        let allowed = UserDefaults(suiteName: "com.kongxiangrui.KongSeek")?.object(forKey: "mcpReadContent") as? Bool ?? true
+        guard allowed else {
+            throw MCPServer.ToolError("Reading file contents is turned off in KongSeek › 设置 › 通用 (“允许 Claude 读取文件正文”). Ask the user to turn it on, or use search_files for names only.")
+        }
+    }
+
+    /// KongSeek's recognized text of scans, reloaded when the app has added some.
+    let ocrDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("KongSeek/OCR")
+    let ocrStore = OCRStore(directory: ocrDirectory)
+    var ocrStamp: Date?
+    func currentOCR() -> OCRStore {
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: ocrDirectory.path)[.modificationDate]) as? Date
+        if stamp != ocrStamp {
+            ocrStore.load()
+            ocrStamp = stamp
+        }
+        return ocrStore
+    }
+
+    let contentTool = MCPServer.Tool(
+        name: "search_content",
+        description: """
+        Full-text search inside the user's documents (PDF, Word, Pages, Keynote, text …) with macOS Spotlight, plus text KongSeek recognized from scanned PDFs and images. Every word must occur in the document. Supports "phrases", ext:pdf, in:~/Documents or in:FolderName, path:, size:, dm: (e.g. "克己复礼 ext:pdf,docx in:讲义"). Returns paths with the matching passage and its PDF page. Use read_file to read a result.
+        """,
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "query": ["type": "string", "description": "Words to find in the text, with optional filters."] as [String: Any],
+                "limit": ["type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum documents (default 10)."] as [String: Any],
+            ] as [String: Any],
+            "required": ["query"],
+        ]
+    ) { arguments in
+        try contentAllowed()
+        guard let text = (arguments["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+            throw MCPServer.ToolError("query is required")
+        }
+        let limit = min(50, max(1, (arguments["limit"] as? NSNumber)?.intValue ?? 10))
+        let query = SearchQuery(text)
+        guard query.valid else { throw MCPServer.ToolError("Invalid query: " + query.notes.joined(separator: "; ")) }
+        guard let spotlight = SpotlightQuery.content(for: query) else { throw MCPServer.ToolError("Give at least one word to look for.") }
+        let index: NameIndex
+        do { index = try file.current() } catch {
+            throw MCPServer.ToolError("KongSeek's index could not be read (\(error)). Open the KongSeek app once to build it.")
+        }
+        let roots = index.roots, rules = index.rules
+        let excluded = query.excluded.map(SearchText.fold)
+        func keep(_ path: String, isFolder: Bool) -> Bool {
+            guard !rules.excludes(path: path, roots: roots), query.advanced.acceptsPath(path, isFolder: isFolder) else { return false }
+            let name = SearchText.fold((path as NSString).lastPathComponent)
+            return !excluded.contains { name.contains($0) }
+        }
+        let ocr = currentOCR()
+        let needles = query.highlightWords
+        let recognized = ocr.search(needles, limit: 100) { keep($0, isFolder: false) }
+        guard let found = ContentSearch.runToEnd(spotlight, scopes: roots, maximumHits: 2000, timeout: 20) else {
+            throw MCPServer.ToolError("Spotlight could not run this search.")
+        }
+        var seen = Set(recognized.map(\.path))
+        let spotlightPaths = found.filter { !$0.isFolder && keep($0.path, isFolder: false) }
+            .sorted { $0.relevance != $1.relevance ? $0.relevance > $1.relevance : ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
+            .map(\.path).filter { seen.insert($0).inserted }
+        let total = recognized.count + spotlightPaths.count
+        guard total > 0 else { return "No documents contain “\(text)”. (Spotlight must have indexed the files; scanned PDFs need KongSeek's text recognition.)" }
+        var lines = ["\(min(total, limit)) of \(total) document(s) containing “\(text)”:"]
+        for hit in recognized.prefix(limit) {
+            lines.append("\(hit.path)  [" + (hit.page.map { "第 \($0) 页 · " } ?? "") + "识别文字]")
+            lines.append("    " + hit.snippet.text)
+        }
+        for path in spotlightPaths.prefix(max(0, limit - recognized.count)) {
+            switch ContentPreview.find(in: URL(fileURLWithPath: path), needles: needles, ocr: ocr) {
+            case .found(let place):
+                lines.append("\(path)" + (place.page.map { "  [第 \($0) 页]" } ?? ""))
+                lines.append("    " + place.snippet.text)
+            case .notDownloaded:
+                lines.append("\(path)  [only in iCloud, not downloaded]")
+            default:
+                lines.append(path)
+            }
+        }
+        if total > limit { lines.append("(\(total - limit) more; refine the query or raise limit)") }
+        return lines.joined(separator: "\n")
+    }
+
+    let readTool = MCPServer.Tool(
+        name: "read_file",
+        description: """
+        Read the text of a document in the folders KongSeek indexes: PDF (by page; scanned pages use KongSeek's recognized text), Word, RTF, OpenDocument, plain text and Markdown (UTF-8 or GB18030), and recognized images. Long documents come in parts: the reply ends with the start_page (PDF) or offset (other files) to continue from.
+        """,
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "path": ["type": "string", "description": "Absolute path, as returned by search_files or search_content (~ allowed)."] as [String: Any],
+                "start_page": ["type": "integer", "minimum": 1, "description": "PDF: first page to read (default 1)."] as [String: Any],
+                "offset": ["type": "integer", "minimum": 0, "description": "Other files: character offset to start at (default 0)."] as [String: Any],
+                "max_characters": ["type": "integer", "minimum": 1000, "maximum": 100000, "description": "Maximum characters returned (default 20000)."] as [String: Any],
+            ] as [String: Any],
+            "required": ["path"],
+        ]
+    ) { arguments in
+        try contentAllowed()
+        guard let raw = (arguments["path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            throw MCPServer.ToolError("path is required")
+        }
+        let index: NameIndex
+        do { index = try file.current() } catch {
+            throw MCPServer.ToolError("KongSeek's index could not be read (\(error)). Open the KongSeek app once to build it.")
+        }
+        let path = Paths.canonical(raw)
+        // Only what KongSeek indexes: never ~/Library, hidden or excluded folders.
+        guard !index.rules.excludes(path: path, roots: index.roots) else {
+            throw MCPServer.ToolError("This file is outside the folders KongSeek indexes (or in an excluded folder), so it is not readable here.")
+        }
+        let maximum = min(100_000, max(1_000, (arguments["max_characters"] as? NSNumber)?.intValue ?? 20_000))
+        let startPage = max(1, (arguments["start_page"] as? NSNumber)?.intValue ?? 1)
+        let offset = max(0, (arguments["offset"] as? NSNumber)?.intValue ?? 0)
+        let pages: DocumentText.Pages
+        do {
+            // Enough pages to fill the reply; excerpt() stops at the character limit.
+            pages = try DocumentText.read(URL(fileURLWithPath: path), firstPage: startPage, maximumPages: max(5, maximum / 400), ocr: currentOCR())
+        } catch let failure as DocumentText.Failure {
+            throw MCPServer.ToolError(failure.message)
+        }
+        let part = DocumentText.excerpt(pages, offset: offset, maximumCharacters: maximum)
+        var header = path
+        if pages.isPaged {
+            let last = (part.nextPage ?? (pages.totalPages + 1)) - 1
+            header += "\nPDF, \(pages.totalPages) pages; showing pages \(pages.firstPage)–\(max(pages.firstPage, last))"
+        } else {
+            let length = pages.pages.first?.count ?? 0
+            header += "\n\(length) characters; showing \(offset)–\(part.nextOffset ?? length)"
+        }
+        var footer = ""
+        if let next = part.nextPage { footer = "\n[Continue with start_page=\(next)]" }
+        if let next = part.nextOffset { footer = "\n[Continue with offset=\(next)]" }
+        return header + "\n\n" + part.text + footer
+    }
+
     let server = MCPServer(
         name: "kongseek", version: version,
-        instructions: "Use search_files to find the user's local files by name (Chinese pinyin works). Paths returned can be read with other tools.",
-        tools: [searchTool, infoTool]
+        instructions: """
+        KongSeek indexes the user's files. search_files finds files by name (Chinese pinyin works); search_content finds documents by the words inside them; read_file reads a document's text (PDF by page). The user's files are mostly Chinese; prefer Chinese search words when the user writes in Chinese.
+        """,
+        tools: [searchTool, contentTool, readTool, infoTool]
     )
     while let line = readLine(strippingNewline: true) {
         if let reply = server.handle(line) {

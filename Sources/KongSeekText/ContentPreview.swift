@@ -3,17 +3,17 @@ import PDFKit
 import KongSeekCore
 
 /// Finds where a search word occurs inside a file, for the preview pane in
-/// full-text mode (ported from KongFetch 4.1).
-enum ContentPreview {
-    struct Found {
-        var snippet: Snippet
+/// full-text mode (ported from KongFetch 4.1) and for `ks mcp`'s search_content.
+public enum ContentPreview {
+    public struct Found {
+        public var snippet: Snippet
         /// 1-based PDF page, if known.
-        var page: Int?
+        public var page: Int?
         /// From text recognition rather than the file's own text.
-        var recognized = false
+        public var recognized = false
     }
 
-    enum Outcome {
+    public enum Outcome {
         case found(Found)
         case notFound
         /// An iCloud file that is not on this Mac; reading it would start a download.
@@ -21,14 +21,14 @@ enum ContentPreview {
         case unsupported
     }
 
-    private static let plainTextExtensions: Set<String> = [
+    static let plainTextExtensions: Set<String> = [
         "txt", "md", "markdown", "csv", "tsv", "tex", "bib", "json", "xml", "html", "htm", "yaml", "yml", "log",
         "swift", "py", "js", "ts", "css", "sh", "c", "h", "m",
     ]
-    private static let richTextExtensions: Set<String> = ["docx", "doc", "rtf", "rtfd", "odt", "wordml"]
+    static let richTextExtensions: Set<String> = ["docx", "doc", "rtf", "rtfd", "odt", "wordml"]
 
     /// Slow for big files: call off the main thread.
-    static func find(in url: URL, needles: [String], ocr: OCRStore? = nil) -> Outcome {
+    public static func find(in url: URL, needles: [String], ocr: OCRStore? = nil) -> Outcome {
         if let hit = ocr?.hit(for: url.path, needles: needles) {
             return .found(Found(snippet: hit.snippet, page: hit.page, recognized: true))
         }
@@ -61,23 +61,27 @@ enum ContentPreview {
     }
 
     /// Older Chinese text files are often GB18030 / GBK rather than UTF-8.
-    private static func decodeGB18030(_ data: Data) -> String? {
+    static func decodeGB18030(_ data: Data) -> String? {
         let encoding = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
         return String(data: data, encoding: String.Encoding(rawValue: encoding))
     }
 }
 
 /// Runs one full-text Spotlight query at a time over the indexed folders.
-final class ContentSearch: NSObject {
-    struct Hit {
-        var path: String
-        var isFolder: Bool
-        var relevance: Double
-        var modified: Date?
+public final class ContentSearch: NSObject {
+    public struct Hit {
+        public var path: String
+        public var isFolder: Bool
+        public var relevance: Double
+        public var modified: Date?
     }
 
     /// Spotlight can match very many items for short words; only this many are ranked.
-    var maximumHits = 3000
+    public var maximumHits = 3000
+
+    public override init() {
+        super.init()
+    }
 
     private var query: NSMetadataQuery?
     private var completion: (([Hit], Bool) -> Void)?
@@ -85,7 +89,7 @@ final class ContentSearch: NSObject {
     /// Calls `completion` on main with partial results while gathering, then once
     /// with `finished == true`. Returns false if the query could not be built.
     @discardableResult
-    func search(_ queryString: String, scopes: [String], completion: @escaping ([Hit], Bool) -> Void) -> Bool {
+    public func search(_ queryString: String, scopes: [String], completion: @escaping ([Hit], Bool) -> Void) -> Bool {
         stop()
         guard let predicate = NSPredicate(fromMetadataQueryString: queryString) else { return false }
         let query = NSMetadataQuery()
@@ -104,9 +108,29 @@ final class ContentSearch: NSObject {
         return true
     }
 
-    var isRunning: Bool { query != nil }
+    public var isRunning: Bool { query != nil }
 
-    func stop() {
+    /// Runs a query to the end on the current thread (which must not be busy with
+    /// anything else: its run loop is spun until Spotlight finishes or `timeout`).
+    /// Used by the command-line tool.
+    public static func runToEnd(_ queryString: String, scopes: [String], maximumHits: Int = 3000, timeout: TimeInterval = 20) -> [Hit]? {
+        let search = ContentSearch()
+        search.maximumHits = maximumHits
+        var result: [Hit]?
+        var done = false
+        guard search.search(queryString, scopes: scopes, completion: { hits, finished in
+            result = hits
+            if finished { done = true }
+        }) else { return nil }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !done && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.1)))
+        }
+        search.stop()
+        return result ?? []
+    }
+
+    public func stop() {
         if let query {
             query.stop()
             NotificationCenter.default.removeObserver(self, name: nil, object: query)

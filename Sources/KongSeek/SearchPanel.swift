@@ -2,6 +2,7 @@ import AppKit
 import Quartz
 import UniformTypeIdentifiers
 import KongSeekCore
+import KongSeekText
 
 /// A floating panel that takes keyboard input without activating KongSeek,
 /// so the app the user was in stays in front.
