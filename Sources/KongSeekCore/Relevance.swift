@@ -26,9 +26,15 @@ public enum Relevance {
     static func score(name: String, words rawWords: [String], cache: inout Pinyin.RunCache) -> Int {
         let words = rawWords.map(SearchText.fold).filter { !$0.isEmpty }
         guard !words.isEmpty else { return 0 }
-        let folded = SearchText.fold(name)
+        return score(rawName: name, folded: SearchText.fold(name), stem: SearchText.fold((name as NSString).deletingPathExtension),
+                     foldedWords: words, cache: &cache)
+    }
+
+    /// As `score(name:words:)` with the name, its stem and the words already folded
+    /// (the index keeps folded names, so searching does not fold them again).
+    static func score(rawName name: String, folded: String, stem: String, foldedWords words: [String], cache: inout Pinyin.RunCache) -> Int {
+        guard !words.isEmpty else { return 0 }
         let rawStem = (name as NSString).deletingPathExtension
-        let stem = SearchText.fold(rawStem)
         let phrase = words.joined(separator: " ")
         if folded == phrase || stem == phrase { return 1000 + 30 }
 
@@ -129,19 +135,26 @@ public enum Relevance {
 }
 
 extension NameIndex {
+    /// How many of the best matches (by 3.2's score) get the finer order.
+    static let refinedLimit = 2_000
+
     /// Replaces each hit's score with `Relevance.combined` for the query's words
     /// and phrases (order of the array unchanged). Large result sets are refined
-    /// for their best 5,000 by 3.2's score; the rest keep their score and so sort
-    /// after them. dupe: and word-less queries are returned as they are.
+    /// for their best 2,000 by 3.2's score; the rest keep their score and so sort
+    /// after them. dupe:, word-less and one-character queries are returned as they are.
     public func refined(_ hits: [SearchHit], query: SearchQuery) -> [SearchHit] {
-        let words = query.words + query.phrases
+        let words = (query.words + query.phrases).map(SearchText.fold).filter { !$0.isEmpty }
         guard !words.isEmpty, !query.advanced.dupe, !hits.isEmpty else { return hits }
+        // A single character matches too much for order to mean anything, and is typed on the way to more.
+        if words.count == 1 && words[0].count < 2 { return hits }
+        // Only the best by 3.2's score are reordered (the window shows 200): typing
+        // stays instant even when a short word matches tens of thousands of names.
         var selected = Array(hits.indices)
-        if hits.count > 30_000 {
-            selected = Array(selected.sorted { hits[$0].score > hits[$1].score }.prefix(5_000))
+        if hits.count > Self.refinedLimit {
+            selected = Array(selected.sorted { hits[$0].score != hits[$1].score ? hits[$0].score > hits[$1].score : $0 < $1 }.prefix(Self.refinedLimit))
         }
         var result = hits
-        let chunk = 512
+        let chunk = 256
         let chunkCount = (selected.count + chunk - 1) / chunk
         var scores = [Int](repeating: 0, count: selected.count)
         scores.withUnsafeMutableBufferPointer { output in
@@ -149,7 +162,12 @@ extension NameIndex {
                 var cache = Pinyin.RunCache()
                 for k in (c * chunk)..<min(selected.count, (c + 1) * chunk) {
                     let hit = hits[selected[k]]
-                    output[k] = Relevance.combined(relevance: Relevance.score(name: name(of: hit.id), words: words, cache: &cache), base: hit.score)
+                    let i = Int(hit.id)
+                    let foldedName = folded.string(at: i)
+                    let stemLength = min(foldedName.utf8.count, Int(stemLengths[i]))
+                    let stem = String(decoding: foldedName.utf8.prefix(stemLength), as: UTF8.self)
+                    let relevance = Relevance.score(rawName: names.string(at: i), folded: foldedName, stem: stem, foldedWords: words, cache: &cache)
+                    output[k] = Relevance.combined(relevance: relevance, base: hit.score)
                 }
             }
         }
