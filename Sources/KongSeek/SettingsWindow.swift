@@ -62,7 +62,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private static let pageLimits = [50, 200, 500, 1000]
 
     init(hotKey: HotKey, doubleTap: DoubleTapMonitor, ocr: OCRService, clipboardHotKey: HotKey, clipboardMonitor: ClipboardMonitor,
-         onClipboardSettingsChange: @escaping () -> Void, lookupHotKey: HotKey, snippets: SnippetLibrary,
+         onClipboardSettingsChange: @escaping () -> Void, lookupHotKey: HotKey, quoteHotKey: HotKey, snippets: SnippetLibrary,
          snippetExpansion: SnippetExpansionService, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String,
          archives: ArchiveService, onArchiveSettingsChange: @escaping () -> Void,
          updater: Updater, diagnosticReport: @escaping () -> String) {
@@ -76,7 +76,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         self.clipboardMonitor = clipboardMonitor
         self.onClipboardSettingsChange = onClipboardSettingsChange
         snippetPage = SnippetSettingsView(library: snippets, expansion: snippetExpansion)
-        quickLinkPage = QuickLinkSettingsView(lookupHotKey: lookupHotKey)
+        quickLinkPage = QuickLinkSettingsView(lookupHotKey: lookupHotKey, quoteHotKey: quoteHotKey)
         self.onIndexSettingsChange = onIndexSettingsChange
         self.onRebuild = onRebuild
         self.indexStatus = indexStatus

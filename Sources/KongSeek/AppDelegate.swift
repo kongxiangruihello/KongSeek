@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var clipboardPanel: ClipboardPanelController!
     private var clipboardHotKey: HotKey!
     private var lookupHotKey: HotKey!
+    private var quoteHotKey: HotKey!
     private var snippets: SnippetLibrary!
     private var snippetExpansion: SnippetExpansionService!
     private var archives: ArchiveService!
@@ -30,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var tidyWindow: DownloadTidyWindowController?
     private var quoteFinder: QuoteFinderWindowController?
     private var libraryCheck: LibraryCheckWindowController?
+    private var manuscriptCheck: ManuscriptCheckWindowController?
+    private var featureGuide: FeatureGuideWindowController?
     /// Ebooks downloaded in the last month under site names, offered for tidying (0.20).
     private var tidyCandidates: [String] = []
     /// Files downloaded in the last week, for the menu (refreshed in the background).
@@ -74,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clipboardMonitor.start()
         lookupHotKey = HotKey(id: 3) { [weak self] in self?.lookUpSelection() }
         lookupHotKey.register(Preferences.lookupShortcut)
+        quoteHotKey = HotKey(id: 4) { [weak self] in self?.checkSelectedQuote() }
+        quoteHotKey.register(Preferences.quoteShortcut)
         service.onStateChange = { [weak self] state in
             guard let self else { return }
             self.searchWindow.indexStateChanged()
@@ -178,14 +183,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(disabled(stateDescription))
         menu.addItem(item("立即重建索引", #selector(rebuildIndex)))
         menu.addItem(.separator())
-        menu.addItem(item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)))
-        menu.addItem(item("引文查证…", #selector(openQuoteFinder)))
-        menu.addItem(item("两版讲义对比…", #selector(openCompare)))
-        menu.addItem(item("批量重命名…", #selector(openBatchRename)))
-        menu.addItem(item("查找重复与相似文件…", #selector(openDuplicates)))
-        menu.addItem(item("空间分析…", #selector(openSpace)))
-        menu.addItem(item("查找扫描版 PDF…", #selector(openScannedPDFs)))
-        menu.addItem(item("书库体检…", #selector(openLibraryCheck)))
+        // Grouped by what the work is for (0.23), instead of one long list.
+        var quoteTitle = "引文查证…"
+        if let shortcut = quoteHotKey.shortcut { quoteTitle += "（\(quoteHotKey.isRegistered ? shortcut.display : shortcut.display + " 被占用")）" }
+        menu.addItem(submenu("写作与引文", symbol: "text.quote", [
+            item(quoteTitle, #selector(openQuoteFinder)),
+            item("稿件引文核对…", #selector(openManuscriptCheck)),
+            item("两版讲义对比…", #selector(openCompare)),
+            item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)),
+        ]))
+        menu.addItem(submenu("整理文件", symbol: "folder", [
+            item("批量重命名…", #selector(openBatchRename)),
+            item("查找重复与相似文件…", #selector(openDuplicates)),
+            item("空间分析…", #selector(openSpace)),
+        ]))
+        menu.addItem(submenu("书库", symbol: "books.vertical", [
+            item("书库体检…", #selector(openLibraryCheck)),
+            item("查找扫描版 PDF…", #selector(openScannedPDFs)),
+        ]))
+        menu.addItem(.separator())
+        menu.addItem(item("功能导览…", #selector(openFeatureGuide)))
         menu.addItem(item("状态与诊断…", #selector(openStatus)))
         menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(openSettings), key: ","))
@@ -216,6 +233,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
+    private func submenu(_ title: String, symbol: String, _ items: [NSMenuItem]) -> NSMenuItem {
+        let menu = NSMenu()
+        for entry in items { menu.addItem(entry) }
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        parent.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        parent.submenu = menu
+        return parent
+    }
+
     private func disabled(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
@@ -238,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 clipboardMonitor: clipboardMonitor,
                 onClipboardSettingsChange: {},
                 lookupHotKey: lookupHotKey,
+                quoteHotKey: quoteHotKey,
                 snippets: snippets,
                 snippetExpansion: snippetExpansion,
                 onIndexSettingsChange: { [weak self] in self?.applySettings() },
@@ -314,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "输入监控：\(yes(doubleTap.hasPermission))  辅助功能：\(yes(AXIsProcessTrusted()))",
             "",
             "[唤起]",
-            "搜索 \(shortcut(hotKey))，剪贴板 \(shortcut(clipboardHotKey))，查词 \(shortcut(lookupHotKey))",
+            "搜索 \(shortcut(hotKey))，剪贴板 \(shortcut(clipboardHotKey))，查词 \(shortcut(lookupHotKey))，引文查证 \(shortcut(quoteHotKey))",
             "连按 \(Preferences.doubleTapModifier.title)：监听 \(yes(doubleTap.isListening))，最近按键 \(time(doubleTap.lastEventAt))，最近连按 \(time(doubleTap.lastFiredAt))",
             "",
             "[索引]",
@@ -426,6 +453,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return items
     }
 
+    /// ⌃⌥Q: checks the text selected in the front app with 引文查证 (0.23).
+    private func checkSelectedQuote() {
+        SelectedText.fetch(monitor: clipboardMonitor) { [weak self] text in
+            guard let self else { return }
+            self.makeQuoteFinder()
+            let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if trimmed.isEmpty {
+                self.quoteFinder?.present()
+                self.quoteFinder?.model.note("没有读到选中的文字：请先选中一句引文再按快捷键（读取选中文字需要“辅助功能”权限），或直接粘贴到这里。")
+            } else {
+                self.quoteFinder?.present(quote: trimmed)
+            }
+        }
+    }
+
     /// ⌃⌥D: look up the text selected in the front app.
     private func lookUpSelection() {
         SelectedText.fetch(monitor: clipboardMonitor) { [weak self] text in
@@ -471,14 +513,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fileList?.present(source)
     }
 
+    private func makeQuoteFinder() {
+        guard quoteFinder == nil else { return }
+        quoteFinder = QuoteFinderWindowController(ocr: ocr.store)
+        quoteFinder?.model.openManuscriptCheck = { [weak self] in self?.openManuscriptCheck() }
+    }
+
     @objc private func openQuoteFinder() {
-        if quoteFinder == nil { quoteFinder = QuoteFinderWindowController(ocr: ocr.store) }
+        makeQuoteFinder()
         // A quotation just copied (4–300 characters of text) is filled in, not yet checked.
         if let model = quoteFinder?.model, model.quote.isEmpty, let copied = NSPasteboard.general.string(forType: .string),
            (4...300).contains(copied.trimmingCharacters(in: .whitespacesAndNewlines).count) {
             model.quote = copied.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         quoteFinder?.present()
+    }
+
+    @objc func openManuscriptCheck() {
+        if manuscriptCheck == nil { manuscriptCheck = ManuscriptCheckWindowController(ocr: ocr.store) }
+        manuscriptCheck?.present()
+    }
+
+    @objc func openFeatureGuide() {
+        if featureGuide == nil {
+            featureGuide = FeatureGuideWindowController { [weak self] action in self?.runFeature(action) }
+        }
+        featureGuide?.present()
+    }
+
+    /// Runs a feature from the guide.
+    private func runFeature(_ action: FeatureGuide.Action) {
+        switch action {
+        case .search(let query): searchWindow.show(query: query)
+        case .openSearch: searchWindow.show()
+        case .clipboard: openClipboard()
+        case .quoteFinder: openQuoteFinder()
+        case .manuscriptCheck: openManuscriptCheck()
+        case .compare: openCompare()
+        case .fileList: chooseFileListFolder()
+        case .batchRename: openBatchRename()
+        case .duplicates: openDuplicates()
+        case .space: openSpace()
+        case .libraryCheck: openLibraryCheck()
+        case .scannedPDFs: openScannedPDFs()
+        case .status: openStatus()
+        case .settings: openSettings()
+        }
     }
 
     @objc private func openLibraryCheck() {

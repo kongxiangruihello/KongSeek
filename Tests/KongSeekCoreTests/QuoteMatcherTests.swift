@@ -36,4 +36,17 @@ final class QuoteMatcherTests: XCTestCase {
         XCTAssertEqual(hits.map(\.count), [2, 1])
         XCTAssertTrue(hits[0].snippet.hasPrefix("克己复礼"), hits[0].snippet)
     }
+
+    func testManuscriptQuotes() {
+        let manuscript = """
+        孔子说“学而时习之，不亦说乎”，又说“仁”。朱熹注云：“学之为言效也。人性皆善，而觉有先后，后觉者必效先觉之所为。”
+        又见《论语》“学而”篇。同书又云：“学而时习之，不亦说乎？”（重复）
+        「克己复礼为仁。一日克己复礼，天下归仁焉。」
+        """
+        let quotes = ManuscriptQuotes.extract(from: manuscript)
+        XCTAssertEqual(quotes.map(\.text), ["学而时习之，不亦说乎", "学之为言效也。人性皆善，而觉有先后，后觉者必效先觉之所为。", "克己复礼为仁。一日克己复礼，天下归仁焉。"])
+        XCTAssertTrue(quotes[1].context.hasSuffix("朱熹注云："), quotes[1].context)
+        let nested = ManuscriptQuotes.extract(from: "他说：“子曰：‘学而时习之，不亦说乎？’此之谓也。”")
+        XCTAssertEqual(nested.map(\.text), ["子曰：‘学而时习之，不亦说乎？’此之谓也。"])
+    }
 }

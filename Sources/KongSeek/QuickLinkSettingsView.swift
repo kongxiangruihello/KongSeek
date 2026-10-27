@@ -4,9 +4,12 @@ import KongSeekCore
 /// Settings page for web search keywords ("hd 仁") and the dictionary lookup shortcut.
 final class QuickLinkSettingsView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
     private let lookupHotKey: HotKey
+    private let quoteHotKey: HotKey
     private let table = NSTableView()
     private let recorder = ShortcutRecorderButton()
     private let lookupNote = NSTextField(labelWithString: "")
+    private let quoteRecorder = ShortcutRecorderButton()
+    private let quoteNote = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var links: [QuickLink] = []
 
@@ -32,8 +35,9 @@ final class QuickLinkSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         }
     }
 
-    init(lookupHotKey: HotKey) {
+    init(lookupHotKey: HotKey, quoteHotKey: HotKey) {
         self.lookupHotKey = lookupHotKey
+        self.quoteHotKey = quoteHotKey
         super.init(frame: .zero)
         build()
         reload()
@@ -86,7 +90,23 @@ final class QuickLinkSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
         lookupHelp.textColor = .secondaryLabelColor
         lookupHelp.preferredMaxLayoutWidth = 470
 
-        let views: [NSView] = [scroll, add, remove, reset, help, statusLabel, lookupLabel, recorder, lookupNote, lookupHelp]
+        let quoteLabel = NSTextField(labelWithString: "引文查证快捷键：")
+        quoteRecorder.onRecord = { [weak self] shortcut in
+            guard let self else { return }
+            Preferences.quoteShortcut = shortcut
+            self.quoteHotKey.register(shortcut)
+            self.reload()
+        }
+        quoteRecorder.onRecordingChange = { [weak self] recording in
+            if recording { self?.quoteHotKey.suspend() } else { self?.quoteHotKey.resume() }
+        }
+        quoteNote.font = .systemFont(ofSize: 11)
+        let quoteHelp = NSTextField(wrappingLabelWithString: "在 Word、PDF 阅读器、网页等任何应用中选中一句引文后按此快捷键，打开“引文查证”并开始查找出处。")
+        quoteHelp.font = .systemFont(ofSize: 11)
+        quoteHelp.textColor = .secondaryLabelColor
+        quoteHelp.preferredMaxLayoutWidth = 470
+
+        let views: [NSView] = [scroll, add, remove, reset, help, statusLabel, lookupLabel, recorder, lookupNote, lookupHelp, quoteLabel, quoteRecorder, quoteNote, quoteHelp]
         for view in views {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
@@ -119,7 +139,18 @@ final class QuickLinkSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
             lookupHelp.topAnchor.constraint(equalTo: recorder.bottomAnchor, constant: 6),
             lookupHelp.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             lookupHelp.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
-            lookupHelp.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
+            quoteLabel.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            quoteLabel.centerYAnchor.constraint(equalTo: quoteRecorder.centerYAnchor),
+            quoteRecorder.topAnchor.constraint(equalTo: lookupHelp.bottomAnchor, constant: 12),
+            quoteRecorder.leadingAnchor.constraint(equalTo: quoteLabel.trailingAnchor, constant: 6),
+            quoteRecorder.widthAnchor.constraint(equalToConstant: 150),
+            quoteNote.leadingAnchor.constraint(equalTo: quoteRecorder.trailingAnchor, constant: 8),
+            quoteNote.centerYAnchor.constraint(equalTo: quoteRecorder.centerYAnchor),
+            quoteNote.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
+            quoteHelp.topAnchor.constraint(equalTo: quoteRecorder.bottomAnchor, constant: 6),
+            quoteHelp.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            quoteHelp.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            quoteHelp.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
         ])
     }
 
@@ -129,6 +160,14 @@ final class QuickLinkSettingsView: NSView, NSTableViewDataSource, NSTableViewDel
             table.reloadData()
         }
         recorder.shortcut = lookupHotKey.shortcut
+        quoteRecorder.shortcut = quoteHotKey.shortcut
+        if let shortcut = quoteHotKey.shortcut, !quoteHotKey.isRegistered {
+            quoteNote.stringValue = "\(shortcut.display) 已被占用，请换一个"
+            quoteNote.textColor = .systemRed
+        } else {
+            quoteNote.stringValue = "⌫ 清除，⎋ 取消"
+            quoteNote.textColor = .secondaryLabelColor
+        }
         if let shortcut = lookupHotKey.shortcut, !lookupHotKey.isRegistered {
             lookupNote.stringValue = "\(shortcut.display) 已被占用（可能是 KongFetch），请换一个"
             lookupNote.textColor = .systemRed

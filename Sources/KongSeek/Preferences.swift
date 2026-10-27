@@ -306,6 +306,24 @@ enum Preferences {
         defaults.removeObject(forKey: "quickLinks")
     }
 
+    /// Checks the text selected in any app with 引文查证 (0.23).
+    static var quoteShortcut: Shortcut? {
+        get {
+            if defaults.bool(forKey: "quoteShortcutCleared") { return nil }
+            guard let data = defaults.data(forKey: "quoteShortcut"),
+                  let shortcut = try? JSONDecoder().decode(Shortcut.self, from: data) else { return .defaultQuote }
+            return shortcut
+        }
+        set {
+            defaults.set(newValue == nil, forKey: "quoteShortcutCleared")
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: "quoteShortcut")
+            } else {
+                defaults.removeObject(forKey: "quoteShortcut")
+            }
+        }
+    }
+
     /// Look up the selected text in the system dictionary.
     static var lookupShortcut: Shortcut? {
         get {

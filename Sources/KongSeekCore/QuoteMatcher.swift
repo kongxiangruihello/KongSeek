@@ -103,3 +103,52 @@ public enum PageHits {
         return hits
     }
 }
+
+/// The quotations in a manuscript (稿件引文核对, 0.23): text inside “…” or 「…」
+/// (and ‘…’ / 『…』 nested in them), long enough to be a quotation rather than a
+/// term or a title, in order, without repeats.
+public enum ManuscriptQuotes {
+    public struct Quote: Equatable, Sendable {
+        public var text: String
+        /// About 20 characters before the quotation, to recognize where it is in the manuscript.
+        public var context: String
+    }
+
+    /// At least this many letters (after removing punctuation) make a quotation.
+    public static let minimumLength = 6
+
+    public static func extract(from text: String, minimumLength: Int = minimumLength, maximumLength: Int = 400) -> [Quote] {
+        let characters = Array(text)
+        let pairs: [Character: Character] = ["“": "”", "「": "」", "『": "』", "\"": "\""]
+        var quotes: [Quote] = []
+        var seen = Set<String>()
+        var index = 0
+        while index < characters.count {
+            let open = characters[index]
+            guard let close = pairs[open] else { index += 1; continue }
+            // The matching close mark, allowing one level of nesting of the same kind.
+            var depth = 0, end = index + 1
+            var found: Int?
+            while end < characters.count && end - index <= maximumLength + 1 {
+                let character = characters[end]
+                if character == open && open != close { depth += 1 }
+                if character == close {
+                    if depth == 0 { found = end; break }
+                    depth -= 1
+                }
+                if character == "\n" && open == "\"" { break }
+                end += 1
+            }
+            guard let stop = found else { index += 1; continue }
+            let inner = String(characters[(index + 1)..<stop]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = String(QuoteMatcher.normalized(inner))
+            if key.count >= minimumLength, !seen.contains(key) {
+                seen.insert(key)
+                let before = String(characters[max(0, index - 20)..<index]).replacingOccurrences(of: "\n", with: " ")
+                quotes.append(Quote(text: inner, context: before))
+            }
+            index = stop + 1
+        }
+        return quotes
+    }
+}

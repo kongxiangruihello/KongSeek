@@ -1,5 +1,6 @@
 import AppKit
 import Quartz
+import PDFKit
 import UniformTypeIdentifiers
 import KongSeekCore
 import KongSeekText
@@ -42,6 +43,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let field = NSTextField()
     private let table = ResultTable()
     private let preview: QLPreviewView
+    /// Over the preview when the hit is on a known page of a PDF: that page, with the
+    /// words marked (0.23), instead of the first page Quick Look shows.
+    private let hitPreview = PDFView()
+    private var hitPreviewToken = 0
+    private var lastHitPreviewQuery: [String] = []
     private let statusLabel = NSTextField(labelWithString: "")
     private let emptyLabel = NSTextField(labelWithString: "")
 
@@ -166,6 +172,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         resetBrowsing()
         removeKeyMonitor()
         preview.previewItem = nil
+        hideHitPreview()
         panel.orderOut(nil)
     }
 
@@ -341,8 +348,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         definitionScroll.drawsBackground = false
         definitionScroll.hasVerticalScroller = true
         definitionScroll.isHidden = true
+        hitPreview.autoScales = true
+        hitPreview.displayMode = .singlePageContinuous
+        hitPreview.displaysPageBreaks = true
+        hitPreview.backgroundColor = .windowBackgroundColor
+        hitPreview.isHidden = true
 
-        for view in [searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        for view in [searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -386,6 +398,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             preview.leadingAnchor.constraint(equalTo: middleLine.trailingAnchor, constant: 8),
             preview.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -8),
             preview.bottomAnchor.constraint(equalTo: bottomLine.topAnchor, constant: -8),
+
+            hitPreview.topAnchor.constraint(equalTo: preview.topAnchor),
+            hitPreview.bottomAnchor.constraint(equalTo: preview.bottomAnchor),
+            hitPreview.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
+            hitPreview.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
 
             definitionScroll.topAnchor.constraint(equalTo: preview.topAnchor),
             definitionScroll.bottomAnchor.constraint(equalTo: preview.bottomAnchor),
@@ -1549,6 +1566,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     private func updatePreview() {
         let selected = selectedItem
+        if hitPreview.document?.documentURL?.path != selected?.path { hideHitPreview() }
         definitionScroll.isHidden = selected?.isFile ?? true
         if let item = selected, let fill = item.fill {
             definitionView.string = fill.isSaved || fill.isHistory
@@ -1588,7 +1606,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             let found = ContentPreview.find(in: URL(fileURLWithPath: item.path), needles: needles, ocr: store)
             DispatchQueue.main.async {
                 guard let self, token == self.snippetToken else { return }
-                if case .found(let place) = found { self.lastHit = (item.path, place.page) }
+                if case .found(let place) = found {
+                    self.lastHit = (item.path, place.page)
+                    self.showHitPage(item.path, page: place.page, words: needles)
+                } else {
+                    self.hideHitPreview()
+                }
                 self.snippetLabel.attributedStringValue = Self.snippetText(found)
             }
         }
@@ -1599,6 +1622,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// Looked up after a short pause, one at a time, so moving through the list stays quick.
     private func updateNameModeSnippet(token: Int) {
         setNameSnippetVisible(false)
+        if lastHitPreviewQuery != outcome.highlightWords { hideHitPreview() }
+        lastHitPreviewQuery = outcome.highlightWords
         guard !outcome.isRecentList, !outcome.highlightWords.isEmpty, let item = selectedItem, item.isFile,
               !item.isFolder, !item.isInArchive, ContentPreview.canRead(item.path) else { return }
         let needles = outcome.highlightWords
@@ -1610,6 +1635,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 DispatchQueue.main.async {
                     guard token == self.snippetToken, !self.contentMode, case .found(let place) = found else { return }
                     self.lastHit = (item.path, place.page)
+                    self.showHitPage(item.path, page: place.page, words: needles)
                     let text = NSMutableAttributedString(string: "正文也有  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
                     text.append(Self.snippetText(found))
                     self.snippetLabel.attributedStringValue = text
@@ -1617,6 +1643,39 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 }
             }
         }
+    }
+
+    /// Shows the hit page of a PDF in the preview area, words in yellow (0.23).
+    private func showHitPage(_ path: String, page: Int?, words: [String]) {
+        guard let page, page >= 1, path.lowercased().hasSuffix(".pdf"), selectedItem?.isInArchive != true else { return }
+        hitPreviewToken += 1
+        let token = hitPreviewToken
+        let url = URL(fileURLWithPath: path)
+        let reuse = hitPreview.document?.documentURL?.path == path ? hitPreview.document : nil
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let document = reuse ?? PDFDocument(url: url)
+            DispatchQueue.main.async {
+                guard let self, token == self.hitPreviewToken, self.selectedItem?.path == path,
+                      let document, !document.isLocked, page <= document.pageCount, let target = document.page(at: page - 1) else { return }
+                if self.hitPreview.document !== document { self.hitPreview.document = document }
+                var marks: [PDFSelection] = []
+                if let text = target.string {
+                    marks = TextLocator.ranges(of: words, in: text).compactMap { target.selection(for: $0) }
+                }
+                for mark in marks { mark.color = .systemYellow }
+                self.hitPreview.highlightedSelections = marks.isEmpty ? nil : marks
+                self.hitPreview.isHidden = false
+                if let first = marks.first { self.hitPreview.go(to: first) } else { self.hitPreview.go(to: target) }
+            }
+        }
+    }
+
+    private func hideHitPreview() {
+        hitPreviewToken += 1
+        guard !hitPreview.isHidden || hitPreview.document != nil else { return }
+        hitPreview.isHidden = true
+        hitPreview.highlightedSelections = nil
+        hitPreview.document = nil
     }
 
     private func setNameSnippetVisible(_ visible: Bool) {

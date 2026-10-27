@@ -25,87 +25,41 @@ final class QuoteFinderModel: ObservableObject {
     @Published private(set) var status = "粘贴一句引文，点“查证”：在已建立内容索引的文件和识别过的扫描件中找出处。"
     @Published private(set) var checked = (done: 0, total: 0)
 
-    private let ocr: OCRStore
-    private let search = ContentSearch()
-    private var token = 0
+    private let lookup: QuoteLookup
+    /// Opens 稿件引文核对 (set by the app delegate).
+    var openManuscriptCheck: (() -> Void)?
 
     init(ocr: OCRStore) {
-        self.ocr = ocr
+        lookup = QuoteLookup(ocr: ocr)
     }
 
     func run() {
         let text = quote.trimmingCharacters(in: .whitespacesAndNewlines)
-        let probes = QuoteMatcher.probes(text)
-        guard QuoteMatcher.normalized(text).count >= 4, !probes.isEmpty else {
+        guard QuoteMatcher.normalized(text).count >= 4 else {
             status = "引文太短，至少需要 4 个字。"
             return
         }
-        token += 1
-        let current = token
         running = true
         results = []
+        checked = (0, 0)
         status = "正在查找含有这句话的文件…"
-        // Candidates: documents containing any of the three pieces (start, middle, end),
-        // so a line break or a slip in one part does not hide the source.
-        let queries = probes.compactMap { SpotlightQuery.content(for: SearchQuery("\"\($0)\"")) }
-        let spotlight = queries.map { "(\($0))" }.joined(separator: " || ")
-        let roots = NameIndex.effectiveRoots(Preferences.roots, rules: Preferences.rules)
-        search.stop()
-        let started = search.search(spotlight, scopes: roots) { [weak self] hits, finished in
-            guard let self, finished, current == self.token else { return }
-            self.check(Set(hits.filter { !$0.isFolder }.map(\.path)), text: text, probes: probes, token: current)
-        }
-        if !started { check([], text: text, probes: probes, token: current) }
-    }
-
-    /// Reads each candidate and keeps those where the quotation (nearly) occurs.
-    private func check(_ spotlightPaths: Set<String>, text: String, probes: [String], token current: Int) {
-        var paths = spotlightPaths
-        for probe in probes { for hit in ocr.search([probe], limit: 100) { paths.insert(hit.path) } }
-        let candidates = Array(paths.prefix(150))
-        checked = (0, candidates.count)
-        status = "找到 \(candidates.count) 个可能的文件，正在逐个核对原文…"
-        let store = ocr
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            var found: [Result] = []
-            var inCloud = 0
-            for (number, path) in candidates.enumerated() {
-                guard let self, current == self.token else { return }
-                let url = URL(fileURLWithPath: path)
-                if (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus == .notDownloaded {
-                    inCloud += 1
-                    continue
-                }
-                if let pages = try? DocumentText.read(url, maximumPages: 5_000, ocr: store),
-                   let match = QuoteMatcher.best(in: pages.pages, quote: text) {
-                    let ext = url.pathExtension.lowercased()
-                    let isBook = DuplicateFinder.bookExtensions.contains(ext)
-                    let book = isBook ? BookInfo.read(url).name : nil
-                    found.append(Result(path: path, title: book?.title ?? url.lastPathComponent,
-                                        page: pages.isPaged ? pages.firstPage + match.unit : nil,
-                                        unit: pages.unit == "页" ? "页" : "张", score: match.score, excerpt: match.excerpt, book: book))
-                }
-                if number % 5 == 4 {
-                    let done = number + 1
-                    DispatchQueue.main.async { if current == self.token { self.checked = (done, candidates.count) } }
-                }
-            }
-            DispatchQueue.main.async {
-                guard let self, current == self.token else { return }
-                self.running = false
-                self.results = found.sorted { $0.score != $1.score ? $0.score > $1.score : $0.title < $1.title }
-                let exact = found.filter(\.exact).count
-                var text = found.isEmpty ? "没有找到出处。" : "找到 \(found.count) 处：完全一致 \(exact) 处，近似 \(found.count - exact) 处。"
-                if inCloud > 0 { text += "另有 \(inCloud) 个只在 iCloud 中的文件未核对。" }
-                if found.isEmpty { text += "只能查到 Spotlight 已建立内容索引的文件和已识别的扫描件。" }
-                self.status = text
-            }
+        lookup.run(text, progress: { [weak self] done, total in
+            self?.checked = (done, total)
+            if done == 0 { self?.status = "找到 \(total) 个可能的文件，正在逐个核对原文…" }
+        }) { [weak self] outcome in
+            guard let self else { return }
+            self.running = false
+            self.results = outcome.results
+            let exact = outcome.results.filter(\.exact).count
+            var text = outcome.results.isEmpty ? "没有找到出处。" : "找到 \(outcome.results.count) 处：完全一致 \(exact) 处，近似 \(outcome.results.count - exact) 处。"
+            if outcome.inCloud > 0 { text += "另有 \(outcome.inCloud) 个只在 iCloud 中的文件未核对。" }
+            if outcome.results.isEmpty { text += "只能查到 Spotlight 已建立内容索引的文件和已识别的扫描件。" }
+            self.status = text
         }
     }
 
     func stop() {
-        token += 1
-        search.stop()
+        lookup.stop()
         running = false
         status = "已停止。"
     }
@@ -146,6 +100,9 @@ final class QuoteFinderModel: ObservableObject {
                             location: result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" }, note: reference(result))
     }
 
+    /// Shows a message in the status line.
+    func note(_ text: String) { status = text }
+
     func pasteFromClipboard() {
         if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty { quote = text }
     }
@@ -163,6 +120,9 @@ struct QuoteFinderView: View {
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
             HStack {
                 Button("粘贴") { model.pasteFromClipboard() }
+                if let open = model.openManuscriptCheck {
+                    Button("核对整篇稿件…") { open() }.help("把一篇稿件中引号内的引文逐条查证")
+                }
                 Spacer()
                 if model.running {
                     if model.checked.total > 0 { Text("已核对 \(model.checked.done) / \(model.checked.total)").font(.caption).foregroundColor(.secondary) }
@@ -227,6 +187,107 @@ final class QuoteFinderWindowController: NSWindowController {
         if let quote, !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             model.quote = quote
             model.run()
+        }
+    }
+}
+
+/// Finds where a quotation occurs (0.21; shared with 稿件引文核对, 0.23): candidates
+/// from Spotlight (any of three pieces of the quotation) and recognized scans, then
+/// each candidate's text checked with QuoteMatcher. Callbacks arrive on main.
+final class QuoteLookup {
+    typealias Result = QuoteFinderModel.Result
+
+    struct Outcome {
+        var results: [Result]
+        var candidates: Int
+        var inCloud: Int
+    }
+
+    private let ocr: OCRStore
+    private let search = ContentSearch()
+    private var token = 0
+    /// Texts of documents read lately, so checking many quotations from one manuscript
+    /// does not read the same books again and again.
+    private let pages = NSCache<NSString, PagesBox>()
+
+    final class PagesBox {
+        let pages: DocumentText.Pages?
+        init(_ pages: DocumentText.Pages?) { self.pages = pages }
+    }
+
+    init(ocr: OCRStore) {
+        self.ocr = ocr
+        pages.countLimit = 40
+    }
+
+    func stop() {
+        token += 1
+        search.stop()
+    }
+
+    func run(_ text: String, maximumCandidates: Int = 150, progress: ((Int, Int) -> Void)? = nil, completion: @escaping (Outcome) -> Void) {
+        let probes = QuoteMatcher.probes(text)
+        guard QuoteMatcher.normalized(text).count >= 4, !probes.isEmpty else {
+            completion(Outcome(results: [], candidates: 0, inCloud: 0))
+            return
+        }
+        token += 1
+        let current = token
+        let queries = probes.compactMap { SpotlightQuery.content(for: SearchQuery("\"\($0)\"")) }
+        let spotlight = queries.map { "(\($0))" }.joined(separator: " || ")
+        let roots = NameIndex.effectiveRoots(Preferences.roots, rules: Preferences.rules)
+        search.stop()
+        let started = search.search(spotlight, scopes: roots) { [weak self] hits, finished in
+            guard let self, finished, current == self.token else { return }
+            self.check(Set(hits.filter { !$0.isFolder }.map(\.path)), text: text, probes: probes, limit: maximumCandidates,
+                       token: current, progress: progress, completion: completion)
+        }
+        if !started { check([], text: text, probes: probes, limit: maximumCandidates, token: current, progress: progress, completion: completion) }
+    }
+
+    private func check(_ spotlightPaths: Set<String>, text: String, probes: [String], limit: Int, token current: Int,
+                       progress: ((Int, Int) -> Void)?, completion: @escaping (Outcome) -> Void) {
+        var paths = spotlightPaths
+        for probe in probes { for hit in ocr.search([probe], limit: 100) { paths.insert(hit.path) } }
+        let candidates = Array(paths.prefix(limit))
+        progress?(0, candidates.count)
+        let store = ocr
+        let cache = pages
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var found: [Result] = []
+            var inCloud = 0
+            for (number, path) in candidates.enumerated() {
+                guard let self, current == self.token else { return }
+                let url = URL(fileURLWithPath: path)
+                if (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus == .notDownloaded {
+                    inCloud += 1
+                    continue
+                }
+                let read: DocumentText.Pages?
+                if let box = cache.object(forKey: path as NSString) {
+                    read = box.pages
+                } else {
+                    read = try? DocumentText.read(url, maximumPages: 5_000, ocr: store)
+                    cache.setObject(PagesBox(read), forKey: path as NSString)
+                }
+                if let pages = read, let match = QuoteMatcher.best(in: pages.pages, quote: text) {
+                    let ext = url.pathExtension.lowercased()
+                    let isBook = DuplicateFinder.bookExtensions.contains(ext)
+                    let book = isBook ? BookInfo.read(url).name : nil
+                    found.append(Result(path: path, title: book?.title ?? url.lastPathComponent,
+                                        page: pages.isPaged ? pages.firstPage + match.unit : nil,
+                                        unit: pages.unit == "页" ? "页" : "张", score: match.score, excerpt: match.excerpt, book: book))
+                }
+                if number % 5 == 4, let progress {
+                    let done = number + 1
+                    DispatchQueue.main.async { if current == self.token { progress(done, candidates.count) } }
+                }
+            }
+            let sorted = found.sorted { $0.score != $1.score ? $0.score > $1.score : $0.title < $1.title }
+            DispatchQueue.main.async {
+                guard let self, current == self.token else { return }
+                completion(Outcome(results: sorted, candidates: candidates.count, inCloud: inCloud))
+            }
         }
     }
 }
