@@ -1,12 +1,15 @@
 import AppKit
+import ServiceManagement
 import KongSeekCore
 
-/// Settings for how the search window is opened: the shortcut and the double tap.
-final class SettingsWindowController: NSObject, NSWindowDelegate {
+/// The settings window: how the search window opens, and what is indexed.
+final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let window: NSWindow
     private let hotKey: HotKey
     private let doubleTap: DoubleTapMonitor
-    private let onChange: () -> Void
+    private let onIndexSettingsChange: () -> Void
+    private let onRebuild: () -> Void
+    private let indexStatus: () -> String
 
     private let recorder = ShortcutRecorderButton()
     private let shortcutNote = NSTextField(wrappingLabelWithString: "")
@@ -15,11 +18,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let permissionButton = NSButton(title: "授予“输入监控”权限…", target: nil, action: nil)
     private var refreshTimer: Timer?
 
-    init(hotKey: HotKey, doubleTap: DoubleTapMonitor, onChange: @escaping () -> Void) {
+    private let folderTable = NSTableView()
+    private var folders: [String] = []
+    private let hiddenCheckbox = NSButton(checkboxWithTitle: "包含隐藏文件和文件夹（名称以 . 开头）", target: nil, action: nil)
+    private let pathCheckbox = NSButton(checkboxWithTitle: "关键词也匹配所在文件夹的路径", target: nil, action: nil)
+    private let loginCheckbox = NSButton(checkboxWithTitle: "登录时自动启动 KongSeek", target: nil, action: nil)
+    private let indexStatusLabel = NSTextField(labelWithString: "")
+
+    init(hotKey: HotKey, doubleTap: DoubleTapMonitor, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String) {
         self.hotKey = hotKey
         self.doubleTap = doubleTap
-        self.onChange = onChange
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 250), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        self.onIndexSettingsChange = onIndexSettingsChange
+        self.onRebuild = onRebuild
+        self.indexStatus = indexStatus
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 420), styleMask: [.titled, .closable], backing: .buffered, defer: true)
         super.init()
         window.title = "KongSeek 设置"
         window.isReleasedWhenClosed = false
@@ -44,8 +56,29 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     private func buildLayout() {
+        let tabs = NSTabView()
+        let launchTab = NSTabViewItem(identifier: "launch")
+        launchTab.label = "唤起"
+        launchTab.view = buildLaunchView()
+        let indexTab = NSTabViewItem(identifier: "index")
+        indexTab.label = "索引"
+        indexTab.view = buildIndexView()
+        tabs.addTabViewItem(launchTab)
+        tabs.addTabViewItem(indexTab)
+        let container = NSView()
+        tabs.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(tabs)
+        NSLayoutConstraint.activate([
+            tabs.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            tabs.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            tabs.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            tabs.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        ])
+        window.contentView = container
+    }
+
+    private func buildLaunchView() -> NSView {
         let content = NSView()
-        window.contentView = content
 
         let shortcutLabel = NSTextField(labelWithString: "唤起快捷键：")
         recorder.onRecord = { [weak self] shortcut in self?.apply(shortcut) }
@@ -102,9 +135,167 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             permissionButton.leadingAnchor.constraint(equalTo: recorder.leadingAnchor),
             permissionButton.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -20),
         ])
+        return content
+    }
+
+    private func buildIndexView() -> NSView {
+        let content = NSView()
+        let title = NSTextField(labelWithString: "索引的文件夹：")
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("folder"))
+        folderTable.addTableColumn(column)
+        folderTable.headerView = nil
+        folderTable.dataSource = self
+        folderTable.delegate = self
+        folderTable.rowHeight = 22
+        folderTable.usesAlternatingRowBackgroundColors = true
+        let scroll = NSScrollView()
+        scroll.documentView = folderTable
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+
+        let add = NSButton(title: "添加…", target: self, action: #selector(addFolder))
+        let remove = NSButton(title: "移除", target: self, action: #selector(removeFolder))
+        let reset = NSButton(title: "恢复默认", target: self, action: #selector(resetFolders))
+        let note = NSTextField(wrappingLabelWithString: "默认：主目录、iCloud 云盘、应用程序。主目录下的 ~/Library、node_modules、.git、DerivedData 和废纸篓不收录。")
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        note.preferredMaxLayoutWidth = 440
+
+        for checkbox in [hiddenCheckbox, pathCheckbox, loginCheckbox] {
+            checkbox.target = self
+            checkbox.action = #selector(checkboxChanged(_:))
+        }
+        indexStatusLabel.font = .systemFont(ofSize: 11)
+        indexStatusLabel.textColor = .secondaryLabelColor
+        let rebuild = NSButton(title: "立即重建索引", target: self, action: #selector(rebuildIndex))
+
+        for view in [title, scroll, add, remove, reset, note, hiddenCheckbox, pathCheckbox, loginCheckbox, indexStatusLabel, rebuild] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            title.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            scroll.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
+            scroll.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            scroll.heightAnchor.constraint(equalToConstant: 110),
+            add.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 6),
+            add.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            remove.centerYAnchor.constraint(equalTo: add.centerYAnchor),
+            remove.leadingAnchor.constraint(equalTo: add.trailingAnchor, constant: 6),
+            reset.centerYAnchor.constraint(equalTo: add.centerYAnchor),
+            reset.leadingAnchor.constraint(equalTo: remove.trailingAnchor, constant: 6),
+            note.topAnchor.constraint(equalTo: add.bottomAnchor, constant: 6),
+            note.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            note.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            hiddenCheckbox.topAnchor.constraint(equalTo: note.bottomAnchor, constant: 14),
+            hiddenCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            pathCheckbox.topAnchor.constraint(equalTo: hiddenCheckbox.bottomAnchor, constant: 8),
+            pathCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            loginCheckbox.topAnchor.constraint(equalTo: pathCheckbox.bottomAnchor, constant: 8),
+            loginCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            rebuild.topAnchor.constraint(equalTo: loginCheckbox.bottomAnchor, constant: 16),
+            rebuild.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            indexStatusLabel.centerYAnchor.constraint(equalTo: rebuild.centerYAnchor),
+            indexStatusLabel.leadingAnchor.constraint(equalTo: rebuild.trailingAnchor, constant: 10),
+            indexStatusLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor),
+            rebuild.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16),
+        ])
+        return content
+    }
+
+    // MARK: - Index tab
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        folders.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let label = NSTextField(labelWithString: (folders[row] as NSString).abbreviatingWithTildeInPath)
+        label.lineBreakMode = .byTruncatingMiddle
+        let exists = FileManager.default.fileExists(atPath: folders[row])
+        label.textColor = exists ? .labelColor : .secondaryLabelColor
+        if !exists { label.stringValue += "（不存在）" }
+        return label
+    }
+
+    @objc private func addFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "索引"
+        panel.message = "选择要让 KongSeek 索引的文件夹"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK else { return }
+            var roots = Preferences.roots
+            for url in panel.urls where !roots.contains(url.path) { roots.append(url.path) }
+            Preferences.roots = roots
+            self.indexSettingsChanged()
+        }
+    }
+
+    @objc private func removeFolder() {
+        let row = folderTable.selectedRow
+        guard row >= 0 && row < folders.count else { return }
+        var roots = Preferences.roots
+        roots.removeAll { $0 == folders[row] }
+        Preferences.roots = roots
+        indexSettingsChanged()
+    }
+
+    @objc private func resetFolders() {
+        Preferences.resetRoots()
+        indexSettingsChanged()
+    }
+
+    @objc private func checkboxChanged(_ sender: NSButton) {
+        switch sender {
+        case hiddenCheckbox:
+            Preferences.includeHidden = sender.state == .on
+            indexSettingsChanged()
+        case pathCheckbox:
+            Preferences.matchFolderPath = sender.state == .on
+        case loginCheckbox:
+            do {
+                if sender.state == .on {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "无法更改登录启动设置"
+                alert.informativeText = error.localizedDescription
+                alert.beginSheetModal(for: window)
+            }
+        default:
+            break
+        }
+        refresh()
+    }
+
+    @objc private func rebuildIndex() {
+        onRebuild()
+        refresh()
+    }
+
+    private func indexSettingsChanged() {
+        onIndexSettingsChange()
+        refresh()
     }
 
     private func refresh() {
+        if folders != Preferences.roots {
+            folders = Preferences.roots
+            folderTable.reloadData()
+        }
+        hiddenCheckbox.state = Preferences.includeHidden ? .on : .off
+        pathCheckbox.state = Preferences.matchFolderPath ? .on : .off
+        loginCheckbox.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        indexStatusLabel.stringValue = indexStatus()
+
         recorder.shortcut = hotKey.shortcut
         if let shortcut = hotKey.shortcut {
             shortcutNote.stringValue = hotKey.isRegistered
@@ -137,7 +328,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         Preferences.searchShortcut = shortcut
         hotKey.register(shortcut)
         refresh()
-        onChange()
     }
 
     @objc private func resetShortcut() {
@@ -153,7 +343,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         doubleTap.refresh()
         if modifier != .off && !doubleTap.hasPermission { doubleTap.requestPermission() }
         refresh()
-        onChange()
     }
 
     @objc private func requestPermission() {

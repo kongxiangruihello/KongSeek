@@ -415,6 +415,13 @@ public final class NameIndex {
         return (0..<flags.count).compactMap { flags[$0] & skip == 0 ? Int32($0) : nil }
     }
 
+    /// The files and folders directly inside an indexed folder, or nil if the
+    /// folder is not in the index (excluded, a package, or outside the roots).
+    public func childIDs(ofFolder rawPath: String) -> [Int32]? {
+        guard let id = id(forPath: rawPath), let kids = children[id] else { return nil }
+        return kids.filter { !isDeleted($0) }
+    }
+
     public func id(forPath rawPath: String) -> Int32? {
         let path = Paths.canonical(rawPath)
         if let id = directoryIDs[path] { return id }

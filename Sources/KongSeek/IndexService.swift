@@ -10,6 +10,9 @@ struct ResultItem: Equatable {
 
 struct SearchOutcome {
     var items: [ResultItem] = []
+    /// Listing a folder's contents; nil when it is not in the index.
+    var browsedFolder: String?
+    var folderNotIndexed = false
     /// Showing recently opened items because the query is empty.
     var isRecentList = false
     /// Matches before the display limit and attribute filters.
@@ -186,6 +189,42 @@ final class IndexService {
         }
     }
 
+    /// The contents of an indexed folder: all of it (folders first, then by
+    /// name) when `filter` is empty, otherwise the matches ranked like a search.
+    func browse(folder: String, filter: String, limit: Int = 500, completion: @escaping (SearchOutcome) -> Void) {
+        searchToken += 1
+        let token = searchToken
+        let counts = Preferences.openCounts
+        queue.async { [weak self] in
+            guard let self else { return }
+            var outcome = SearchOutcome()
+            outcome.browsedFolder = folder
+            if let index = self.index, let kids = index.childIDs(ofFolder: folder) {
+                let trimmed = filter.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    let items = kids.map { id -> ResultItem in
+                        let flags = index.flags(of: id)
+                        return ResultItem(path: index.path(of: id), name: index.name(of: id), isFolder: flags.contains(.directory) && !flags.contains(.package), score: 0)
+                    }.sorted { a, b in
+                        if a.isFolder != b.isFolder { return a.isFolder }
+                        return a.name.localizedStandardCompare(b.name) == .orderedAscending
+                    }
+                    outcome.matchCount = items.count
+                    outcome.items = Array(items.prefix(limit))
+                } else {
+                    outcome = self.rank(index.search(SearchQuery(trimmed), precision: .fuzzyName, within: kids), query: SearchQuery(trimmed), index: index, limit: limit, counts: counts)
+                    outcome.browsedFolder = folder
+                }
+            } else {
+                outcome.folderNotIndexed = true
+            }
+            DispatchQueue.main.async {
+                guard token == self.searchToken else { return }
+                completion(outcome)
+            }
+        }
+    }
+
     /// Items opened from KongSeek, most used and most recent first: each open
     /// counts less the longer ago the item was last opened.
     static func recentItems(counts: [String: Int], opened: [String: Double], limit: Int = 30) -> SearchOutcome {
@@ -211,8 +250,12 @@ final class IndexService {
     private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int]) -> SearchOutcome {
         guard let index, let session else { return SearchOutcome() }
         let query = SearchQuery(trimmed)
+        return rank(session.search(query, precision: precision), query: query, index: index, limit: limit, counts: counts)
+    }
+
+    /// Orders hits for display and applies the attribute filters (type, date, size, tag).
+    private func rank(_ hits: [SearchHit], query: SearchQuery, index: NameIndex, limit: Int, counts: [String: Int]) -> SearchOutcome {
         var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions)
-        let hits = session.search(query, precision: precision)
         outcome.matchCount = hits.count
         // Highest score first; among equal scores: applications, then items opened
         // more often, then recently modified, then shorter names. Ties are

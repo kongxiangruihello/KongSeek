@@ -4,9 +4,32 @@ import KongSeekCore
 
 /// A floating panel that takes keyboard input without activating KongSeek,
 /// so the app the user was in stays in front.
-final class SearchPanel: NSPanel {
+final class SearchPanel: NSPanel, QLPreviewPanelDataSource {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// The file the Quick Look panel (⌘Y) shows.
+    var quickLookURL: (() -> URL?)?
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        quickLookURL != nil
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = self
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = nil
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        quickLookURL?() == nil ? 0 : 1
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        quickLookURL?().map { $0 as NSURL }
+    }
 }
 
 /// The search window: query field, results list, Quick Look preview, status line.
@@ -22,6 +45,22 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private var outcome = SearchOutcome()
     private var keyMonitor: Any?
     private let icons = NSCache<NSString, NSImage>()
+    private let backButton = NSButton()
+    private let scrollView = NSScrollView()
+    private let actions = ResultActions()
+    private let defaultPlaceholder = "搜索文件名、拼音或首字母    ext:pdf    \"短语\"    -排除"
+
+    /// Folder being browsed (→ on a folder), and the states to return to.
+    private struct BrowseLevel {
+        let folder: String?
+        let text: String
+        let outcome: SearchOutcome
+        let selection: Int
+        let scroll: NSPoint
+    }
+    private var browsedFolder: String?
+    private var browseStack: [BrowseLevel] = []
+
     /// When the panel was last shown, and how often it took focus back since then.
     private var shownAt = Date.distantPast
     private var focusReclaims = 0
@@ -41,6 +80,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         super.init()
         configurePanel()
         buildLayout()
+        panel.quickLookURL = { [weak self] in self?.selectedItem.map { URL(fileURLWithPath: $0.path) } }
     }
 
     // MARK: - Showing
@@ -70,6 +110,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     func hide() {
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible {
+            QLPreviewPanel.shared().orderOut(nil)
+        }
+        resetBrowsing()
         removeKeyMonitor()
         preview.previewItem = nil
         panel.orderOut(nil)
@@ -81,6 +125,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// back instead of disappearing.
     func windowDidResignKey(_ notification: Notification) {
         guard panel.isVisible else { return }
+        // Quick Look (⌘Y) takes focus while it is open; stay until it closes.
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { return }
         if Date().timeIntervalSince(shownAt) < 0.8 && focusReclaims < 3 {
             focusReclaims += 1
             DispatchQueue.main.async { [weak self] in
@@ -94,6 +140,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         // Let a focus change settle (e.g. Quick Look's preview briefly taking it).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
             guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            // Quick Look (⌘Y) takes focus while it is open; stay until it closes.
+            if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { return }
             self.hide()
         }
     }
@@ -122,16 +170,20 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         background.state = .active
         panel.contentView = background
 
-        let searchIcon = NSImageView()
-        searchIcon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "搜索")
-        searchIcon.symbolConfiguration = .init(pointSize: 18, weight: .medium)
+        let searchIcon = backButton
+        searchIcon.isBordered = false
+        searchIcon.bezelStyle = .regularSquare
+        searchIcon.imagePosition = .imageOnly
+        searchIcon.target = self
+        searchIcon.action = #selector(goBack)
         searchIcon.contentTintColor = .secondaryLabelColor
+        updateBackButton()
 
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 22, weight: .regular)
-        field.placeholderString = "搜索文件名、拼音或首字母    ext:pdf    \"短语\"    -排除"
+        field.placeholderString = defaultPlaceholder
         field.delegate = self
         field.cell?.wraps = false
         field.cell?.isScrollable = true
@@ -156,7 +208,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         table.doubleAction = #selector(openSelected)
         table.refusesFirstResponder = true
 
-        let scroll = NSScrollView()
+        let scroll = scrollView
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -174,7 +226,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
-        let hints = NSTextField(labelWithString: "↩ 打开   ⌘↩ 在访达中显示   ⌘C 拷贝   ⌥⌘C 拷贝路径   ⌘1–9 打开第几项")
+        let hints = NSTextField(labelWithString: "↩ 打开   → 进入文件夹   ⌘↩ 在访达中显示   ⌘Y 快速查看   ⌘K 更多操作")
         hints.font = .systemFont(ofSize: 11)
         hints.textColor = .tertiaryLabelColor
         hints.alignment = .right
@@ -242,6 +294,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     func runSearch() {
+        if let folder = browsedFolder {
+            service.browse(folder: folder, filter: field.stringValue) { [weak self] outcome in
+                self?.show(outcome)
+            }
+            return
+        }
         service.search(field.stringValue, precision: Preferences.precision) { [weak self] outcome in
             self?.show(outcome)
         }
@@ -258,6 +316,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         updatePreview()
         updateEmptyLabel()
         updateStatus()
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { QLPreviewPanel.shared().reloadData() }
     }
 
     func indexStateChanged() {
@@ -270,6 +329,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func updateEmptyLabel() {
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
         emptyLabel.isHidden = !results.isEmpty
+        if browsedFolder != nil {
+            emptyLabel.stringValue = outcome.folderNotIndexed
+                ? "这个文件夹不在索引中（如应用包内部或排除的文件夹）。\n按 ⌘O 在访达中打开，← 返回。"
+                : (text.isEmpty ? "文件夹是空的" : "文件夹中没有匹配的项目")
+            return
+        }
         switch service.state {
         case .loading where !text.isEmpty:
             emptyLabel.stringValue = "正在载入索引…"
@@ -292,7 +357,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case .ready(let entries, _):
             parts.append("已索引 \(entries.formatted()) 项")
         }
-        if outcome.isRecentList {
+        if let folder = browsedFolder {
+            parts = ["📁 " + (folder as NSString).abbreviatingWithTildeInPath, "\(outcome.matchCount.formatted()) 项", "← 返回  ⎋ 回到搜索结果"]
+        } else if outcome.isRecentList {
             if !results.isEmpty { parts.append("最近打开 \(results.count) 项 · ⌘⌫ 从列表移除") }
         } else if !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
             let shown = results.count < outcome.matchCount ? "显示前 \(results.count) 项" : "\(results.count) 项"
@@ -305,15 +372,28 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     // MARK: - Keyboard
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        let fieldEmpty = field.stringValue.isEmpty
         switch selector {
         case #selector(NSResponder.moveUp(_:)):
             moveSelection(by: -1)
         case #selector(NSResponder.moveDown(_:)):
             moveSelection(by: 1)
         case #selector(NSResponder.insertNewline(_:)):
-            openSelected()
+            if let item = selectedItem, item.isFolder { enterFolder(item) } else { openSelected() }
+        case #selector(NSResponder.moveRight(_:)):
+            // → at the end of the text enters the selected folder.
+            let selection = textView.selectedRange()
+            guard let item = selectedItem, item.isFolder, selection.length == 0, selection.location == (textView.string as NSString).length else { return false }
+            enterFolder(item)
+        case #selector(NSResponder.moveLeft(_:)), #selector(NSResponder.deleteBackward(_:)):
+            guard browsedFolder != nil, fieldEmpty else { return false }
+            goBack()
         case #selector(NSResponder.cancelOperation(_:)):
-            if field.stringValue.isEmpty { hide() } else {
+            if browsedFolder != nil {
+                leaveBrowsing()
+            } else if fieldEmpty {
+                hide()
+            } else {
                 field.stringValue = ""
                 runSearch()
             }
@@ -345,13 +425,33 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             case 36, 76: // Return, Enter
                 revealSelected()
                 return true
-            case 51: // Delete: remove from the recent list
-                guard outcome.isRecentList, let item = selectedItem else { return false }
-                Preferences.forget(item.path)
-                runSearch()
+            case 51: // ⌘⌫: remove from the recent list, or move to the Trash
+                guard let item = selectedItem else { return false }
+                if outcome.isRecentList {
+                    Preferences.forget(item.path)
+                    runSearch()
+                } else {
+                    trash(item)
+                }
                 return true
-            case 31: // O
+            case 6: // ⌘Z: put back what was just moved to the Trash
+                guard actions.canUndoTrash else { return false }
+                statusLabel.stringValue = actions.undoTrash()
+                return true
+            case 31: // ⌘O: open (folders in Finder)
                 openSelected()
+                return true
+            case 40: // ⌘K: action menu
+                showActionMenu()
+                return true
+            case 16: // ⌘Y: Quick Look
+                toggleQuickLook()
+                return true
+            case 125: // ⌘↓: enter folder
+                if let item = selectedItem, item.isFolder { enterFolder(item) }
+                return true
+            case 126: // ⌘↑: back
+                goBack()
                 return true
             case 8: // C: copy the file unless text is selected in the field
                 if let editor = field.currentEditor(), editor.selectedRange.length > 0 { return false }
@@ -366,6 +466,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         if modifiers == [.command, .option], keyCode == 8 {
             copySelected(asPath: true)
+            return true
+        }
+        if modifiers == [.command, .shift], keyCode == 8, let item = selectedItem {
+            statusLabel.stringValue = actions.copy(item, as: .name)
             return true
         }
         return false
@@ -393,28 +497,157 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func open(row: Int) {
         guard row >= 0 && row < results.count else { return }
         let item = results[row]
-        Preferences.recordOpen(item.path)
         hide()
-        NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
+        actions.open(item)
     }
 
     private func revealSelected() {
         guard let item = selectedItem else { return }
-        Preferences.recordOpen(item.path)
         hide()
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+        actions.reveal(item)
     }
 
     private func copySelected(asPath: Bool) {
         guard let item = selectedItem else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        if asPath {
-            pasteboard.setString(item.path, forType: .string)
-        } else {
-            pasteboard.writeObjects([URL(fileURLWithPath: item.path) as NSURL])
+        statusLabel.stringValue = actions.copy(item, as: asPath ? .path : .file)
+    }
+
+    private func trash(_ item: ResultItem) {
+        statusLabel.stringValue = actions.moveToTrash(item)
+        if let row = results.firstIndex(of: item) {
+            results.remove(at: row)
+            outcome.items = results
+            table.removeRows(at: IndexSet(integer: row), withAnimation: .effectFade)
+            if !results.isEmpty {
+                table.selectRowIndexes(IndexSet(integer: min(row, results.count - 1)), byExtendingSelection: false)
+            }
+            updatePreview()
+            updateEmptyLabel()
         }
-        statusLabel.stringValue = asPath ? "已拷贝路径：\(item.path)" : "已拷贝文件：\(item.name)"
+    }
+
+    private func toggleQuickLook() {
+        guard selectedItem != nil else { return }
+        let quickLook = QLPreviewPanel.shared()!
+        if quickLook.isVisible {
+            quickLook.orderOut(nil)
+        } else {
+            quickLook.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    // MARK: - Folders
+
+    private func enterFolder(_ item: ResultItem) {
+        let origin = scrollView.contentView.bounds.origin
+        browseStack.append(BrowseLevel(folder: browsedFolder, text: field.stringValue, outcome: outcome, selection: table.selectedRow, scroll: origin))
+        browsedFolder = item.path
+        field.stringValue = ""
+        updateBackButton()
+        runSearch()
+    }
+
+    @objc private func goBack() {
+        guard let level = browseStack.popLast() else { return }
+        restore(level)
+    }
+
+    /// ⎋ while browsing: straight back to the original search results.
+    private func leaveBrowsing() {
+        guard let first = browseStack.first else { return }
+        browseStack.removeAll()
+        restore(first)
+    }
+
+    private func resetBrowsing() {
+        guard let first = browseStack.first else { return }
+        browseStack.removeAll()
+        browsedFolder = first.folder
+        field.stringValue = first.text
+        updateBackButton()
+    }
+
+    private func restore(_ level: BrowseLevel) {
+        browsedFolder = level.folder
+        field.stringValue = level.text
+        field.currentEditor()?.moveToEndOfDocument(nil)
+        updateBackButton()
+        outcome = level.outcome
+        results = level.outcome.items
+        table.reloadData()
+        if level.selection >= 0 && level.selection < results.count {
+            table.selectRowIndexes(IndexSet(integer: level.selection), byExtendingSelection: false)
+        }
+        scrollView.contentView.scroll(to: level.scroll)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        updatePreview()
+        updateEmptyLabel()
+        updateStatus()
+    }
+
+    private func updateBackButton() {
+        let browsing = browsedFolder != nil
+        let symbol = browsing ? "chevron.backward" : "magnifyingglass"
+        backButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: browsing ? "返回" : "搜索")?
+            .withSymbolConfiguration(.init(pointSize: 18, weight: .medium))
+        backButton.isEnabled = browsing
+        backButton.toolTip = browsing ? "返回（← 或 ⌘↑）" : nil
+        if let folder = browsedFolder {
+            field.placeholderString = "在“\((folder as NSString).lastPathComponent)”中筛选…"
+        } else {
+            field.placeholderString = defaultPlaceholder
+        }
+    }
+
+    // MARK: - Action menu (⌘K)
+
+    private func showActionMenu() {
+        guard let item = selectedItem, table.selectedRow >= 0 else { return }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func add(_ title: String, _ key: String = "", _ modifiers: NSEvent.ModifierFlags = [.command], _ handler: @escaping () -> Void) {
+            let entry = ClosureMenuItem(title: title, key: key, handler: handler)
+            entry.keyEquivalentModifierMask = modifiers
+            menu.addItem(entry)
+        }
+        if item.isFolder {
+            let rightArrow = String(utf16CodeUnits: [unichar(NSRightArrowFunctionKey)], count: 1)
+            add("进入文件夹", rightArrow, []) { [weak self] in self?.enterFolder(item) }
+        }
+        add(item.isFolder ? "在访达中打开" : "打开", "o") { [weak self] in self?.hide(); self?.actions.open(item) }
+        let apps = actions.applications(for: item)
+        if !apps.isEmpty && !item.isFolder {
+            let submenu = NSMenu()
+            for app in apps {
+                let name = FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: "")
+                let entry = ClosureMenuItem(title: name, key: "") { [weak self] in self?.hide(); self?.actions.open(item, with: app) }
+                let icon = NSWorkspace.shared.icon(forFile: app.path)
+                icon.size = NSSize(width: 16, height: 16)
+                entry.image = icon
+                submenu.addItem(entry)
+            }
+            let openWith = NSMenuItem(title: "打开方式", action: nil, keyEquivalent: "")
+            openWith.submenu = submenu
+            menu.addItem(openWith)
+        }
+        add("在访达中显示", "\r") { [weak self] in self?.hide(); self?.actions.reveal(item) }
+        add("快速查看", "y") { [weak self] in self?.toggleQuickLook() }
+        menu.addItem(.separator())
+        add("拷贝文件", "c") { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .file) ?? "" }
+        add("拷贝路径", "c", [.command, .option]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .path) ?? "" }
+        add("拷贝名称", "c", [.command, .shift]) { [weak self] in self?.statusLabel.stringValue = self?.actions.copy(item, as: .name) ?? "" }
+        menu.addItem(.separator())
+        add("在“终端”中打开") { [weak self] in
+            if let message = self?.actions.openInTerminal(item) { self?.statusLabel.stringValue = message } else { self?.hide() }
+        }
+        if outcome.isRecentList {
+            add("从“最近打开”中移除", "\u{8}") { [weak self] in Preferences.forget(item.path); self?.runSearch() }
+        }
+        menu.addItem(.separator())
+        add("移到废纸篓", "\u{8}") { [weak self] in self?.trash(item) }
+
+        let rect = table.rect(ofRow: table.selectedRow)
+        menu.popUp(positioning: nil, at: NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
     }
 
     // MARK: - Table
@@ -476,6 +709,25 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if parent == cloud { return "iCloud 云盘" }
         if parent.hasPrefix(cloud + "/") { return "iCloud 云盘/" + String(parent.dropFirst(cloud.count + 1)) }
         return (parent as NSString).abbreviatingWithTildeInPath
+    }
+}
+
+/// A menu item that runs a closure.
+final class ClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, key: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: key)
+        target = self
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
+    @objc private func run() {
+        handler()
     }
 }
 

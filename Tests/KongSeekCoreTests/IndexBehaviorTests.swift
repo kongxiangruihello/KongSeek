@@ -214,3 +214,23 @@ final class NestedRootTests: XCTestCase {
         XCTAssertEqual(summary.foldersResynced, 1, "the change in ~/Library/Caches is ignored without re-reading the home folder")
     }
 }
+
+final class FolderBrowsingTests: XCTestCase {
+    func testChildrenAndFilteringInsideAFolder() throws {
+        let root = try SyntheticTree.temporaryDirectory("browse")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try makeTree(root, ["课程/论语讲义.pdf", "课程/学而篇.docx", "课程/附录/论语年表.xlsx", "其他/论语.txt", "工具/Demo.app/Contents/x"])
+        let index = NameIndex.build(roots: [root], rules: .standard(home: root))
+        let kids = try XCTUnwrap(index.childIDs(ofFolder: root + "/课程"))
+        XCTAssertEqual(Set(kids.map { index.name(of: $0) }), ["论语讲义.pdf", "学而篇.docx", "附录"])
+        // Search limited to one folder's direct children.
+        let hits = index.search(SearchQuery("lunyu"), within: kids)
+        XCTAssertEqual(hits.map { index.name(of: $0.id) }, ["论语讲义.pdf"])
+        XCTAssertNil(index.childIDs(ofFolder: root + "/工具/Demo.app"), "package contents are not indexed")
+        XCTAssertNil(index.childIDs(ofFolder: root + "/课程/论语讲义.pdf"), "a file has no children")
+        // Changes show up in the listing.
+        try makeTree(root, ["课程/新文件.md"])
+        index.apply([IndexChange(path: root + "/课程/新文件.md")])
+        XCTAssertEqual(index.childIDs(ofFolder: root + "/课程")?.count, 4)
+    }
+}
