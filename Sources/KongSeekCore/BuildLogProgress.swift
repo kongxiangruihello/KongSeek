@@ -16,6 +16,10 @@ public struct BuildLogProgress: Equatable, Sendable {
     public private(set) var failedTests: [String] = []
     /// "Updater.swift 第 286 行：overlapping accesses …" for each compiler error.
     public private(set) var compileErrors: [String] = []
+    /// "DuplicateFinderTests.swift 第 53 行：XCTAssertEqual failed …" for each failed check.
+    public private(set) var testFailures: [String] = []
+    /// The test process crashed ("Fatal error", "unexpected signal").
+    public private(set) var testsCrashed = false
     /// The largest "Executed N tests" (the total), for the next run's estimate.
     public private(set) var executedTests: Int?
     /// Tests expected (the previous run's count) until the real count is printed.
@@ -40,6 +44,14 @@ public struct BuildLogProgress: Equatable, Sendable {
     public mutating func consume(_ rawLine: String) {
         let line = Self.plain(rawLine).trimmingCharacters(in: .whitespaces)
         guard !line.isEmpty else { return }
+        if let failure = Self.testFailure(line) {
+            if !failedTests.contains(failure.test) { failedTests.append(failure.test) }
+            if testFailures.count < 20 { testFailures.append(failure.message) }
+            return
+        }
+        if line.contains("Fatal error:") || line.contains("exited with unexpected signal") {
+            if stage >= .buildingTests && stage <= .runningTests { testsCrashed = true }
+        }
         if let error = Self.compileError(line) {
             if !compileErrors.contains(error) && compileErrors.count < 20 { compileErrors.append(error) }
             return
@@ -100,13 +112,25 @@ public struct BuildLogProgress: Equatable, Sendable {
     /// "/…/Sources/KongSeek/Updater.swift:286:24: error: overlapping …" →
     /// "Updater.swift 第 286 行：overlapping …"
     static func compileError(_ line: String) -> String? {
-        guard let marker = line.range(of: ": error: ") else { return nil }
+        guard let marker = line.range(of: ": error: "), !line[marker.upperBound...].hasPrefix("-[") else { return nil }
         let location = line[..<marker.lowerBound].split(separator: ":")
         guard location.count >= 2, location[0].hasSuffix(".swift"), let lineNumber = Int(location[1]) else { return nil }
         let file = (String(location[0]) as NSString).lastPathComponent
         var message = String(line[marker.upperBound...])
         if let link = message.range(of: " [#") { message = String(message[..<link.lowerBound]) }
         return "\(file) 第 \(lineNumber) 行：\(message)"
+    }
+
+    /// "/…/DuplicateFinderTests.swift:53: error: -[KongSeekCoreTests.DuplicateFinderTests testX] : XCTAssertEqual failed: …"
+    /// → ("DuplicateFinderTests testX", "DuplicateFinderTests.swift 第 53 行：XCTAssertEqual failed: …")
+    static func testFailure(_ line: String) -> (test: String, message: String)? {
+        guard let marker = line.range(of: ": error: -["), let close = line.range(of: "] : ", range: marker.upperBound..<line.endIndex) else { return nil }
+        let location = line[..<marker.lowerBound].split(separator: ":")
+        guard location.count >= 2, let number = Int(location[1]) else { return nil }
+        let full = line[marker.upperBound..<close.lowerBound]
+        let test = String(full.split(separator: ".").last ?? full)
+        let file = (String(location[0]) as NSString).lastPathComponent
+        return (test, "\(file) 第 \(number) 行：" + String(line[close.upperBound...]))
     }
 
     /// "[12 / 40] Compiling …" or "[12/40] …"

@@ -85,13 +85,18 @@ public enum DuplicateFinder {
         defer { try? handle.close() }
         var hasher = SHA256()
         let chunk = 65_536
-        guard let head = try? handle.read(upToCount: chunk) else { return nil }
-        hasher.update(data: head)
+        let head: Data?
+        do { head = try handle.read(upToCount: chunk) } catch { return nil }
+        hasher.update(data: head ?? Data())
         if size > Int64(chunk) * 2 {
-            guard (try? handle.seek(toOffset: UInt64(size) - UInt64(chunk))) != nil, let tail = try? handle.read(upToCount: chunk) else { return nil }
-            hasher.update(data: tail)
-        } else if let rest = try? handle.readToEnd() {
-            hasher.update(data: rest)
+            do {
+                try handle.seek(toOffset: UInt64(size) - UInt64(chunk))
+                hasher.update(data: try handle.read(upToCount: chunk) ?? Data())
+            } catch {
+                return nil
+            }
+        } else {
+            do { hasher.update(data: try handle.readToEnd() ?? Data()) } catch { return nil }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
@@ -101,8 +106,10 @@ public enum DuplicateFinder {
         defer { try? handle.close() }
         var hasher = SHA256()
         while true {
-            guard let data = try? handle.read(upToCount: 4 << 20) else { return nil }
-            if data.isEmpty { break }
+            // read(upToCount:) returns nil (not an error) at the end of the file.
+            let data: Data?
+            do { data = try handle.read(upToCount: 4 << 20) } catch { return nil }
+            guard let data, !data.isEmpty else { break }
             hasher.update(data: data)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()

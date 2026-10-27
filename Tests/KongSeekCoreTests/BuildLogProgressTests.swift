@@ -56,4 +56,16 @@ final class BuildLogProgressTests: XCTestCase {
         XCTAssertEqual(progress.compileErrors, ["Updater.swift 第 286 行：overlapping accesses to '$0.progress', but modification requires exclusive access; consider copying to a local variable"])
         XCTAssertNil(BuildLogProgress.compileError("error: Build failed"))
     }
+
+    func testFailedChecksAreTestFailuresNotCompileErrors() {
+        var progress = BuildLogProgress()
+        progress.consume("== tests ==")
+        progress.consume("Test Suite 'All tests' started at 2026-10-27 15:03:00.000.")
+        progress.consume("/Users/x/kongseek/Tests/KongSeekCoreTests/DuplicateFinderTests.swift:53: error: -[KongSeekCoreTests.DuplicateFinderTests testIdenticalFiles] : XCTAssertEqual failed: (\"1\") is not equal to (\"2\")")
+        progress.consume("Swift/ContiguousArrayBuffer.swift:695: Fatal error: Index out of range")
+        XCTAssertTrue(progress.compileErrors.isEmpty)
+        XCTAssertEqual(progress.failedTests, ["DuplicateFinderTests testIdenticalFiles"])
+        XCTAssertEqual(progress.testFailures, ["DuplicateFinderTests.swift 第 53 行：XCTAssertEqual failed: (\"1\") is not equal to (\"2\")"])
+        XCTAssertTrue(progress.testsCrashed)
+    }
 }

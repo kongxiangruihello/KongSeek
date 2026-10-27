@@ -51,6 +51,7 @@ final class DuplicateFinderTests: XCTestCase {
 
         let groups = DuplicateFinder.identical([a, b, c, d, e, f, cloud])
         XCTAssertEqual(groups.count, 2)
+        guard groups.count == 2 else { return }
         XCTAssertEqual(groups[0].files.map(\.name), ["a.pptx", "a.pptx"])
         XCTAssertEqual(groups[0].files.first?.path, b.path, "newest first")
         XCTAssertEqual(groups[0].reclaimable, 300_000)
@@ -69,6 +70,7 @@ final class DuplicateFinderTests: XCTestCase {
             try? String(contentsOfFile: path, encoding: .utf8)
         }
         XCTAssertEqual(groups.count, 1)
+        guard groups.count == 1 else { return }
         XCTAssertEqual(groups[0].kind, .versions)
         XCTAssertEqual(groups[0].files.map(\.path), [newest.path, previous.path, unrelated.path])
         XCTAssertEqual(groups[0].similarity[previous.path] ?? 0, 1, accuracy: 0.01, "an older, shorter version is contained in the newest")
@@ -79,6 +81,14 @@ final class DuplicateFinderTests: XCTestCase {
         let identical = DuplicateFinder.identical([newest, copy])
         let withCopy = DuplicateFinder.versions([newest, previous, copy], identical: identical)
         XCTAssertEqual(withCopy.first?.files.map(\.path), [newest.path, previous.path])
+    }
+
+    func testHashesReadToTheEnd() throws {
+        let big = try write("big.bin", Data((0..<9_000_000).map { UInt8($0 % 251) }))
+        let same = try write("same.bin", Data((0..<9_000_000).map { UInt8($0 % 251) }))
+        XCTAssertNotNil(DuplicateFinder.fullHash(big.path), "a file larger than one read")
+        XCTAssertEqual(DuplicateFinder.fullHash(big.path), DuplicateFinder.fullHash(same.path))
+        XCTAssertNotNil(DuplicateFinder.fullHash(try write("empty.bin", Data()).path))
     }
 
     func testSimilarity() {

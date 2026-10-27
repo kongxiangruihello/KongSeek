@@ -242,8 +242,11 @@ final class Updater {
                 }
                 if let total = build.executedTests, total > 0 { UserDefaults.standard.set(total, forKey: "lastTestCount") }
                 guard result.status == 0 else {
-                    if !build.failedTests.isEmpty {
-                        throw UpdateError("有 \(build.failedTests.count) 项测试未通过（\(build.failedTests.prefix(3).joined(separator: "、"))），已停止；当前安装的版本没有改动。")
+                    if !build.failedTests.isEmpty || build.testsCrashed {
+                        var message = build.failedTests.isEmpty ? "测试程序运行中崩溃" : "有 \(build.failedTests.count) 项测试未通过（\(build.failedTests.prefix(3).joined(separator: "、"))）"
+                        message += "，已停止；当前安装的版本没有改动。"
+                        if let first = build.testFailures.first { message += "\n" + first }
+                        throw UpdateError(message)
                     }
                     if let first = build.compileErrors.first {
                         throw UpdateError("编译失败，已停止；当前安装的版本没有改动。\n" + first
