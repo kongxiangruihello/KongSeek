@@ -76,7 +76,7 @@ struct Row {
 /// items that no longer exist. `limit` 0 means all. `more` is true when matches
 /// were left out by the limit.
 func search(_ query: SearchQuery, in index: NameIndex, precision: MatchPrecision, limit: Int) -> (rows: [Row], more: Bool) {
-    var hits = index.search(query, precision: precision)
+    var hits = index.refined(index.search(query, precision: precision), query: query)
     if !query.advanced.dupe {
         hits.sort { a, b in
             if a.score != b.score { return a.score > b.score }

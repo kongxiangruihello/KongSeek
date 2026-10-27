@@ -237,7 +237,8 @@ final class IndexService {
                     outcome.matchCount = items.count
                     outcome.items = Array(items.prefix(limit))
                 } else {
-                    outcome = self.rank(index.search(SearchQuery(trimmed), precision: .fuzzyName, within: kids), query: SearchQuery(trimmed), index: index, limit: limit, counts: counts)
+                    let query = SearchQuery(trimmed)
+                    outcome = self.rank(index.refined(index.search(query, precision: .fuzzyName, within: kids), query: query), query: query, index: index, limit: limit, counts: counts)
                     outcome.browsedFolder = folder
                 }
             } else {
@@ -301,8 +302,10 @@ final class IndexService {
         guard !hits.isEmpty else { return }
         var items = outcome.items
         for hit in hits {
-            let item = ResultItem(path: hit.archive, name: (hit.inner as NSString).lastPathComponent, isFolder: false,
-                                  score: hit.score - 40, innerPath: hit.inner)
+            let name = (hit.inner as NSString).lastPathComponent
+            // Ordered like names in the index, a little below a file on disk with the same name.
+            let score = Relevance.combined(relevance: Relevance.score(name: name, words: words), base: hit.score - 40)
+            let item = ResultItem(path: hit.archive, name: name, isFolder: false, score: score, innerPath: hit.inner)
             let position = items.firstIndex { $0.score < item.score } ?? items.count
             items.insert(item, at: position)
         }
@@ -313,7 +316,7 @@ final class IndexService {
     private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int]) -> SearchOutcome {
         guard let index, let session else { return SearchOutcome() }
         let query = SearchQuery(trimmed)
-        return rank(session.search(query, precision: precision), query: query, index: index, limit: limit, counts: counts)
+        return rank(index.refined(session.search(query, precision: precision), query: query), query: query, index: index, limit: limit, counts: counts)
     }
 
     /// Orders hits for display and applies the attribute filters (type, date, size, tag).
