@@ -63,6 +63,24 @@ enum Preferences {
         }
     }
 
+    /// Names given to saved searches (search → name), such as "《论语》导读" (0.19).
+    static var savedSearchNames: [String: String] {
+        get { defaults.dictionary(forKey: "savedSearchNames") as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: "savedSearchNames") }
+    }
+
+    /// How references and quotations are written (0.19).
+    static var citationStyle: Citation.Style {
+        get { Citation.Style(rawValue: defaults.string(forKey: "citationStyle") ?? "") ?? .gbt7714 }
+        set { defaults.set(newValue.rawValue, forKey: "citationStyle") }
+    }
+
+    /// Results grouped by the folder they are in (⌘G, 0.19).
+    static var groupByFolder: Bool {
+        get { defaults.bool(forKey: "groupByFolder") }
+        set { defaults.set(newValue, forKey: "groupByFolder") }
+    }
+
     /// Searches saved with ⌘S, shown when the search field is empty.
     static var savedSearches: [String] {
         get { defaults.stringArray(forKey: "savedSearches") ?? [] }

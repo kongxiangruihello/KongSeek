@@ -19,6 +19,11 @@ public struct EntryFlags: OptionSet, Hashable, Sendable {
 public struct SearchHit: Hashable, Sendable {
     public let id: Int32
     public let score: Int
+
+    public init(id: Int32, score: Int) {
+        self.id = id
+        self.score = score
+    }
 }
 
 /// A changed path reported by FSEvents (or a test).

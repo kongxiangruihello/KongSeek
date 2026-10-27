@@ -93,7 +93,10 @@ public struct EbookName: Equatable, Sendable {
 
     /// "Title -- Authors -- edition, place, year -- place_Publisher -- ISBN -- md5 -- Anna’s Archive"; any part may be missing.
     static func annasArchive(_ text: String) -> EbookName? {
-        let parts = text.components(separatedBy: " -- ").map { $0.trimmingCharacters(in: .whitespaces) }
+        // Trailing dashes ("… -- isbn13 978… --") and empty parts are dropped.
+        let parts = text.components(separatedBy: " -- ")
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " -")) }
+            .enumerated().filter { $0.offset == 0 || !$0.element.isEmpty }.map { $0.element }
         guard parts.count >= 2 else { return nil }
         var marked = false
         var isbn: String?
@@ -204,7 +207,9 @@ public struct EbookName: Equatable, Sendable {
         return text.isEmpty ? nil : text
     }
 
-    static func isbn(in text: String) -> String? {
+    static func isbn(in raw: String) -> String? {
+        // "isbn13 9787219048849", "ISBN: 978-7-…"
+        let text = raw.replacingOccurrences(of: #"^isbn\s*(1[03])?\s*[:：]?\s*"#, with: "", options: [.regularExpression, .caseInsensitive])
         let digits = text.filter { $0.isNumber || $0 == "X" || $0 == "x" }
         guard text.range(of: #"^[0-9Xx\-\s,;]+$"#, options: .regularExpression) != nil, digits.count >= 10 else { return nil }
         let first = text.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == " " }).first.map(String.init) ?? text
@@ -230,7 +235,7 @@ public struct EbookName: Equatable, Sendable {
         text.range(of: #"(丛刊|丛书|叢書|叢刊|项目|項目|系列|文库|文庫)$"#, options: .regularExpression) != nil
     }
 
-    static func containsHan(_ text: String) -> Bool {
+    public static func containsHan(_ text: String) -> Bool {
         text.unicodeScalars.contains { (0x3400...0x9FFF).contains($0.value) || (0x20000...0x3134F).contains($0.value) }
     }
 }

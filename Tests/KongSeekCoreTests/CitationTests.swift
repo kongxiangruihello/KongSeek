@@ -70,4 +70,18 @@ final class CitationTests: XCTestCase {
         XCTAssertEqual(result.text, "程应鏐. 流金集[M]. 上海: 上海古籍出版社, 2008.")
         XCTAssertEqual(result.notes, ["出版地按出版社推定为“上海”"])
     }
+
+    // MARK: Footnote style (0.19)
+
+    func testFootnote() {
+        let name = EbookName.parse("孔子与《论语》 Kong zi yu _ lun yu _ -- 成积春,宋立林主编; 成积春; 宋立林 -- Di 1 ban, 北京 Beijing, 2018 -- 北京_高等教育出版社 -- 9787040500288 -- 5ba8e6b83786f540ddc4ddbcd7cf8a88 -- Anna’s Archive")
+        XCTAssertEqual(Citation.make(.footnote, name: name, fallbackTitle: "", page: 23).text, "成积春、宋立林主编：《孔子与〈论语〉》，北京：高等教育出版社，2018年，第23页。")
+        XCTAssertEqual(Citation.make(.gbt7714, name: name, fallbackTitle: "", page: 23).text, "成积春, 宋立林. 孔子与《论语》[M]. 北京: 高等教育出版社, 2018: 23.")
+        let lone = Citation.footnote(EbookName(title: "流金集", authors: "程应鏐 著"), fallbackTitle: "")
+        XCTAssertEqual(lone.text, "程应鏐：《流金集》。")
+        XCTAssertEqual(lone.missing, ["出版地", "出版者", "出版年"])
+        let translated = Citation.footnote(EbookName(title: "西方文明史：问题与源头", authors: "魏嬪、杨艳等译", publisher: "东北财经大学出版社", year: "2011", place: "大连"), fallbackTitle: "", page: 15)
+        XCTAssertEqual(translated.text, "《西方文明史：问题与源头》，魏嬪、杨艳等译，大连：东北财经大学出版社，2011年，第15页。")
+        XCTAssertEqual(Citation.footnote(EbookName(title: "某书", authors: "甲、乙、丙、丁主编", publisher: "中华书局"), fallbackTitle: "").text, "甲、乙、丙、丁主编：《某书》，北京：中华书局。")
+    }
 }

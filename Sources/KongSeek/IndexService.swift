@@ -17,8 +17,10 @@ struct ResultItem: Equatable {
     /// A row that fills the search field instead of opening something: a saved
     /// search, or an example from the syntax help.
     var fill: QueryFill? = nil
+    /// A folder heading when results are grouped by folder (⌘G, 0.19); not selectable.
+    var isHeader = false
 
-    var isFile: Bool { link == nil && definition == nil && fill == nil }
+    var isFile: Bool { link == nil && definition == nil && fill == nil && !isHeader }
     var isInArchive: Bool { innerPath != nil }
 
     static func web(_ link: QuickLink, query: String) -> ResultItem? {
@@ -357,9 +359,11 @@ final class IndexService {
     private func rank(_ hits: [SearchHit], query: SearchQuery, index: NameIndex, limit: Int, counts: [String: Int]) -> SearchOutcome {
         var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions)
         outcome.matchCount = hits.count
-        // Highest score first; among equal scores: applications, then items opened
-        // more often, then recently modified, then shorter names. Ties are
-        // re-ranked group by group, only as far as shown.
+        // Highest score first. Among matches that are equally good (the same relevance
+        // level, or the same 3.2 score for matches not refined), applications come
+        // first, then items opened more often from KongSeek (0.19), then the finer
+        // score, recently modified, shorter names. Re-ranked group by group, only as
+        // far as shown.
         // dupe: keeps the index's order (same names together).
         if query.advanced.dupe {
             outcome.items = hits.prefix(limit).map { hit in
@@ -368,7 +372,17 @@ final class IndexService {
             }
             return outcome
         }
-        let sorted = hits.sorted { a, b in
+        // Items opened often from KongSeek move up a little among refined matches
+        // (0.19): up to 12 relevance points, about what separates a match at a word
+        // boundary from one inside a word, never enough to pass a much better match.
+        var boosted = hits
+        if !counts.isEmpty {
+            for (k, hit) in hits.enumerated() where hit.score >= 100_000 {
+                let opens = counts[index.path(of: hit.id)] ?? 0
+                if opens > 0 { boosted[k] = SearchHit(id: hit.id, score: hit.score + Self.openBonus(opens) * 100_000) }
+            }
+        }
+        let sorted = boosted.sorted { a, b in
             if a.score != b.score { return a.score > b.score }
             return a.id < b.id
         }
@@ -376,23 +390,24 @@ final class IndexService {
         var items: [ResultItem] = []
         var position = 0
         while position < sorted.count && items.count < limit {
-            // Take the whole group with this score so open counts can reorder it.
-            let score = sorted[position].score
+            // Take the whole group with this relevance level so open counts can reorder it.
+            let level = Self.relevanceLevel(sorted[position].score)
             var end = position
-            while end < sorted.count && sorted[end].score == score { end += 1 }
+            while end < sorted.count && Self.relevanceLevel(sorted[end].score) == level { end += 1 }
             var group = Array(sorted[position..<end])
             if group.count > 1 && group.count <= 2000 {
-                struct TieKey { let isApp: Bool; let opens: Int; let modified: Double; let length: Int }
+                struct TieKey { let isApp: Bool; let opens: Int; let score: Int; let modified: Double; let length: Int }
                 let keys = Dictionary(uniqueKeysWithValues: group.map { hit -> (Int32, TieKey) in
                     let name = index.name(of: hit.id)
                     let path = index.path(of: hit.id)
                     let isApp = index.flags(of: hit.id).contains(.package) && name.lowercased().hasSuffix(".app")
-                    return (hit.id, TieKey(isApp: isApp, opens: counts[path] ?? 0, modified: Self.modificationTime(path), length: name.count))
+                    return (hit.id, TieKey(isApp: isApp, opens: counts[path] ?? 0, score: hit.score, modified: Self.modificationTime(path), length: name.count))
                 })
                 group.sort { a, b in
                     let ka = keys[a.id]!, kb = keys[b.id]!
                     if ka.isApp != kb.isApp { return ka.isApp }
                     if ka.opens != kb.opens { return ka.opens > kb.opens }
+                    if ka.score != kb.score { return ka.score > kb.score }
                     if ka.modified != kb.modified { return ka.modified > kb.modified }
                     if ka.length != kb.length { return ka.length < kb.length }
                     return a.id < b.id
@@ -420,6 +435,18 @@ final class IndexService {
 }
 
 extension IndexService {
+    /// How good a match is, without the finer 3.2 score folded into refined scores
+    /// (Relevance.combined = relevance × 100,000 + 3.2 score): matches at one level
+    /// may be reordered by how often they were opened.
+    /// Relevance points for having opened an item: 1 → 4, 3 → 8, 7 or more → 12.
+    static func openBonus(_ opens: Int) -> Int {
+        min(12, Int((4 * log2(Double(1 + max(0, opens)))).rounded()))
+    }
+
+    static func relevanceLevel(_ score: Int) -> Int {
+        score >= 100_000 ? score / 100_000 * 100_000 : score
+    }
+
     /// Modification time without following symlinks; 0 if unreadable.
     static func modificationTime(_ path: String) -> Double {
         var info = stat()

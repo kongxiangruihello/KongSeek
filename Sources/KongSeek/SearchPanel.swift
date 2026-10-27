@@ -79,6 +79,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let scrollView = NSScrollView()
     private let actions = ResultActions()
     /// Opens the batch-rename window with these files.
+    /// Opens the file list window for a search (0.19).
+    var onFileList: ((FileListSource) -> Void)?
     var onBatchRename: (([URL]) -> Void)?
     /// Files taken out of archives for the preview, by "archive\0inner".
     private var archivePreviews: [String: URL] = [:]
@@ -173,6 +175,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// back instead of disappearing.
     func windowDidResignKey(_ notification: Notification) {
         guard panel.isVisible else { return }
+        // A sheet (naming a saved search) takes focus; stay.
+        if panel.attachedSheet != nil { return }
         // Quick Look (⌘Y) takes focus while it is open; stay until it closes.
         if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { return }
         if Date().timeIntervalSince(shownAt) < 0.8 && focusReclaims < 3 {
@@ -187,7 +191,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         // Let a focus change settle (e.g. Quick Look's preview briefly taking it).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            guard let self, self.panel.isVisible, !self.panel.isKeyWindow, self.panel.attachedSheet == nil else { return }
             // Quick Look (⌘Y) takes focus while it is open; stay until it closes.
             if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { return }
             self.hide()
@@ -566,12 +570,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if results.isEmpty && browsedFolder == nil && !query.isEmpty && !newOutcome.gathering && !newOutcome.isRecentList {
             results = Preferences.quickLinks.filter(\.fallback).compactMap { ResultItem.web($0, query: query) }
         }
+        if Preferences.groupByFolder && browsedFolder == nil && !newOutcome.isRecentList && !query.isEmpty {
+            results = Self.groupedByFolder(results)
+        }
         table.reloadData()
-        if let keepPath, let row = results.firstIndex(where: { $0.path == keepPath }) {
+        if let keepPath, let row = results.firstIndex(where: { $0.path == keepPath && !$0.isHeader }) {
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             if row != previousRow { table.scrollRowToVisible(row) }
-        } else if !results.isEmpty {
-            table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        } else if let first = results.firstIndex(where: { !$0.isHeader }) {
+            table.selectRowIndexes(IndexSet(integer: first), byExtendingSelection: false)
             table.scrollRowToVisible(0)
         }
         updatePreview()
@@ -721,6 +728,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 if let fill = item.fill {
                     if fill.isSaved {
                         Preferences.savedSearches.removeAll { $0 == fill.text }
+                        Preferences.savedSearchNames[fill.text] = nil
                         statusLabel.stringValue = "已从收藏中移除“\(fill.text)”"
                         runSearch()
                     } else if fill.isHistory {
@@ -743,11 +751,21 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             case 1: // ⌘S: save this search
                 saveCurrentSearch()
                 return true
+            case 5: // ⌘G: group results by folder
+                Preferences.groupByFolder.toggle()
+                let keep = selectedItem?.path
+                show(outcome)
+                if let keep, let row = results.firstIndex(where: { $0.path == keep && !$0.isHeader }) {
+                    table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                    table.scrollRowToVisible(row)
+                }
+                statusLabel.stringValue = Preferences.groupByFolder ? "已按文件夹分组（⌘G 取消）" : "已取消按文件夹分组"
+                return true
             case 31: // ⌘O: open (folders in Finder)
                 openSelected()
                 return true
-            case 40: // ⌘K: action menu
-                showActionMenu()
+            case 40: // ⌘K: action menu (for a saved search: name it or remove it)
+                if let fill = selectedItem?.fill, fill.isSaved { showSavedSearchMenu(fill.text) } else { showActionMenu() }
                 return true
             case 16: // ⌘Y: Quick Look
                 toggleQuickLook()
@@ -764,7 +782,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 return true
             default:
                 if let digit = event.charactersIgnoringModifiers.flatMap({ Int($0) }), (1...9).contains(digit) {
-                    open(row: digit - 1)
+                    let rows = selectableRows
+                    if digit - 1 < rows.count { open(row: rows[digit - 1]) }
                     return true
                 }
             }
@@ -783,9 +802,41 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func moveSelection(by delta: Int) {
         guard !results.isEmpty else { return }
         let current = table.selectedRow
-        let next = max(0, min(results.count - 1, (current < 0 ? 0 : current + delta)))
+        var next = max(0, min(results.count - 1, (current < 0 ? 0 : current + delta)))
+        // Folder headings are skipped (⌘G).
+        while results.indices.contains(next) && results[next].isHeader { next += delta < 0 ? -1 : 1 }
+        guard results.indices.contains(next) else {
+            // Moving up onto the first heading: show it, keep the selection.
+            if delta < 0 { table.scrollRowToVisible(0) }
+            return
+        }
         table.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         table.scrollRowToVisible(next)
+        if delta < 0 && next > 0 && results[next - 1].isHeader { table.scrollRowToVisible(next - 1) }
+    }
+
+    /// Rows that can be selected, in order (results without folder headings); ⌘1…⌘9 count these.
+    private var selectableRows: [Int] { results.indices.filter { !results[$0].isHeader } }
+
+    /// Files grouped under a heading per folder (⌘G): folders in the order of their
+    /// best match, files within a folder keeping their order. Other rows (web
+    /// searches, examples) stay on top.
+    static func groupedByFolder(_ items: [ResultItem]) -> [ResultItem] {
+        let others = items.filter { !$0.isFile }
+        var order: [String] = []
+        var members: [String: [ResultItem]] = [:]
+        for item in items where item.isFile {
+            let folder = (item.path as NSString).deletingLastPathComponent
+            if members[folder] == nil { order.append(folder) }
+            members[folder, default: []].append(item)
+        }
+        var result = others
+        for folder in order {
+            let files = members[folder] ?? []
+            result.append(ResultItem(path: "header:" + folder, name: displayLocation(of: folder + "/x"), isFolder: true, score: files.count, isHeader: true))
+            result += files
+        }
+        return result
     }
 
     // MARK: - Actions
@@ -800,7 +851,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func open(row: Int) {
-        guard row >= 0 && row < results.count else { return }
+        guard row >= 0 && row < results.count, !results[row].isHeader else { return }
         let item = results[row]
         if let fill = item.fill {
             apply(fill)
@@ -1011,9 +1062,50 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private var savedSearchRows: [ResultItem] {
-        Preferences.savedSearches.map { text in
-            ResultItem(path: "saved:" + text, name: text, isFolder: false, score: 0,
-                       fill: QueryFill(text: text, replace: true, select: nil, explanation: "收藏的搜索", isSaved: true))
+        let names = Preferences.savedSearchNames
+        return Preferences.savedSearches.map { text in
+            ResultItem(path: "saved:" + text, name: names[text] ?? text, isFolder: false, score: 0,
+                       fill: QueryFill(text: text, replace: true, select: nil, explanation: names[text] == nil ? "收藏的搜索" : "收藏的搜索：\(text)", isSaved: true))
+        }
+    }
+
+    /// ⌘K on a saved search: name it (a course, a project), or remove it (0.19).
+    private func showSavedSearchMenu(_ text: String) {
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(title: Preferences.savedSearchNames[text] == nil ? "命名…" : "重命名…", key: "") { [weak self] in
+            self?.askName(for: text)
+        })
+        menu.addItem(ClosureMenuItem(title: "把结果放入文件清单", key: "") { [weak self] in
+            self?.hide()
+            self?.onFileList?(.query(text))
+        })
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "从收藏中移除", key: "") { [weak self] in
+            Preferences.savedSearches.removeAll { $0 == text }
+            Preferences.savedSearchNames[text] = nil
+            self?.runSearch()
+        })
+        let rect = table.rect(ofRow: max(0, table.selectedRow))
+        menu.popUp(positioning: nil, at: NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
+    }
+
+    /// Asks for a name for a saved search, such as "《论语》导读"; empty removes the name.
+    private func askName(for text: String) {
+        let alert = NSAlert()
+        alert.messageText = "给这个搜索起个名字"
+        alert.informativeText = "例如课程名“《论语》导读”。清空搜索框时按名字列出，↩ 即列出这门课的全部材料。\n搜索：\(text)"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        field.stringValue = Preferences.savedSearchNames[text] ?? ""
+        field.placeholderString = "名称（可留空）"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "好")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: panel) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            Preferences.savedSearchNames[text] = name.isEmpty ? nil : name
+            self?.runSearch()
         }
     }
 
@@ -1028,6 +1120,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         saved.insert(text, at: 0)
         Preferences.savedSearches = saved
         statusLabel.stringValue = "已收藏“\(text)”：清空搜索框时显示在最上面"
+        askName(for: text)
     }
 
     // MARK: - Folders
@@ -1141,10 +1234,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             }
             let sentence = Quotation.sentence(in: source, needles: needles)
             let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
-            var origin: String
+            let origin: String
             if DuplicateFinder.bookExtensions.contains(ext) {
-                let reference = Citation.book(EbookName.parse(stem), fallbackTitle: stem).text
-                origin = page.map { Citation.withPage(reference, page: $0) } ?? reference
+                let info = BookInfo.read(url)
+                origin = Citation.make(Preferences.citationStyle, name: info.name, fallbackTitle: info.name.title, page: page).text
             } else {
                 origin = "《\(stem)》" + (page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" } ?? "")
             }
@@ -1165,18 +1258,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// Copies a GB/T 7714 reference for an ebook, from its file name and (EPUB) its
     /// own metadata, and says what is missing (0.17).
     static func copyReference(for path: String) -> String {
-        let url = URL(fileURLWithPath: path)
-        let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
-        var epub: EpubMetadata?
-        if url.pathExtension.lowercased() == "epub" {
-            // Never wait for an iCloud download here.
-            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
-            if status != .notDownloaded { epub = EpubMetadata.read(url) }
-        }
-        let result = Citation.book(EbookName.parse(stem), fallbackTitle: stem, epub: epub)
+        // The name, completed from the book's own metadata (local files only, 0.19).
+        let info = BookInfo.read(URL(fileURLWithPath: path))
+        let result = Citation.make(Preferences.citationStyle, name: info.name, fallbackTitle: info.name.title)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result.text, forType: .string)
         var message = "已拷贝参考文献：" + result.text
+        if let source = info.titleSource { message += "（书名取自\(source)）" }
         if !result.missing.isEmpty { message += "（缺" + result.missing.joined(separator: "、") + "，请补全）" }
         if !result.notes.isEmpty { message += "（" + result.notes.joined(separator: "；") + "）" }
         return message
@@ -1268,6 +1356,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 self?.statusLabel.stringValue = SearchWindowController.copyReference(for: item.path)
             }
         }
+        add("把全部结果放入文件清单（书单、参考文献、批量操作）") { [weak self] in
+            guard let self else { return }
+            let paths = self.results.filter { $0.isFile && !$0.isFolder && !$0.isInArchive }.map(\.path)
+            let title = self.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.hide()
+            self.onFileList?(.paths(paths, title: title))
+        }
         add("批量重命名…") { [weak self] in
             self?.hide()
             self?.onBatchRename?([URL(fileURLWithPath: item.path)])
@@ -1292,13 +1387,29 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let item = results[row]
+        if item.isHeader {
+            let headerID = NSUserInterfaceItemIdentifier("FolderHeader")
+            let label = (tableView.makeView(withIdentifier: headerID, owner: nil) as? NSTextField) ?? {
+                let field = NSTextField(labelWithString: "")
+                field.identifier = headerID
+                field.font = .systemFont(ofSize: 11, weight: .semibold)
+                field.textColor = .secondaryLabelColor
+                field.lineBreakMode = .byTruncatingHead
+                return field
+            }()
+            label.stringValue = "  📁 " + item.name + "（\(item.score) 个）"
+            label.toolTip = String(item.path.dropFirst("header:".count))
+            return label
+        }
         let identifier = NSUserInterfaceItemIdentifier("ResultCell")
         let cell = (tableView.makeView(withIdentifier: identifier, owner: nil) as? ResultCellView) ?? ResultCellView(identifier: identifier)
-        let item = results[row]
         let location: String
         let image: NSImage
         if let fill = item.fill {
-            location = fill.isSaved ? "收藏的搜索 · ↩ 搜索 · ⌘⌫ 移除" : (fill.isHistory ? "搜索历史 · ↩ 再次搜索 · ⌘⌫ 删除" : fill.explanation)
+            location = fill.isSaved
+                ? (item.name == fill.text ? "" : fill.text + " · ") + "收藏的搜索 · ↩ 搜索 · ⌘K 命名"
+                : (fill.isHistory ? "搜索历史 · ↩ 再次搜索 · ⌘⌫ 删除" : fill.explanation)
             let symbol = fill.isSaved ? "star" : (fill.isHistory ? "clock.arrow.circlepath" : "text.magnifyingglass")
             image = NSImage(systemSymbolName: symbol, accessibilityDescription: fill.explanation) ?? NSImage()
         } else if let link = item.link {
@@ -1319,7 +1430,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             name: item.isFile ? highlighted(item.name) : NSAttributedString(string: item.name, attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.labelColor]),
             location: location,
             icon: image,
-            shortcut: row < 9 ? "⌘\(row + 1)" : ""
+            shortcut: { let n = (selectableRows.firstIndex(of: row) ?? 99) + 1; return n <= 9 ? "⌘\(n)" : "" }()
         )
         return cell
     }
@@ -1333,6 +1444,18 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         guard item.isFile, item.definition == nil else { return nil }
         if item.isInArchive { return archivePreviews[Self.archiveKey(item)].map { $0 as NSURL } }
         return URL(fileURLWithPath: item.path) as NSURL
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        results.indices.contains(row) && !results[row].isHeader
+    }
+
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        results.indices.contains(row) && results[row].isHeader
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        results.indices.contains(row) && results[row].isHeader ? 22 : tableView.rowHeight
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

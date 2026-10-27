@@ -18,7 +18,7 @@ public struct SettingsArchive {
         "ocrEnabled", "ocrFolders", "ocrPageLimit", "ocrOnlyOnPower", "ocrDownloadFromICloud",
         "clipboardEnabled", "clipboardShortcut", "clipboardShortcutCleared", "clipboardRetentionDays",
         "clipboardMaximumItems", "autoPaste", "clipboardOCR", "clipboardExcludedApps", "cleanupOperations",
-        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory",
+        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",
     ]
 
     public var defaults: [String: Any]

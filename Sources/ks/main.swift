@@ -337,6 +337,8 @@ func runMCP(indexURL: URL) -> Never {
             "type": "object",
             "properties": [
                 "path": ["type": "string", "description": "Absolute path of a .pdf, .epub, .mobi, .azw3 or .djvu file (~ allowed)."] as [String: Any],
+                "style": ["type": "string", "enum": ["gbt7714", "footnote"], "description": "gbt7714 (default): 作者. 书名[M]. 出版地: 出版者, 年份. — footnote: 作者：《书名》，出版地：出版者，年份年，第N页。"] as [String: Any],
+                "page": ["type": "integer", "minimum": 1, "description": "Page cited, if any."] as [String: Any],
             ] as [String: Any],
             "required": ["path"],
         ]
@@ -354,14 +356,13 @@ func runMCP(indexURL: URL) -> Never {
         }
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else { throw MCPServer.ToolError("No such file.") }
-        let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
-        var epub: EpubMetadata?
-        if url.pathExtension.lowercased() == "epub", (try? contentAllowed()) != nil {
-            let status = (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus
-            if status != .notDownloaded { epub = EpubMetadata.read(url) }
-        }
-        let result = Citation.book(EbookName.parse(stem), fallbackTitle: stem, epub: epub)
+        // The book's own metadata is read only when content reading is allowed.
+        let info = BookInfo.read(url, readMetadata: (try? contentAllowed()) != nil)
+        let style = Citation.Style(rawValue: arguments["style"] as? String ?? "") ?? .gbt7714
+        let page = (arguments["page"] as? NSNumber)?.intValue
+        let result = Citation.make(style, name: info.name, fallbackTitle: info.name.title, page: page)
         var lines = [result.text]
+        if let source = info.titleSource { lines.append("Title from the book's \(source == "EPUB 书目信息" ? "EPUB metadata" : "PDF document info") (the file name gives it in pinyin).") }
         if !result.missing.isEmpty { lines.append("Missing: " + result.missing.joined(separator: "、")) }
         lines += result.notes.map { "Note: " + $0 }
         return lines.joined(separator: "\n")

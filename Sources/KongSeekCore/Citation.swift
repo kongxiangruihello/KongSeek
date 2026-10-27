@@ -23,14 +23,91 @@ public enum Citation {
     /// translators apart and drops the others, as the standard omits "著".
     static let rolePattern = #"\s*(主编|编著|编撰|编纂|编选|编校|编|撰|著|点校|校注|校点|校释|笺注|笺|集注|集释|译注|注译|注|疏|译|口述|整理)$"#
 
-    public static func book(_ name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil) -> Result {
+    /// The two ways references are written (0.19).
+    public enum Style: String, CaseIterable, Sendable {
+        /// GB/T 7714—2015: 作者. 书名[M]. 出版地: 出版者, 年份: 页码.
+        case gbt7714
+        /// Footnote style common in Chinese humanities journals:
+        /// 作者：《书名》，出版地：出版者，年份年，第 N 页。
+        case footnote
+
+        public var title: String {
+            switch self {
+            case .gbt7714: return "GB/T 7714（作者. 书名[M]. 出版地: 出版者, 年份.）"
+            case .footnote: return "脚注式（作者：《书名》，出版地：出版者，年份年，第 N 页。）"
+            }
+        }
+    }
+
+    /// A reference in `style`, with the page cited when given.
+    public static func make(_ style: Style, name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil, page: Int? = nil) -> Result {
+        switch style {
+        case .gbt7714:
+            var result = book(name, fallbackTitle: fallbackTitle, epub: epub)
+            if let page { result.text = withPage(result.text, page: page) }
+            return result
+        case .footnote:
+            return footnote(name, fallbackTitle: fallbackTitle, epub: epub, page: page)
+        }
+    }
+
+    /// The file name's details, with gaps filled from the EPUB's own metadata.
+    static func merged(_ name: EbookName?, fallbackTitle: String, epub: EpubMetadata?) -> EbookName {
         var book = name ?? EbookName(title: epub?.title ?? fallbackTitle)
-        // Fill gaps from the EPUB's own metadata.
         if let epub {
             if book.authors == nil, !epub.creators.isEmpty { book.authors = epub.creators.joined(separator: "、") }
             if book.publisher == nil { book.publisher = epub.publisher }
             if book.year == nil { book.year = epub.year }
         }
+        return book
+    }
+
+    /// The place of publication, inferred from a well-known publisher when the name gives none.
+    static func resolvedPlace(_ book: EbookName, notes: inout [String]) -> String? {
+        if let place = book.place { return place }
+        guard let publisher = book.publisher, let guessed = place(ofPublisher: publisher) else { return nil }
+        notes.append("出版地按出版社推定为“\(guessed)”")
+        return guessed
+    }
+
+    /// 成积春、宋立林主编：《孔子与〈论语〉》，北京：高等教育出版社，2018年，第23页。
+    public static func footnote(_ name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil, page: Int? = nil) -> Result {
+        let book = merged(name, fallbackTitle: fallbackTitle, epub: epub)
+        var missing: [String] = []
+        var notes: [String] = []
+        var responsibility = ""
+        var translators = ""
+        if let authors = book.authors {
+            let (names, role) = people(authors)
+            var list = names.filter { $0 != "等" }.joined(separator: "、")
+            if names.contains("等") { list += "等" }
+            if role == "译" {
+                translators = list + "译"
+            } else {
+                responsibility = list + ((role == nil || role == "著" || role == "撰") ? "" : role!)
+            }
+        }
+        if responsibility.isEmpty { missing.append(translators.isEmpty ? "责任者" : "原著者") }
+        // Book-title marks inside a title become 〈〉.
+        let title = book.title.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "《", with: "〈").replacingOccurrences(of: "》", with: "〉")
+        let place = resolvedPlace(book, notes: &notes)
+        if place == nil { missing.append("出版地") }
+        if book.publisher == nil { missing.append("出版者") }
+        if book.year == nil { missing.append("出版年") }
+        var parts: [String] = ["《\(title)》"]
+        if !translators.isEmpty { parts.append(translators) }
+        if let place, let publisher = book.publisher { parts.append(place + "：" + publisher) }
+        else if let publisher = book.publisher { parts.append(publisher) }
+        else if let place { parts.append(place) }
+        if let year = book.year { parts.append(year + "年") }
+        if let page { parts.append("第\(page)页") }
+        let text = (responsibility.isEmpty ? "" : responsibility + "：") + parts.joined(separator: "，") + "。"
+        return Result(text: text, missing: missing, notes: notes)
+    }
+
+    public static func book(_ name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil) -> Result {
+        let book = merged(name, fallbackTitle: fallbackTitle, epub: epub)
         var missing: [String] = []
         var notes: [String] = []
 
@@ -48,11 +125,7 @@ public enum Citation {
         if let range = title.range(of: "：") { title.replaceSubrange(range, with: ": ") }
         title = title.replacingOccurrences(of: "／", with: "/")
 
-        var place = book.place
-        if place == nil, let publisher = book.publisher, let guessed = Self.place(ofPublisher: publisher) {
-            place = guessed
-            notes.append("出版地按出版社推定为“\(guessed)”")
-        }
+        let place = resolvedPlace(book, notes: &notes)
         if place == nil { missing.append("出版地") }
         if book.publisher == nil { missing.append("出版者") }
         if book.year == nil { missing.append("出版年") }

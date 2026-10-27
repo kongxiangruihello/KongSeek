@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var space: SpaceWindowController?
     private var scanned: ScannedPDFWindowController?
     private var statusWindow: StatusWindowController?
+    private var fileList: FileListWindowController?
     /// Files downloaded in the last week, for the menu (refreshed in the background).
     private var recentDownloads: [FileEntry] = []
     private var downloadsTimer: Timer?
@@ -39,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ocr.configure(Preferences.ocrSettings)
         searchWindow = SearchWindowController(service: service, ocr: ocr)
         searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
+        searchWindow.onFileList = { [weak self] source in self?.openFileList(source) }
         archives = ArchiveService(cacheURL: support.appendingPathComponent("KongSeek/archive-index.json"))
         updater = Updater(supportDirectory: support.appendingPathComponent("KongSeek", isDirectory: true))
         updater.onChange = { [weak self] in
@@ -164,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(disabled(stateDescription))
         menu.addItem(item("立即重建索引", #selector(rebuildIndex)))
         menu.addItem(.separator())
+        menu.addItem(item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)))
         menu.addItem(item("批量重命名…", #selector(openBatchRename)))
         menu.addItem(item("查找重复与相似文件…", #selector(openDuplicates)))
         menu.addItem(item("空间分析…", #selector(openSpace)))
@@ -443,6 +446,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return done([]) }
             self.service.archivePaths(completion: done)
         })
+    }
+
+    private func openFileList(_ source: FileListSource) {
+        if fileList == nil { fileList = FileListWindowController(service: service) }
+        fileList?.present(source)
+    }
+
+    @objc private func chooseFileListFolder() {
+        if fileList == nil { fileList = FileListWindowController(service: service) }
+        fileList?.chooseFolder()
     }
 
     @objc func openStatus() {

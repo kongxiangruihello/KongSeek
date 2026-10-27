@@ -21,6 +21,18 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     private var findResults: [PDFSelection] = []
     private var findIndex = 0
     private var lastFind = ""
+    private var keyMonitor: Any?
+
+    /// The page each PDF was last read at (path → 1-based page), so it reopens there (0.19).
+    private static let pagesKey = "readerPages"
+    private static var savedPages: [String: Int] {
+        get { UserDefaults.standard.dictionary(forKey: pagesKey) as? [String: Int] ?? [:] }
+        set {
+            var pages = newValue
+            if pages.count > 500 { pages = Dictionary(uniqueKeysWithValues: pages.prefix(400).map { ($0.key, $0.value) }) }
+            UserDefaults.standard.set(pages, forKey: pagesKey)
+        }
+    }
 
     private init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760),
@@ -30,6 +42,48 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         super.init(window: window)
         window.delegate = self
         build()
+        // ⌘F find, ⌘+ / ⌘− / ⌘0 zoom, ⌘W close: KongSeek has no menu bar of its own to carry them.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window else { return event }
+            return self.handleKey(event) ? nil : event
+        }
+    }
+
+    private func handleKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function, .shift])
+        guard modifiers == [.command] else { return false }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "f":
+            window?.makeFirstResponder(findField)
+            return true
+        case "=", "+":
+            zoomIn()
+            return true
+        case "-":
+            zoomOut()
+            return true
+        case "0":
+            pdfView.autoScales = true
+            return true
+        case "w":
+            window?.performClose(nil)
+            return true
+        default:
+            return false
+        }
+    }
+
+    @objc private func zoomIn() { pdfView.zoomIn(nil) }
+    @objc private func zoomOut() { pdfView.zoomOut(nil) }
+
+    /// Remembers where the current PDF was being read.
+    private func rememberPage() {
+        guard let url, let document = pdfView.document, let page = pdfView.currentPage else { return }
+        Self.savedPages[url.path] = document.index(for: page) + 1
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        rememberPage()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -65,11 +119,16 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         outlineButton.toolTip = "显示或隐藏目录"
         outlineButton.target = self
         outlineButton.action = #selector(toggleOutline)
-        findField.placeholderString = "在此 PDF 中查找"
+        findField.placeholderString = "在此 PDF 中查找（⌘F）"
         findField.delegate = self
         findField.sendsWholeSearchString = true
         findField.target = self
         findField.action = #selector(find)
+        let zoomOutButton = NSButton(title: "−", target: self, action: #selector(zoomOut))
+        let zoomInButton = NSButton(title: "+", target: self, action: #selector(zoomIn))
+        zoomOutButton.toolTip = "缩小（⌘−）"
+        zoomInButton.toolTip = "放大（⌘+）；⌘0 适合窗口"
+        for button in [zoomOutButton, zoomInButton] { button.bezelStyle = .texturedRounded }
         let previewButton = NSButton(title: "用“预览”打开", target: self, action: #selector(openInPreview))
         let revealButton = NSButton(title: "在访达中显示", target: self, action: #selector(reveal))
         for button in [previewButton, revealButton] { button.bezelStyle = .texturedRounded }
@@ -79,7 +138,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         messageLabel.textColor = .secondaryLabelColor
         messageLabel.lineBreakMode = .byTruncatingTail
 
-        let bar = NSStackView(views: [outlineButton, pageLabel, messageLabel, NSView(), findField, previewButton, revealButton])
+        let bar = NSStackView(views: [outlineButton, pageLabel, messageLabel, NSView(), zoomOutButton, zoomInButton, findField, previewButton, revealButton])
         bar.spacing = 8
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
         messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -105,6 +164,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
 
     /// Opens `url` at `page` (1-based), highlighting `words` on that page if the PDF has text there.
     func open(_ url: URL, page: Int?, words: [String]) {
+        rememberPage()
         self.url = url
         loadToken += 1
         let token = loadToken
@@ -128,7 +188,8 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
                     self.messageLabel.stringValue = "无法打开这个 PDF。"
                     return
                 }
-                self.show(document, page: page, words: words)
+                // Without a hit, continue where this PDF was last read.
+                self.show(document, page: page ?? Self.savedPages[url.path], words: page == nil ? [] : words)
             }
         }
     }
@@ -158,7 +219,9 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         }
         // Say plainly what happened, so it is clear whether this is the hit.
         var parts: [String] = []
-        if let page, target != nil {
+        if let page, target != nil, words.isEmpty {
+            parts.append("接着上次读到的第 \(page) 页")
+        } else if let page, target != nil {
             let shown = words.joined(separator: " ")
             parts.append(marks.isEmpty
                 ? "命中在第 \(page) 页；此页的文字层中没有“\(shown)”（多为扫描页，命中来自识别文字），未能标黄"

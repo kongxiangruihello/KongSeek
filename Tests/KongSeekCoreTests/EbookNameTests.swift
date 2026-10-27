@@ -17,6 +17,12 @@ final class EbookNameTests: XCTestCase {
         XCTAssertEqual(short("盗火者 严复传 -- 马勇 -- 9b87ffb3c37e9d7b5684a6b06238bc24 -- Anna’s Archive"), "盗火者 严复传（马勇）")
         XCTAssertEqual(short("论语译注（带完整书签） -- 孔祥瑞译注 -- 2020 -- 上海社会科学院出版社 -- 9787552033106"),
                        "论语译注（带完整书签）（孔祥瑞译注，上海社会科学院出版社，2020）")
+        // "isbn13 …" and a trailing " -- " (0.19).
+        let pinyin = EbookName.parse("Zhongguo She Hui Si Xiang Shi Zi Liao Xuan Ji_ Xian Qin Juan -- 陆学艺, 王处辉主编 ; 王处辉, 周一骑, 胡翼鹏选编; 陆学艺; 王处辉; 周一骑; 胡翼鹏 -- Di 1 ban, Nanning Shi, China, 2005 -- isbn13 9787219048849 -- ")
+        XCTAssertEqual(pinyin?.isbn, "9787219048849")
+        XCTAssertEqual(pinyin?.authors, "陆学艺、王处辉主编")
+        XCTAssertEqual(pinyin?.year, "2005")
+        XCTAssertEqual(pinyin?.title, "Zhongguo She Hui Si Xiang Shi Zi Liao Xuan Ji_ Xian Qin Juan")
         let parsed = EbookName.parse("孔子与《论语》 Kong zi yu _ lun yu _ -- 成积春,宋立林主编 -- 9787040500288 -- 5ba8e6b83786f540ddc4ddbcd7cf8a88 -- Anna’s Archive")
         XCTAssertEqual(parsed?.isbn, "9787040500288")
     }

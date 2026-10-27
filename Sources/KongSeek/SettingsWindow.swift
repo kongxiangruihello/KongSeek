@@ -79,7 +79,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         self.onIndexSettingsChange = onIndexSettingsChange
         self.onRebuild = onRebuild
         self.indexStatus = indexStatus
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 680), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 710), styleMask: [.titled, .closable], backing: .buffered, defer: true)
         super.init()
         window.title = "KongSeek 设置"
         window.isReleasedWhenClosed = false
