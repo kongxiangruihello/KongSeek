@@ -57,9 +57,9 @@ public struct BuildLogProgress: Equatable, Sendable {
             advance(to: .packaging, line.hasPrefix("== sign ==") ? "正在签名…" : "正在打包…")
         } else if line.hasPrefix("Built: ") {
             advance(to: .finished, "编译完成")
-        } else if let (done, total) = Self.stepCounter(line), stage == .buildingTests || stage == .compiling {
-            fraction = Double(done) / Double(max(1, total))
-            detail = (stage == .buildingTests ? "正在编译测试" : "正在编译新版本") + "（\(done) / \(total)）"
+        } else if let counter = Self.stepCounter(line), stage == .buildingTests || stage == .compiling {
+            fraction = Double(counter.done) / Double(max(1, counter.total))
+            detail = (stage == .buildingTests ? "正在编译测试" : "正在编译新版本") + "（\(counter.done) / \(counter.total)）"
         }
     }
 
@@ -71,7 +71,7 @@ public struct BuildLogProgress: Equatable, Sendable {
     }
 
     /// "[12 / 40] Compiling …" or "[12/40] …"
-    static func stepCounter(_ line: String) -> (Int, Int)? {
+    static func stepCounter(_ line: String) -> (done: Int, total: Int)? {
         guard line.hasPrefix("["), let close = line.firstIndex(of: "]") else { return nil }
         let parts = line[line.index(after: line.startIndex)..<close].split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 2, let done = Int(parts[0]), let total = Int(parts[1]), total > 0, done <= total else { return nil }
