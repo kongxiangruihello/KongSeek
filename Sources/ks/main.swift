@@ -334,10 +334,45 @@ func runMCP(indexURL: URL) -> Never {
         """,
         tools: [searchTool, contentTool, readTool, infoTool]
     )
-    while let line = readLine(strippingNewline: true) {
+    func answer(_ line: String) {
         if let reply = server.handle(line) {
             FileHandle.standardOutput.write(Data((reply + "\n").utf8))
         }
+    }
+
+    // Claude keeps this process running for its whole session. When KongSeek is
+    // updated, the program file is replaced; the next request then re-executes
+    // the new program in this same process (same pid, same stdin/stdout, so the
+    // client notices nothing) and hands it the request it was about to answer.
+    let executable = Bundle.main.executablePath ?? CommandLine.arguments[0]
+    func identity() -> [Int]? {
+        var info = stat()
+        guard stat(executable, &info) == 0 else { return nil }
+        return [Int(info.st_ino), Int(info.st_mtimespec.tv_sec), Int(info.st_size)]
+    }
+    /// The new file has not changed for a few seconds (not caught half-copied by the installer).
+    func isSettled() -> Bool {
+        var info = stat()
+        guard stat(executable, &info) == 0 else { return false }
+        return Int(Date().timeIntervalSince1970) - Int(info.st_ctimespec.tv_sec) >= 3
+    }
+    let started = identity()
+    let pendingKey = "KS_MCP_PENDING"
+    if let pending = ProcessInfo.processInfo.environment[pendingKey] {
+        unsetenv(pendingKey)
+        answer(pending)
+    }
+    while let line = readLine(strippingNewline: true) {
+        if let started, let now = identity(), now != started, access(executable, X_OK) == 0, isSettled() {
+            setenv(pendingKey, line, 1)
+            var arguments = CommandLine.arguments.map { strdup($0) }
+            arguments[0] = strdup(executable)
+            arguments.append(nil)
+            execv(executable, &arguments)
+            // Only reached if the new program could not start: carry on with this one.
+            unsetenv(pendingKey)
+        }
+        answer(line)
     }
     exit(0)
 }
