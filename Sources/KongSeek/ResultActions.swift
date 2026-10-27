@@ -64,23 +64,20 @@ final class ResultActions {
 
     func moveToTrash(_ item: ResultItem) -> String {
         let url = URL(fileURLWithPath: item.path)
-        var resulting: NSURL?
+        let resulting: URL?
         do {
-            try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
+            resulting = try Records.moveToTrash(url, source: "搜索窗口")
         } catch {
             return "无法移到废纸篓：\(error.localizedDescription)"
         }
-        Preferences.forget(item.path)
-        lastTrashed = resulting.map { [(url, $0 as URL)] } ?? []
+        lastTrashed = resulting.map { [(url, $0)] } ?? []
         return "已移到废纸篓：\(item.name)" + (lastTrashed.isEmpty ? "" : "（⌘Z 放回）")
     }
 
     func undoTrash() -> String {
         var restored: [String] = []
-        for entry in lastTrashed where !FileManager.default.fileExists(atPath: entry.original.path) {
-            if (try? FileManager.default.moveItem(at: entry.trashed, to: entry.original)) != nil {
-                restored.append(entry.original.lastPathComponent)
-            }
+        for entry in lastTrashed where Records.putBack(trashed: entry.trashed, to: entry.original) {
+            restored.append(entry.original.lastPathComponent)
         }
         lastTrashed = []
         return restored.isEmpty ? "无法放回（废纸篓中已找不到该项，或原位置已有同名项）" : "已放回：\(restored.joined(separator: "、"))"

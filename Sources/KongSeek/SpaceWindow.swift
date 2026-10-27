@@ -69,7 +69,7 @@ final class SpaceModel: ObservableObject {
 
     func trash(_ file: FileEntry) -> String? {
         do {
-            try FileManager.default.trashItem(at: URL(fileURLWithPath: file.path), resultingItemURL: nil)
+            try Records.moveToTrash(URL(fileURLWithPath: file.path), source: "空间分析")
             trashed.insert(file.path)
             return nil
         } catch {

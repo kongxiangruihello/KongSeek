@@ -112,7 +112,7 @@ final class LibraryCheckModel: ObservableObject {
     func trash(_ paths: [String]) -> String? {
         var failures = 0
         for path in paths {
-            if (try? FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)) != nil { trashed.insert(path) } else { failures += 1 }
+            if Records.trashed(URL(fileURLWithPath: path), source: "书库体检") { trashed.insert(path) } else { failures += 1 }
         }
         return failures > 0 ? "\(failures) 个文件无法移到废纸篓" : nil
     }

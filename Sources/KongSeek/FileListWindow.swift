@@ -12,6 +12,8 @@ enum FileListSource {
     case query(String)
     /// Everything in a folder and its subfolders.
     case folder(String)
+    /// A list saved under a name (0.24).
+    case saved(UUID)
 }
 
 /// One file in the list, with what its name (and, for books, its metadata) says.
@@ -30,6 +32,9 @@ struct FileRow: Identifiable {
     var state: String
     var book: EbookName
     var location: String
+    /// "读到第 N 页 / 共 M 页" from KongSeek's reader (0.24), and 0…1 for sorting.
+    var reading: String = ""
+    var readingFraction: Double = -1
 
     var path: String { id }
 }
@@ -46,6 +51,10 @@ final class FileListModel: ObservableObject {
     @Published private(set) var progress = (done: 0, total: 0)
     @Published var status = ""
     @Published private(set) var heading = ""
+    /// The saved list being shown, if any (0.24).
+    @Published private(set) var savedList: SavedFileList?
+    /// Saved lists, for the 清单 menu.
+    @Published private(set) var savedLists: [SavedFileList] = Records.lists.lists
 
     private let service: IndexService
     private var token = 0
@@ -85,10 +94,22 @@ final class FileListModel: ObservableObject {
         selection = []
         loading = true
         status = "正在读取…"
+        savedList = nil
+        savedLists = Records.lists.lists
         switch source {
         case .paths(let paths, let title):
             heading = "搜索“\(title)”的结果"
             build(paths, token: current)
+        case .saved(let id):
+            guard let list = Records.lists.lists.first(where: { $0.id == id }) else {
+                heading = "清单"
+                loading = false
+                status = "这个清单已被删除。"
+                return
+            }
+            savedList = list
+            heading = "清单：\(list.name)"
+            build(list.paths, token: current)
         case .query(let text):
             heading = "搜索“\(text)”的结果"
             service.search(text, precision: Preferences.precision, limit: 3_000) { [weak self] outcome in
@@ -108,12 +129,14 @@ final class FileListModel: ObservableObject {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
         }
+        let missing = paths.count - files.count
         progress = (0, files.count)
+        let reading = Records.reading
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var built: [FileRow] = []
             for (index, path) in files.enumerated() {
                 guard let self, current == self.token else { return }
-                built.append(FileListModel.row(for: path))
+                built.append(FileListModel.row(for: path, reading: reading))
                 if index % 50 == 49 {
                     let done = index + 1
                     DispatchQueue.main.async { if current == self.token { self.progress = (done, files.count) } }
@@ -125,21 +148,91 @@ final class FileListModel: ObservableObject {
                 self.loading = false
                 let books = built.filter(\.isBook).count
                 self.status = "\(built.count) 个文件，其中电子书 \(books) 本。选中几项只处理所选，不选则处理全部。"
+                if self.savedList != nil && missing > 0 {
+                    self.status = "清单中有 \(missing) 个文件已不在原处（被移动、改名或删除），未列出。" + self.status
+                }
             }
         }
     }
 
-    static func row(for path: String) -> FileRow {
+    static func row(for path: String, reading: ReadingLog? = nil) -> FileRow {
         let url = URL(fileURLWithPath: path)
         let ext = url.pathExtension.lowercased()
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .ubiquitousItemDownloadingStatusKey])
         let isBook = DuplicateFinder.bookExtensions.contains(ext)
         let book = isBook ? BookInfo.read(url).name : EbookName(title: url.deletingPathExtension().lastPathComponent)
-        return FileRow(id: path, name: url.lastPathComponent, format: ext.uppercased(), size: Int64(values?.fileSize ?? 0),
-                       modified: values?.contentModificationDate ?? .distantPast, isLocal: values?.ubiquitousItemDownloadingStatus != .notDownloaded,
-                       isBook: isBook, title: book.title, authors: book.authors ?? "", publisher: book.publisher ?? "", year: book.year ?? "",
-                       state: FinderTags.readingState(of: path) ?? "", book: book,
-                       location: SearchWindowController.displayLocation(of: path))
+        var row = FileRow(id: path, name: url.lastPathComponent, format: ext.uppercased(), size: Int64(values?.fileSize ?? 0),
+                          modified: values?.contentModificationDate ?? .distantPast, isLocal: values?.ubiquitousItemDownloadingStatus != .notDownloaded,
+                          isBook: isBook, title: book.title, authors: book.authors ?? "", publisher: book.publisher ?? "", year: book.year ?? "",
+                          state: FinderTags.readingState(of: path) ?? "", book: book,
+                          location: SearchWindowController.displayLocation(of: path))
+        if let entry = reading?.entry(for: path) {
+            row.reading = entry.progressText
+            row.readingFraction = entry.fraction
+        }
+        return row
+    }
+
+    // MARK: Saved lists (0.24)
+
+    /// Saves the files in the list (all of them, not only those shown) under a name.
+    func saveList(window: NSWindow?) {
+        guard !rows.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = savedList == nil ? "把这份清单存起来" : "保存清单"
+        alert.informativeText = "以后可从 菜单栏图标 › 写作与引文 › 已保存的清单，或本窗口的“清单”菜单中再次打开。共 \(rows.count) 个文件。"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = savedList?.name ?? suggestedName
+        field.placeholderString = "如：本学期书单、论文参考书"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = SavedFileLists.cleanName(field.stringValue)
+        guard !name.isEmpty else {
+            status = "清单名称不能为空。"
+            return
+        }
+        var lists = Records.lists
+        if let existing = lists.list(named: name), existing.id != savedList?.id {
+            let confirm = NSAlert()
+            confirm.messageText = "已有名为“\(name)”的清单，替换它吗？"
+            confirm.informativeText = "原清单有 \(existing.paths.count) 个文件。"
+            confirm.addButton(withTitle: "替换")
+            confirm.addButton(withTitle: "取消")
+            guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        }
+        if let current = savedList, current.name != name, lists.list(named: name) == nil {
+            // Renaming the list being shown.
+            _ = lists.rename(id: current.id, to: name)
+        }
+        guard let saved = lists.save(name: name, paths: rows.map(\.path)) else { return }
+        Records.lists = lists
+        savedList = saved
+        savedLists = lists.lists
+        heading = "清单：\(saved.name)"
+        status = "已保存清单“\(saved.name)”（\(saved.paths.count) 个文件）。"
+    }
+
+    func deleteSavedList() {
+        guard let list = savedList else { return }
+        let alert = NSAlert()
+        alert.messageText = "删除清单“\(list.name)”？"
+        alert.informativeText = "只删除这份清单本身，清单中的文件不受影响。"
+        alert.addButton(withTitle: "删除清单")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        var lists = Records.lists
+        lists.remove(id: list.id)
+        Records.lists = lists
+        savedLists = lists.lists
+        savedList = nil
+        status = "已删除清单“\(list.name)”，文件未动。"
+    }
+
+    private var suggestedName: String {
+        heading.replacingOccurrences(of: "搜索“", with: "").replacingOccurrences(of: "”的结果", with: "")
     }
 
     // MARK: Actions
@@ -230,7 +323,7 @@ final class FileListModel: ObservableObject {
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         var moved: Set<String> = []
-        for row in victims where (try? FileManager.default.trashItem(at: URL(fileURLWithPath: row.path), resultingItemURL: nil)) != nil {
+        for row in victims where Records.trashed(URL(fileURLWithPath: row.path), source: "文件清单") {
             moved.insert(row.id)
         }
         rows.removeAll { moved.contains($0.id) }
@@ -251,11 +344,27 @@ struct FileListView: View {
     @ObservedObject var model: FileListModel
     var window: () -> NSWindow?
 
+    private var saveTitle: String { model.savedList == nil ? "保存为清单…" : "保存 / 重命名清单…" }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Text(model.heading).font(.headline).lineLimit(1).truncationMode(.middle)
                 Spacer()
+                Menu("清单") {
+                    Button(saveTitle) { model.saveList(window: window()) }
+                        .disabled(model.rows.isEmpty)
+                    if model.savedList != nil {
+                        Button("删除此清单…") { model.deleteSavedList() }
+                    }
+                    if !model.savedLists.isEmpty {
+                        Divider()
+                        ForEach(model.savedLists) { list in
+                            Button("\(list.name)（\(list.paths.count)）") { model.load(.saved(list.id)) }
+                        }
+                    }
+                }
+                .frame(width: 80)
                 TextField("筛选书名、作者、出版社", text: $model.filter).textFieldStyle(.roundedBorder).frame(width: 220)
                 Toggle("只看电子书", isOn: $model.booksOnly)
             }
@@ -285,6 +394,10 @@ struct FileListView: View {
                 .width(min: 60, ideal: 70, max: 90)
                 TableColumn("阅读状态", value: \.state) { row in Text(row.state) }
                     .width(min: 50, ideal: 60, max: 80)
+                TableColumn("阅读进度", value: \.readingFraction) { row in
+                    Text(row.reading).foregroundColor(.secondary).help(row.reading.isEmpty ? "在 KongSeek 的阅读窗口中读过的 PDF 会显示读到第几页" : row.reading)
+                }
+                .width(min: 80, ideal: 130, max: 170)
                 TableColumn("位置", value: \.location, comparator: .localizedStandard) { row in
                     Text(row.location).foregroundColor(.secondary).lineLimit(1).truncationMode(.head)
                 }

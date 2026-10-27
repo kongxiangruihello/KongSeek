@@ -7,7 +7,7 @@ import KongSeekCore
 enum FeatureGuide {
     enum Action: Equatable {
         case openSearch, search(String), clipboard, quoteFinder, manuscriptCheck, compare, fileList,
-             batchRename, duplicates, space, libraryCheck, scannedPDFs, status, settings
+             batchRename, duplicates, space, libraryCheck, scannedPDFs, status, settings, trashLog
     }
 
     struct Entry: Identifiable {
@@ -60,6 +60,10 @@ enum FeatureGuide {
               how: "菜单栏图标 › 写作与引文 › 文件清单；或 ⌘K › 把全部结果放入文件清单", action: .fileList, keywords: "书单 列表 表格 导出 excel"),
         Entry(category: "阅读与引文", title: "送到 KongReview", detail: "把摘录（原文、出处、页码）送到 KongReview。",
               how: "引文查证结果旁按钮；剪贴板中 ⌘R；搜索框输入“kr 内容”", action: .quoteFinder, keywords: "摘录 卡片"),
+        Entry(category: "阅读与引文", title: "阅读进度与最近阅读", detail: "在 KongSeek 阅读窗口中读过的 PDF 记住读到第几页，再打开时接着读；文件清单中显示“读到第 N 页 / 共 M 页”。",
+              how: "菜单栏图标 › 最近阅读；文件清单“阅读进度”列", keywords: "页码 书签 继续读"),
+        Entry(category: "阅读与引文", title: "保存文件清单", detail: "把一份文件清单起名保存（如“本学期书单”“论文参考书”），以后再打开；被移动或删除的文件会提示。",
+              how: "文件清单窗口右上“清单”菜单；菜单栏图标 › 写作与引文 › 已保存的清单", action: .fileList, keywords: "书单 收藏 清单"),
         Entry(category: "阅读与引文", title: "阅读状态", detail: "待读 / 在读 / 精读 / 已读（访达标签），搜索“标签:在读”列出。",
               how: "⌘K › 阅读状态", action: .search("标签:在读"), keywords: "已读 待读 标签"),
 
@@ -75,6 +79,8 @@ enum FeatureGuide {
         Entry(category: "整理", title: "课程材料打包", detail: "把一门课的材料复制到一个文件夹或打成 zip。",
               how: "收藏的搜索上 ⌘K › 打包课程材料；或文件清单中“打包…”", action: .openSearch, keywords: "zip 课程 复制"),
         Entry(category: "整理", title: "移到废纸篓 / 放回", detail: "只移到废纸篓，不会直接删除；⌘Z 放回。", how: "结果上 ⌘⌫ / ⌘Z", action: .openSearch, keywords: "删除 撤销"),
+        Entry(category: "整理", title: "废纸篓记录", detail: "KongSeek 在搜索窗口、空间分析、查找重复、书库体检、文件清单中移到废纸篓的文件，三个月内都可查到从哪里移走，并一键放回原处。",
+              how: "菜单栏图标 › 整理文件 › 废纸篓记录", action: .trashLog, keywords: "删除 恢复 放回 撤销 误删"),
 
         // 书库
         Entry(category: "书库", title: "书库体检", detail: "打不开或加密的 PDF、损坏的 EPUB、0 字节文件、没下载完的临时文件、同一本书的多个文件。",
@@ -98,6 +104,8 @@ enum FeatureGuide {
         // 设置与诊断
         Entry(category: "设置与诊断", title: "检查更新", detail: "从 GitHub 获取新版本，在本机测试、编译后安装；可回退到上一版。",
               how: "设置 › 通用 › 检查更新", action: .settings, keywords: "升级 版本"),
+        Entry(category: "设置与诊断", title: "后台任务", detail: "建立索引、文字识别、生成可搜索 PDF、打包、引文核对、书库体检等进行时，菜单栏图标变成带圈的放大镜，菜单顶部列出进度，可查看或停止。",
+              how: "菜单栏图标 › 后台任务", action: .status, keywords: "进度 停止 暂停 正在"),
         Entry(category: "设置与诊断", title: "状态与诊断", detail: "索引、唤起、权限、文字识别、更新、Claude 工具一览，需要处理的项附有按钮。",
               how: "菜单栏图标 › 状态与诊断", action: .status, keywords: "权限 问题 故障"),
         Entry(category: "设置与诊断", title: "让 Claude 搜索文件", detail: "Claude 桌面版可按文件名、全文搜索，读取正文，查重复，生成参考文献（只读）。",

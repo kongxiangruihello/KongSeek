@@ -33,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var libraryCheck: LibraryCheckWindowController?
     private var manuscriptCheck: ManuscriptCheckWindowController?
     private var featureGuide: FeatureGuideWindowController?
+    private var trashLog: TrashLogWindowController?
+    /// Checks every few seconds whether background work is running, for the menu bar icon (0.24).
+    private var busyTimer: Timer?
+    private var shownBusy = false
     /// Ebooks downloaded in the last month under site names, offered for tidying (0.20).
     private var tidyCandidates: [String] = []
     /// Files downloaded in the last week, for the menu (refreshed in the background).
@@ -123,6 +127,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.updateBusyIcon() }
+        RunLoop.main.add(timer, forMode: .common)
+        busyTimer = timer
+    }
+
+    // MARK: - Background work (0.24)
+
+    /// Something KongSeek is doing in the background, for the menu.
+    private struct RunningTask {
+        var title: String
+        var detail: String
+        var stopTitle = "停止"
+        var stop: (() -> Void)?
+        var show: () -> Void
+    }
+
+    private func runningTasks() -> [RunningTask] {
+        var tasks: [RunningTask] = []
+        if case .building = service.state {
+            tasks.append(RunningTask(title: "建立索引", detail: stateDescription, show: { [weak self] in self?.openStatus() }))
+        }
+        let recognition = ocr.progress
+        if let file = recognition.currentFile {
+            var detail = (file as NSString).lastPathComponent
+            if recognition.currentPages > 1 { detail += " 第 \(recognition.currentPage) / \(recognition.currentPages) 页" }
+            if recognition.pending > 1 { detail += " · 还有 \(recognition.pending - 1) 个文件" }
+            tasks.append(RunningTask(title: "文字识别", detail: detail, stopTitle: "暂停文字识别",
+                                     stop: { [weak self] in self?.ocr.setPaused(true) }, show: { [weak self] in self?.openSettings() }))
+        }
+        let searchable = SearchablePDFWindowController.shared
+        if searchable.model.running {
+            let model = searchable.model
+            let detail = (model.fileCount > 1 ? "第 \(model.fileIndex) / \(model.fileCount) 本 · " : "") + (model.pages > 0 ? "第 \(model.page) / \(model.pages) 页" : "正在打开")
+            tasks.append(RunningTask(title: "生成可搜索的 PDF", detail: detail, stop: { model.stop() }, show: { searchable.showWindow(nil); NSApp.activate(ignoringOtherApps: true) }))
+        }
+        let packager = CoursePackageWindowController.shared
+        if packager.model.running {
+            let model = packager.model
+            tasks.append(RunningTask(title: "课程材料打包", detail: "\(model.done) / \(model.total) 个文件", stop: { model.stop() },
+                                     show: { packager.showWindow(nil); NSApp.activate(ignoringOtherApps: true) }))
+        }
+        if let window = manuscriptCheck, window.model.running {
+            let rows = window.model.rows
+            let done = rows.filter { $0.state == .done }.count
+            tasks.append(RunningTask(title: "稿件引文核对", detail: "\(done) / \(rows.count) 条", stop: { window.model.stop() }, show: { window.present() }))
+        }
+        if let window = quoteFinder, window.model.running {
+            let checked = window.model.checked
+            tasks.append(RunningTask(title: "引文查证", detail: checked.total > 0 ? "已核对 \(checked.done) / \(checked.total) 个文件" : "正在查找",
+                                     stop: { window.model.stop() }, show: { window.present() }))
+        }
+        if let window = libraryCheck, window.model.running {
+            let progress = window.model.progress
+            tasks.append(RunningTask(title: "书库体检", detail: "\(progress.done) / \(progress.total) 个文件", stop: { window.model.stop() }, show: { window.present() }))
+        }
+        if let window = duplicates, window.model.running {
+            tasks.append(RunningTask(title: "查找重复", detail: window.model.status, stop: { window.model.cancel() }, show: { window.present() }))
+        }
+        if let window = scanned, window.model.running {
+            tasks.append(RunningTask(title: "查找扫描版 PDF", detail: "已检查 \(window.model.checked) 个", stop: { window.model.stop() }, show: { window.present() }))
+        }
+        if let window = space, window.model.running {
+            tasks.append(RunningTask(title: "空间分析", detail: window.model.status, show: { window.present() }))
+        }
+        if let window = fileList, window.model.loading {
+            let progress = window.model.progress
+            tasks.append(RunningTask(title: "文件清单", detail: "正在读取 \(progress.done) / \(progress.total)", show: { window.showWindow(nil); NSApp.activate(ignoringOtherApps: true) }))
+        }
+        return tasks
+    }
+
+    /// The menu bar icon shows a ring while anything runs in the background; its tooltip says what.
+    private func updateBusyIcon() {
+        let tasks = runningTasks()
+        statusItem.button?.toolTip = tasks.isEmpty ? "KongSeek" : "KongSeek 后台任务：\n" + tasks.map { "\($0.title)：\($0.detail)" }.joined(separator: "\n")
+        let busy = !tasks.isEmpty
+        guard busy != shownBusy else { return }
+        shownBusy = busy
+        statusItem.button?.image = NSImage(systemSymbolName: busy ? "magnifyingglass.circle" : "magnifyingglass", accessibilityDescription: "KongSeek")
+    }
+
+    private func addRunningTasks(to menu: NSMenu) {
+        let tasks = runningTasks()
+        guard !tasks.isEmpty else { return }
+        menu.addItem(disabled("后台任务（\(tasks.count)）"))
+        for task in tasks {
+            let entry = NSMenuItem(title: "\(task.title)：\(task.detail)", action: nil, keyEquivalent: "")
+            entry.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: nil)
+            let actions = NSMenu()
+            actions.addItem(ClosureMenuItem(title: "查看", key: "", handler: task.show))
+            if let stop = task.stop { actions.addItem(ClosureMenuItem(title: task.stopTitle, key: "", handler: stop)) }
+            entry.submenu = actions
+            menu.addItem(entry)
+        }
+        menu.addItem(.separator())
+    }
+
+    // MARK: - Recent reading and saved lists (0.24)
+
+    private func recentReadingItem() -> NSMenuItem? {
+        let recent = Records.reading.recent(12) { FileManager.default.fileExists(atPath: $0) }
+        guard !recent.isEmpty else { return nil }
+        let menu = NSMenu()
+        for entry in recent {
+            let url = URL(fileURLWithPath: entry.path)
+            let stem = url.deletingPathExtension().lastPathComponent
+            let title = EbookName.parse(stem)?.title ?? stem
+            let item = ClosureMenuItem(title: "\(title) — \(entry.progressText)", key: "") {
+                ReaderWindowController.shared.open(url, page: nil, words: [])
+            }
+            let icon = NSWorkspace.shared.icon(forFile: entry.path)
+            icon.size = NSSize(width: 16, height: 16)
+            item.image = icon
+            item.toolTip = (entry.path as NSString).abbreviatingWithTildeInPath + "\n" + entry.date.formatted(date: .abbreviated, time: .shortened) + " 读过"
+            menu.addItem(item)
+        }
+        let parent = NSMenuItem(title: "最近阅读", action: nil, keyEquivalent: "")
+        parent.image = NSImage(systemSymbolName: "book", accessibilityDescription: nil)
+        parent.submenu = menu
+        return parent
+    }
+
+    private func savedListsItem() -> NSMenuItem? {
+        let lists = Records.lists.lists
+        guard !lists.isEmpty else { return nil }
+        let menu = NSMenu()
+        for list in lists {
+            let id = list.id
+            menu.addItem(ClosureMenuItem(title: "\(list.name)（\(list.paths.count) 个文件）", key: "") { [weak self] in self?.openFileList(.saved(id)) })
+        }
+        let parent = NSMenuItem(title: "已保存的清单", action: nil, keyEquivalent: "")
+        parent.submenu = menu
+        return parent
+    }
+
+    @objc func openTrashLog() {
+        if trashLog == nil { trashLog = TrashLogWindowController() }
+        trashLog?.present()
     }
 
     /// Rebuilt each time it opens, so it always shows the current state.
@@ -140,6 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item("更新中：\(step)（点此查看进度）", #selector(showUpdateProgress)))
             menu.addItem(.separator())
         }
+        addRunningTasks(to: menu)
         menu.addItem(item("打开搜索" + (ways.isEmpty ? "" : "（\(ways.joined(separator: " 或 "))）"), #selector(openSearch)))
         if trigger != .off && !doubleTap.isListening {
             menu.addItem(item("⚠︎ 连按 \(trigger.title) 尚未生效：需要“输入监控”权限…", #selector(openSettings)))
@@ -172,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             downloadsItem.submenu = downloads
             menu.addItem(downloadsItem)
         }
+        if let reading = recentReadingItem() { menu.addItem(reading) }
         if !tidyCandidates.isEmpty {
             menu.addItem(item("整理新下载的电子书（\(tidyCandidates.count) 本）…", #selector(openTidy)))
         }
@@ -186,16 +330,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Grouped by what the work is for (0.23), instead of one long list.
         var quoteTitle = "引文查证…"
         if let shortcut = quoteHotKey.shortcut { quoteTitle += "（\(quoteHotKey.isRegistered ? shortcut.display : shortcut.display + " 被占用")）" }
-        menu.addItem(submenu("写作与引文", symbol: "text.quote", [
+        var writing = [
             item(quoteTitle, #selector(openQuoteFinder)),
             item("稿件引文核对…", #selector(openManuscriptCheck)),
             item("两版讲义对比…", #selector(openCompare)),
             item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)),
-        ]))
+        ]
+        if let lists = savedListsItem() { writing.append(lists) }
+        menu.addItem(submenu("写作与引文", symbol: "text.quote", writing))
         menu.addItem(submenu("整理文件", symbol: "folder", [
             item("批量重命名…", #selector(openBatchRename)),
             item("查找重复与相似文件…", #selector(openDuplicates)),
             item("空间分析…", #selector(openSpace)),
+            item("废纸篓记录（放回原处）…", #selector(openTrashLog)),
         ]))
         menu.addItem(submenu("书库", symbol: "books.vertical", [
             item("书库体检…", #selector(openLibraryCheck)),
@@ -558,6 +705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .scannedPDFs: openScannedPDFs()
         case .status: openStatus()
         case .settings: openSettings()
+        case .trashLog: openTrashLog()
         }
     }
 

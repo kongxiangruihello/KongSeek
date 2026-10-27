@@ -109,6 +109,7 @@ final class BatchRenameModel: ObservableObject {
         }
         let renamed = plan.filter { $0.changed && $0.problem == nil }
         undoMoves = renamed.map { ($0.newPath, $0.item.path) }
+        Records.followMoves(renamed.map { (from: $0.item.path, to: $0.newPath) })
         // Marks moved out of names become Finder tags.
         addedTags = [:]
         for preview in renamed where !preview.tags.isEmpty {
@@ -149,6 +150,7 @@ final class BatchRenameModel: ObservableObject {
             message = "撤销失败（文件可能已被移动）：\(error.localizedDescription)"
             return
         }
+        Records.followMoves(undoMoves.map { (from: $0.from, to: $0.to) })
         let back = Dictionary(uniqueKeysWithValues: undoMoves.map { ($0.from, $0.to) })
         items = items.map { item in back[item.path].map { BatchRename.Item(path: $0, modified: item.modified) } ?? item }
         message = "已撤销 \(undoMoves.count) 个文件的改名。"

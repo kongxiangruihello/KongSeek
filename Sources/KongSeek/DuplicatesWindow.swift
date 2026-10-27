@@ -131,7 +131,7 @@ final class DuplicatesModel: ObservableObject {
         var failures: [String] = []
         for file in files {
             do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: file.path), resultingItemURL: nil)
+                try Records.moveToTrash(URL(fileURLWithPath: file.path), source: "查找重复")
                 trashed.insert(file.path)
             } catch {
                 failures.append(file.name)

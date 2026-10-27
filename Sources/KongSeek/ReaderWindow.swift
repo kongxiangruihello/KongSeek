@@ -39,16 +39,11 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     private var lastFind = ""
     private var keyMonitor: Any?
 
-    /// The page each PDF was last read at (path → 1-based page), so it reopens there (0.19).
-    private static let pagesKey = "readerPages"
-    private static var savedPages: [String: Int] {
-        get { UserDefaults.standard.dictionary(forKey: pagesKey) as? [String: Int] ?? [:] }
-        set {
-            var pages = newValue
-            if pages.count > 500 { pages = Dictionary(uniqueKeysWithValues: pages.prefix(400).map { ($0.key, $0.value) }) }
-            UserDefaults.standard.set(pages, forKey: pagesKey)
-        }
-    }
+    /// Saving the page being read, a moment after paging stops (0.24).
+    private var pendingRemember: DispatchWorkItem?
+    /// The page opened at for a search hit or a quotation: looking it up is not
+    /// reading there, so it is not remembered unless the reader moves on.
+    private var lookupPage: Int?
 
     private init() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760),
@@ -92,10 +87,18 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     @objc private func zoomIn() { pdfView.zoomIn(nil) }
     @objc private func zoomOut() { pdfView.zoomOut(nil) }
 
-    /// Remembers where the current PDF was being read.
+    /// Remembers where the current PDF was being read, with its page count and the
+    /// time (0.19; 读到第 N 页 / 共 M 页 and 最近阅读 since 0.24), so it reopens there.
     private func rememberPage() {
-        guard let url, let document = pdfView.document, let page = pdfView.currentPage else { return }
-        Self.savedPages[url.path] = document.index(for: page) + 1
+        pendingRemember?.cancel()
+        pendingRemember = nil
+        guard let url, let document = pdfView.document, document.documentURL?.path == url.path, let page = pdfView.currentPage else { return }
+        let number = document.index(for: page) + 1
+        if number == lookupPage { return }
+        lookupPage = nil
+        var log = Records.reading
+        log.record(path: url.path, page: number, pages: document.pageCount)
+        Records.reading = log
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -200,6 +203,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     /// Opens `url` at `page` (1-based), highlighting `words` on that page if the PDF has text there.
     func open(_ url: URL, page: Int?, words: [String]) {
         rememberPage()
+        lookupPage = page
         self.url = url
         loadToken += 1
         let token = loadToken
@@ -226,7 +230,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
                     return
                 }
                 // Without a hit, continue where this PDF was last read.
-                self.show(document, page: page ?? Self.savedPages[url.path], words: page == nil ? [] : words)
+                self.show(document, page: page ?? Records.reading.entry(for: url.path)?.page, words: page == nil ? [] : words)
             }
         }
     }
@@ -280,6 +284,10 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
     @objc private func pageChanged() {
         guard let document = pdfView.document, let page = pdfView.currentPage else { return }
         pageLabel.stringValue = "第 \(document.index(for: page) + 1) / \(document.pageCount) 页"
+        pendingRemember?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.rememberPage() }
+        pendingRemember = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     @objc private func toggleOutline() {
