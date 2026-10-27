@@ -327,12 +327,74 @@ func runMCP(indexURL: URL) -> Never {
         return header + "\n\n" + part.text + footer
     }
 
+    let duplicatesTool = MCPServer.Tool(
+        name: "find_duplicates",
+        description: """
+        Find files the user keeps more than once in the folders KongSeek indexes: byte-identical copies, and versions of one document ("x (1)", "x副本", "x [自动保存]", "x_v2", "x 2024-10-01"…, same kind of file) with how much of each older version's text is in the newest. Read-only: it never deletes; the user can clean up in KongSeek › 查找重复与相似文件. Largest savings first.
+        """,
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "folder": ["type": "string", "description": "Only below this folder (absolute or ~). Default: everything indexed."] as [String: Any],
+                "min_size_mb": ["type": "number", "minimum": 0, "description": "Ignore files smaller than this many MB (default 1)."] as [String: Any],
+                "include_versions": ["type": "boolean", "description": "Also list versions of the same document (default true; reads their text)."] as [String: Any],
+                "limit": ["type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum groups (default 20)."] as [String: Any],
+            ] as [String: Any],
+        ]
+    ) { arguments in
+        let index: NameIndex
+        do { index = try file.current() } catch {
+            throw MCPServer.ToolError("KongSeek's index could not be read (\(error)). Open the KongSeek app once to build it.")
+        }
+        let folder = (arguments["folder"] as? String).map { ($0 as NSString).expandingTildeInPath }
+        if let folder, index.rules.excludes(path: Paths.canonical(folder), roots: index.roots) && !index.roots.contains(Paths.canonical(folder)) {
+            throw MCPServer.ToolError("That folder is outside the folders KongSeek indexes.")
+        }
+        let minimum = Int64(max(0, (arguments["min_size_mb"] as? NSNumber)?.doubleValue ?? 1) * 1_000_000)
+        let includeVersions = arguments["include_versions"] as? Bool ?? true
+        let limit = min(100, max(1, (arguments["limit"] as? NSNumber)?.intValue ?? 20))
+        let files = index.fileEntries(under: folder, minimumSize: max(1, minimum))
+        let identical = DuplicateFinder.identical(files, minimumSize: max(1, minimum))
+        var groups = identical
+        if includeVersions {
+            // Comparing versions reads their text, which the user may have turned off.
+            var reader: ((String) -> String?)? = nil
+            if (try? contentAllowed()) != nil {
+                reader = { path in
+                    guard let pages = try? DocumentText.read(URL(fileURLWithPath: path), maximumPages: 3_000) else { return nil }
+                    return pages.pages.joined(separator: "\n")
+                }
+            }
+            groups += DuplicateFinder.versions(files, identical: identical, minimumSize: max(1, minimum), text: reader)
+        }
+        guard !groups.isEmpty else { return "No duplicates among \(files.count) files of at least \(ByteCountFormatter.string(fromByteCount: max(1, minimum), countStyle: .file))." }
+        func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+        let saving = identical.reduce(Int64(0)) { $0 + $1.reclaimable }
+        var lines = ["\(identical.count) group(s) of identical files (removing the extra copies frees \(size(saving)))"
+                     + (includeVersions ? ", \(groups.count - identical.count) group(s) of versions" : "") + ", among \(files.count) files:"]
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        for (number, group) in groups.prefix(limit).enumerated() {
+            lines.append("")
+            lines.append("\(number + 1). " + (group.kind == .identical ? "Identical, \(group.files.count) copies of \(size(group.files[0].size)) each:" : "Versions of one document:"))
+            for (position, entry) in group.files.enumerated() {
+                var details = [size(entry.size), formatter.string(from: entry.modified)]
+                if position == 0 { details.append("newest") }
+                if !entry.isLocal { details.append("only in iCloud") }
+                if let share = group.similarity[entry.path] { details.append("\(Int((share * 100).rounded()))% of its text is in the newest") }
+                lines.append("   \(entry.path)  [\(details.joined(separator: " · "))]")
+            }
+        }
+        if groups.count > limit { lines.append("\n(\(groups.count - limit) more groups; raise limit)") }
+        return lines.joined(separator: "\n")
+    }
+
     let server = MCPServer(
         name: "kongseek", version: version,
         instructions: """
         KongSeek indexes the user's files. search_files finds files by name (Chinese pinyin works); search_content finds documents by the words inside them; read_file reads a document's text (PDF by page). The user's files are mostly Chinese; prefer Chinese search words when the user writes in Chinese.
         """,
-        tools: [searchTool, contentTool, readTool, infoTool]
+        tools: [searchTool, contentTool, readTool, duplicatesTool, infoTool]
     )
     func answer(_ line: String) {
         if let reply = server.handle(line) {

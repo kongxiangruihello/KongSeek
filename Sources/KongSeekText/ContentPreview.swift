@@ -27,6 +27,12 @@ public enum ContentPreview {
     ]
     static let richTextExtensions: Set<String> = ["docx", "doc", "rtf", "rtfd", "odt", "wordml"]
 
+    /// Whether `find` can look inside this kind of file.
+    public static func canRead(_ path: String) -> Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ext == "pdf" || ext == "pptx" || ext == "xlsx" || plainTextExtensions.contains(ext) || richTextExtensions.contains(ext)
+    }
+
     /// Slow for big files: call off the main thread.
     public static func find(in url: URL, needles: [String], ocr: OCRStore? = nil) -> Outcome {
         if let hit = ocr?.hit(for: url.path, needles: needles) {

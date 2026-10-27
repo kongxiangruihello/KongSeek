@@ -76,6 +76,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// Files taken out of archives for the preview, by "archive\0inner".
     private var archivePreviews: [String: URL] = [:]
     private var archivePreviewToken = 0
+    /// Name-mode passages are looked up one at a time.
+    private let snippetQueue = DispatchQueue(label: "KongSeek.snippet", qos: .userInitiated)
     private let defaultPlaceholder = "搜索文件名、拼音或首字母   ext:pdf  in:文件夹  dm:7d  size:>10mb  -排除"
 
     /// Folder being browsed (→ on a folder), and the states to return to.
@@ -1080,7 +1082,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func updateSnippet() {
         snippetToken += 1
         let token = snippetToken
-        guard contentMode, outcome.isContent, let item = selectedItem, !item.isFolder else {
+        if !contentMode {
+            updateNameModeSnippet(token: token)
+            return
+        }
+        guard outcome.isContent, let item = selectedItem, !item.isFolder else {
             snippetLabel.stringValue = ""
             return
         }
@@ -1094,6 +1100,37 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 self.snippetLabel.attributedStringValue = Self.snippetText(found)
             }
         }
+    }
+
+    /// In name mode, when the words also occur in the selected document's text, the
+    /// passage (and page) is shown above the preview; otherwise the area stays closed.
+    /// Looked up after a short pause, one at a time, so moving through the list stays quick.
+    private func updateNameModeSnippet(token: Int) {
+        setNameSnippetVisible(false)
+        guard !outcome.isRecentList, !outcome.highlightWords.isEmpty, let item = selectedItem, item.isFile,
+              !item.isFolder, !item.isInArchive, ContentPreview.canRead(item.path) else { return }
+        let needles = outcome.highlightWords
+        let store = ocr.store
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, token == self.snippetToken else { return }
+            self.snippetQueue.async {
+                let found = ContentPreview.find(in: URL(fileURLWithPath: item.path), needles: needles, ocr: store)
+                DispatchQueue.main.async {
+                    guard token == self.snippetToken, !self.contentMode, case .found = found else { return }
+                    let text = NSMutableAttributedString(string: "正文也有  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor])
+                    text.append(Self.snippetText(found))
+                    self.snippetLabel.attributedStringValue = text
+                    self.setNameSnippetVisible(true)
+                }
+            }
+        }
+    }
+
+    private func setNameSnippetVisible(_ visible: Bool) {
+        guard !contentMode else { return }
+        if !visible { snippetLabel.stringValue = "" }
+        let height: CGFloat = visible ? 72 : 0
+        if snippetHeight.constant != height { snippetHeight.constant = height }
     }
 
     private static func snippetText(_ outcome: ContentPreview.Outcome) -> NSAttributedString {

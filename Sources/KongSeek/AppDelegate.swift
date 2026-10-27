@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Whether the archive scan has run since the index last became ready.
     private var archivesStarted = false
     private var batchRename: BatchRenameWindowController?
+    private var duplicates: DuplicatesWindowController?
     private var updater: Updater!
     private var updateWindow: UpdateProgressWindow?
 
@@ -135,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("立即重建索引", #selector(rebuildIndex)))
         menu.addItem(.separator())
         menu.addItem(item("批量重命名…", #selector(openBatchRename)))
+        menu.addItem(item("查找重复与相似文件…", #selector(openDuplicates)))
         menu.addItem(.separator())
         menu.addItem(item("设置…", #selector(openSettings), key: ","))
         menu.addItem(item("关于 KongSeek", #selector(showAbout)))
@@ -319,6 +321,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return done([]) }
             self.service.archivePaths(completion: done)
         })
+    }
+
+    @objc private func openDuplicates() {
+        if duplicates == nil { duplicates = DuplicatesWindowController(service: service) }
+        duplicates?.present()
     }
 
     @objc private func openBatchRename() {

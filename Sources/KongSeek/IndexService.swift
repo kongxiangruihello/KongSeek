@@ -273,6 +273,15 @@ final class IndexService {
         return outcome
     }
 
+    /// Files in the index (optionally below `folder`) with size and date, for the
+    /// duplicate finder. Calls back on main; an empty list while no index is loaded.
+    func fileEntries(under folder: String?, minimumSize: Int64, completion: @escaping ([FileEntry]) -> Void) {
+        queue.async { [weak self] in
+            let entries = self?.index?.fileEntries(under: folder, minimumSize: minimumSize) ?? []
+            DispatchQueue.main.async { completion(entries) }
+        }
+    }
+
     /// The archive paths in the index (ext:zip), for the archive scan. Calls back on
     /// the index queue, and not at all while no index is loaded.
     func archivePaths(completion: @escaping ([String]) -> Void) {
