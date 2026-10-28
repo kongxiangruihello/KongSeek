@@ -781,7 +781,7 @@ extension IndexService {
             items[index].bookLine = parts.isEmpty ? nil : parts.joined(separator: " · ")
         }
         if !unread.isEmpty {
-            DispatchQueue.global(qos: .utility).async { for path in unread.prefix(200) { _ = epubDetails.details(path) } }
+            DispatchQueue.global(qos: .utility).async { for path in unread.prefix(200) { _ = IndexService.epubDetails.details(path) } }
         }
     }
 
