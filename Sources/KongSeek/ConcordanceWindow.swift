@@ -120,7 +120,7 @@ final class ConcordanceModel: ObservableObject {
                     DispatchQueue.main.async {
                         guard current == self.token else { return }
                         self.groups.append(group)
-                        self.groups.sort { $0.hits.count != $1.hits.count ? $0.hits.count > $1.hits.count : $0.title < $1.title }
+                        self.sortGroups()
                     }
                 }
                 let done = number + 1
@@ -136,6 +136,21 @@ final class ConcordanceModel: ObservableObject {
                 self.status = text
             }
         }
+    }
+
+    /// The reader's 常用本 first (0.28), then the books with most occurrences.
+    func sortGroups() {
+        let editions = Records.editions
+        groups.sort { a, b in
+            let preferredA = editions.isPreferred(a.path), preferredB = editions.isPreferred(b.path)
+            if preferredA != preferredB { return preferredA }
+            return a.hits.count != b.hits.count ? a.hits.count > b.hits.count : a.title < b.title
+        }
+    }
+
+    func togglePreferred(_ group: Group) {
+        Records.togglePreferred(group.path)
+        sortGroups()
     }
 
     // MARK: Actions
@@ -253,10 +268,24 @@ struct ConcordanceView: View {
                         ForEach(group.hits) { hit in row(hit, group: group) }
                     } header: {
                         HStack {
+                            if Records.editions.isPreferred(group.path) {
+                                Text("常用本").font(.caption2.weight(.semibold)).foregroundColor(.accentColor)
+                            }
                             Text(group.title).font(.headline).lineLimit(1)
                             if let authors = group.book?.authors { Text(authors).foregroundColor(.secondary).lineLimit(1) }
                             Spacer()
                             Text("\(group.hits.count) 处").foregroundColor(.secondary)
+                            Menu("…") {
+                                Button(Records.editions.isPreferred(group.path) ? String("取消常用本") : String("设为常用本（排在最前）")) {
+                                    model.togglePreferred(group)
+                                }
+                                if group.book != nil {
+                                    Button("补全书目信息…") { BookLookupWindowController.shared.present(path: group.path) }
+                                }
+                                Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: group.path)]) }
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
                         }
                     }
                 }

@@ -63,6 +63,40 @@ enum Records {
         let numbersBefore = numbers
         for move in moves { numbers.move(from: move.from, to: move.to) }
         if numbers != numbersBefore { pageNumbers = numbers }
+        var preferred = editions
+        let preferredBefore = preferred
+        for move in moves { preferred.move(from: move.from, to: move.to) }
+        if preferred != preferredBefore { editions = preferred }
+        var books = BookRecords.current()
+        let booksBefore = books
+        for move in moves { books.move(from: move.from, to: move.to) }
+        if books != booksBefore { try? books.save() }
+    }
+
+    // MARK: 常用本 (0.28)
+
+    private static var editionsURL: URL { folder.appendingPathComponent("preferred-editions.json") }
+    private static var cachedEditions: PreferredEditions?
+
+    static var editions: PreferredEditions {
+        get {
+            if let cachedEditions { return cachedEditions }
+            let loaded = PreferredEditions.load(from: editionsURL)
+            cachedEditions = loaded
+            return loaded
+        }
+        set {
+            cachedEditions = newValue
+            try? newValue.save(to: editionsURL)
+            NotificationCenter.default.post(name: changed, object: nil)
+        }
+    }
+
+    /// Makes `path` the 常用本 of its book, or stops it being one.
+    static func togglePreferred(_ path: String) {
+        var preferred = editions
+        if preferred.isPreferred(path) { preferred.remove(path) } else { preferred.prefer(path) }
+        editions = preferred
     }
 
     // MARK: Printed page numbers (0.27)

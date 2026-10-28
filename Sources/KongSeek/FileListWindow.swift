@@ -405,6 +405,11 @@ struct FileListView: View {
             .contextMenu(forSelectionType: String.self) { ids in
                 Button("打开") { model.open(ids) }
                 Button("在访达中显示") { model.reveal(ids) }
+                if ids.count == 1, let id = ids.first {
+                    Divider()
+                    Button("补全书目信息…") { BookLookupWindowController.shared.present(path: id) }
+                    Button(Records.editions.isPreferred(id) ? String("取消常用本") : String("设为常用本")) { Records.togglePreferred(id) }
+                }
             } primaryAction: { ids in
                 model.open(ids)
             }

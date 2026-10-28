@@ -180,6 +180,17 @@ final class ManuscriptCheckModel: ObservableObject {
     }
 
     /// The quotation as the source writes it (0.26).
+    /// Makes the source the 常用本 of its book, or stops it being one (0.28). Rows already
+    /// checked keep their result; 重查 picks the preferred edition first.
+    func togglePreferred(_ row: Row) {
+        guard let best = row.best else { return }
+        Records.togglePreferred(best.path)
+        objectWillChange.send()
+        status = Records.editions.isPreferred(best.path)
+            ? "已把“\(best.title)”设为常用本：之后核对的引文优先取这一版本（已核对的可点“重查”）。"
+            : "已取消“\(best.title)”的常用本。"
+    }
+
     /// Asks which printed page this PDF page is (0.27); the book's other rows follow.
     func setPrintedPage(_ row: Row) {
         guard let best = row.best, let page = best.page, best.unit == "页" else { return }
@@ -322,11 +333,22 @@ struct ManuscriptCheckView: View {
                 Spacer()
                 if row.best != nil {
                     Button("打开到此处") { model.open(row) }.controlSize(.small)
-                    if row.best?.unit == "页", row.best?.page != nil {
-                        Button("页码…") { model.setPrintedPage(row) }.controlSize(.small)
-                            .help("这一页在书上印的是第几页？设一次，这本书以后的出处都按书上的页码")
-                    }
                     Button("拷贝出处") { model.copyReference(row) }.controlSize(.small)
+                    if let best = row.best {
+                        Menu("更多") {
+                            if best.unit == "页", best.page != nil {
+                                Button("设置书上页码…") { model.setPrintedPage(row) }
+                            }
+                            Button(Records.editions.isPreferred(best.path) ? String("取消常用本") : String("设为常用本（同书多个版本时排在最前）")) {
+                                model.togglePreferred(row)
+                            }
+                            if best.book != nil {
+                                Button("补全书目信息…") { BookLookupWindowController.shared.present(path: best.path) }
+                            }
+                        }
+                        .controlSize(.small)
+                        .fixedSize()
+                    }
                 }
                 if row.state == .done { Button("重查") { model.recheck(row) }.controlSize(.small) }
             }

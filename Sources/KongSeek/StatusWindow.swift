@@ -39,17 +39,88 @@ final class StatusModel: ObservableObject {
         self.diagnosticText = diagnosticText
     }
 
+    private var spotlightToken = 0
+
     func refresh() {
         items = report()
         copied = false
         cloud = "正在统计…"
+        spotlightToken += 1
+        let token = spotlightToken
         service.fileEntries(under: nil, minimumSize: 1) { [weak self] entries in
+            self?.checkSpotlight(entries, token: token)
             let cloudOnly = entries.filter { !$0.isLocal }
             let size = cloudOnly.reduce(Int64(0)) { $0 + $1.size }
             self?.cloud = cloudOnly.isEmpty
                 ? "索引中的文件都在本机。"
                 : "\(cloudOnly.count.formatted()) 个文件只在 iCloud 中（共 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))），未下载到本机：按名称可以搜到，但全文搜索和文字识别读不到它们。"
         }
+    }
+
+    /// 全文搜不到的原因 (0.28): whether Spotlight indexes each searched folder, from a
+    /// sample of its documents, and whether indexing is on for their disks.
+    private func checkSpotlight(_ entries: [FileEntry], token: Int) {
+        let roots = NameIndex.effectiveRoots(Preferences.roots, rules: Preferences.rules)
+            .filter { !$0.hasPrefix("/System") && !$0.hasSuffix("/Applications") }
+        let samples = SpotlightCoverage.samples(roots: roots, files: entries.map { (path: $0.path, isLocal: $0.isLocal) })
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var found: [HealthItem] = []
+            let group = "全文搜索"
+            var volumes: [String: Bool?] = [:]
+            var unindexed: [String] = []
+            var checked = 0
+            for root in roots {
+                guard let files = samples[root], !files.isEmpty else { continue }
+                let output = StatusModel.run("/usr/bin/mdls", ["-raw", "-name", "kMDItemFSName"] + files)
+                let flags = SpotlightCoverage.indexed(mdlsOutput: output, count: files.count)
+                checked += 1
+                let shown = (root as NSString).abbreviatingWithTildeInPath
+                switch SpotlightCoverage.verdict(flags) {
+                case .indexed:
+                    break
+                case .partly(let known, let total):
+                    found.append(HealthItem(group, "“\(shown)”只有部分文件在 Spotlight 索引中", "抽查 \(total) 个文档，\(known) 个已建索引；可能刚加进来、Spotlight 还在建索引。过一阵再看；若一直如此，见下方说明。", .info))
+                case .notIndexed:
+                    unindexed.append(shown)
+                }
+                let volume = (try? URL(fileURLWithPath: root).resourceValues(forKeys: [.volumeURLKey]))?.volume?.path ?? "/"
+                if volumes[volume] == nil {
+                    volumes[volume] = SpotlightCoverage.indexingEnabled(mdutilOutput: StatusModel.run("/usr/bin/mdutil", ["-s", volume]))
+                }
+            }
+            let settings: (title: String, run: () -> Void) = ("打开 Spotlight 设置", {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Spotlight-Settings.extension")!)
+            })
+            for (volume, enabled) in volumes where enabled == false {
+                found.append(HealthItem(group, "磁盘“\(volume)”关闭了 Spotlight 索引", "这个磁盘上文件的正文搜不到。可在“终端”中执行 sudo mdutil -i on \(volume) 重新打开（需要管理员密码）。", .warning))
+            }
+            if !unindexed.isEmpty {
+                found.append(HealthItem(group, unindexed.joined(separator: "、") + " 不在 Spotlight 索引中",
+                                        "按名称能搜到，但全文搜索、引文查证、出处汇编都读不到这里的正文。通常是在 系统设置 › Spotlight › 搜索隐私 中被排除了：从列表中移除后，Spotlight 会重新建索引（可能要几小时）。",
+                                        .warning, action: settings))
+            }
+            if found.isEmpty && checked > 0 {
+                found.append(HealthItem(group, "索引的 \(checked) 个文件夹都在 Spotlight 索引中", "抽查各文件夹中的文档，Spotlight 都已建索引。扫描版 PDF 的正文还要先“文字识别”；只在 iCloud 中的文件见下方。", .ok))
+            }
+            DispatchQueue.main.async {
+                guard let self, token == self.spotlightToken else { return }
+                self.items += found
+            }
+        }
+    }
+
+    /// Output of a short command.
+    private static func run(_ executable: String, _ arguments: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
     }
 
     var sections: [String] {

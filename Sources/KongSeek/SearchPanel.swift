@@ -1357,7 +1357,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         NSPasteboard.general.setString(result.text, forType: .string)
         var message = "已拷贝参考文献：" + result.text
         if let source = info.titleSource { message += "（书名取自\(source)）" }
-        if !result.missing.isEmpty { message += "（缺" + result.missing.joined(separator: "、") + "，请补全）" }
+        if !result.missing.isEmpty { message += "（缺" + result.missing.joined(separator: "、") + "；⌘K › 补全书目信息 可联网查找）" }
         if !result.notes.isEmpty { message += "（" + result.notes.joined(separator: "；") + "）" }
         return message
     }
@@ -1458,6 +1458,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if DuplicateFinder.bookExtensions.contains((item.path as NSString).pathExtension.lowercased()) {
             add("拷贝为参考文献（GB/T 7714）") { [weak self] in
                 self?.statusLabel.stringValue = SearchWindowController.copyReference(for: item.path)
+            }
+            add("补全书目信息（出版地、出版社、年份）…") { [weak self] in
+                self?.hide()
+                BookLookupWindowController.shared.present(path: item.path)
+            }
+            let preferred = Records.editions.isPreferred(item.path)
+            add(preferred ? "取消常用本" : "设为常用本（同书多个版本时，查证与汇编中排在最前）") { [weak self] in
+                Records.togglePreferred(item.path)
+                self?.statusLabel.stringValue = preferred ? "已取消常用本：\(item.name)" : "已设为常用本：\(item.name)"
             }
         }
         if !item.isFolder && ["pptx", "pdf", "docx"].contains(ext) {

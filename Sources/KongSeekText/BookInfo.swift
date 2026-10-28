@@ -14,7 +14,19 @@ public struct BookInfo: Equatable {
     /// Where the title came from when it was not the file name ("EPUB 书目信息", "PDF 文档信息").
     public var titleSource: String?
 
-    public static func read(_ url: URL, readMetadata: Bool = true) -> BookInfo {
+    /// The book's details, with those the reader confirmed in 补全书目信息 (0.28) in place
+    /// of what the file says.
+    public static func read(_ url: URL, readMetadata: Bool = true, records: BookRecords? = nil) -> BookInfo {
+        var info = readFile(url, readMetadata: readMetadata)
+        let records = records ?? BookRecords.current()
+        if records.record(for: url.path) != nil {
+            info.name = records.apply(to: info.name, path: url.path)
+            info.titleSource = "已补全的书目信息"
+        }
+        return info
+    }
+
+    static func readFile(_ url: URL, readMetadata: Bool) -> BookInfo {
         let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
         let parsed = EbookName.parse(stem)
         var info = BookInfo(name: parsed ?? EbookName(title: stem), fromFileName: parsed != nil, titleSource: nil)

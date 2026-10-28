@@ -136,6 +136,14 @@ final class QuoteFinderModel: ObservableObject {
         status = "已拷贝按原文改正的引文：\(corrected)"
     }
 
+    /// Makes the result's file the 常用本 of its book, or stops it being one (0.28).
+    func togglePreferred(_ result: Result) {
+        Records.togglePreferred(result.path)
+        let preferred = Records.editions.isPreferred(result.path)
+        results = Records.editions.ordered(results, path: \.path, exact: \.exact)
+        status = preferred ? "已把“\(result.title)”设为常用本：以后查证时排在同书其他版本之前。" : "已取消“\(result.title)”的常用本。"
+    }
+
     /// Shows a message in the status line.
     func note(_ text: String) { status = text }
 
@@ -177,19 +185,32 @@ struct QuoteFinderView: View {
                             .padding(.horizontal, 5)
                             .background(RoundedRectangle(cornerRadius: 4).fill((result.exact ? Color.green : Color.orange).opacity(0.18)))
                             .foregroundColor(result.exact ? .green : .orange)
+                        if Records.editions.isPreferred(result.path) {
+                            Text("常用本").font(.caption2.weight(.semibold)).foregroundColor(.accentColor)
+                        }
                         Text(result.title).lineLimit(1).truncationMode(.middle)
                         if let place = result.placeDescription { Text(place).foregroundColor(.accentColor) }
                         Spacer()
                         Button("打开到此处") { model.open(result) }.controlSize(.small)
-                        if result.unit == "页", result.page != nil {
-                            Button("页码…") { model.setPrintedPage(result) }.controlSize(.small)
-                                .help("这一页在书上印的是第几页？设一次，这本书以后的出处都按书上的页码")
-                        }
                         Button("拷贝出处") { model.copy(result, withQuote: false) }.controlSize(.small)
-                        Button("拷贝原文和出处") { model.copy(result, withQuote: true) }.controlSize(.small)
-                        if KongReviewLink.isInstalled {
-                            Button("送到 KongReview") { model.sendToKongReview(result) }.controlSize(.small)
+                        // Less frequent actions in one menu (0.28), so the row fits a narrow window.
+                        Menu("更多") {
+                            Button("拷贝原文和出处") { model.copy(result, withQuote: true) }
+                            if result.unit == "页", result.page != nil {
+                                Button("设置书上页码…") { model.setPrintedPage(result) }
+                            }
+                            Button(Records.editions.isPreferred(result.path) ? String("取消常用本") : String("设为常用本（同书多个版本时排在最前）")) {
+                                model.togglePreferred(result)
+                            }
+                            if result.book != nil {
+                                Button("补全书目信息…") { BookLookupWindowController.shared.present(path: result.path) }
+                            }
+                            if KongReviewLink.isInstalled {
+                                Button("送到 KongReview") { model.sendToKongReview(result) }
+                            }
                         }
+                        .controlSize(.small)
+                        .fixedSize()
                     }
                     Text(result.excerpt).font(.callout).foregroundColor(.secondary).lineLimit(3)
                     if let differences = model.differences(result) {
@@ -361,7 +382,9 @@ final class QuoteLookup {
             let sorted = found.sorted { $0.score != $1.score ? $0.score > $1.score : $0.title < $1.title }
             DispatchQueue.main.async {
                 guard let self, current == self.token else { return }
-                completion(Outcome(results: sorted, candidates: candidates.count, inCloud: inCloud))
+                // Exact matches first, and among equals the reader's 常用本 (0.28).
+                let ordered = Records.editions.ordered(sorted, path: \.path, exact: \.exact)
+                completion(Outcome(results: ordered, candidates: candidates.count, inCloud: inCloud))
             }
         }
     }
