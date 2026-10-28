@@ -6,8 +6,21 @@ import KongSeekCore
 enum Records {
     static let changed = Notification.Name("KongSeekRecordsChanged")
 
-    private static var folder: URL {
+    static var folder: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("KongSeek")
+    }
+
+    /// Records are written here in order, off the main thread (0.44), so changing a note or
+    /// a book's details does not wait for the disk; `flush()` at quit waits for them.
+    private static let writeQueue = DispatchQueue(label: "KongSeek.records", qos: .utility)
+
+    private static func write(_ url: URL, _ save: @escaping (URL) throws -> Void) {
+        writeQueue.async { try? save(url) }
+    }
+
+    /// Waits until every record change is on disk.
+    static func flush() {
+        writeQueue.sync {}
     }
 
     // MARK: Reading progress
@@ -48,7 +61,7 @@ enum Records {
         }
         set {
             cachedLists = newValue
-            try? newValue.save(to: listsURL)
+            write(listsURL) { try newValue.save(to: $0) }
             NotificationCenter.default.post(name: changed, object: nil)
         }
     }
@@ -95,7 +108,7 @@ enum Records {
         }
         set {
             cachedNotes = newValue
-            try? newValue.save(to: notesURL)
+            write(notesURL) { try newValue.save(to: $0) }
             NotificationCenter.default.post(name: changed, object: nil)
         }
     }
@@ -104,7 +117,6 @@ enum Records {
 
     private static var choicesURL: URL { folder.appendingPathComponent("query-choices.json") }
     private static var cachedChoices: QueryChoices?
-    private static let choicesQueue = DispatchQueue(label: "KongSeek.query-choices", qos: .utility)
 
     static var queryChoices: QueryChoices {
         get {
@@ -115,8 +127,7 @@ enum Records {
         }
         set {
             cachedChoices = newValue
-            let url = choicesURL
-            choicesQueue.async { try? newValue.save(to: url) }
+            write(choicesURL) { try newValue.save(to: $0) }
         }
     }
 
@@ -141,7 +152,7 @@ enum Records {
         }
         set {
             cachedEditions = newValue
-            try? newValue.save(to: editionsURL)
+            write(editionsURL) { try newValue.save(to: $0) }
             NotificationCenter.default.post(name: changed, object: nil)
         }
     }
@@ -173,7 +184,7 @@ enum Records {
             pageNumbersLock.lock()
             cachedPageNumbers = newValue
             pageNumbersLock.unlock()
-            try? newValue.save(to: pageNumbersURL)
+            write(pageNumbersURL) { try newValue.save(to: $0) }
             NotificationCenter.default.post(name: changed, object: nil)
         }
     }
@@ -193,7 +204,7 @@ enum Records {
         }
         set {
             cachedTrash = newValue
-            try? newValue.save(to: trashURL)
+            write(trashURL) { try newValue.save(to: $0) }
             NotificationCenter.default.post(name: changed, object: nil)
         }
     }

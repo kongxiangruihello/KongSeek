@@ -67,10 +67,7 @@ public struct BookRecords: Codable, Equatable, Sendable {
     }
 
     public static func load(from url: URL) -> BookRecords {
-        guard let data = try? Data(contentsOf: url) else { return BookRecords() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(BookRecords.self, from: data)) ?? BookRecords()
+        RecordFile.load(BookRecords.self, from: url, empty: BookRecords())
     }
 
     public func save(to url: URL = BookRecords.defaultURL) throws {

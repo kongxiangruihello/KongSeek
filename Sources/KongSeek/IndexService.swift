@@ -100,6 +100,8 @@ final class IndexService {
 
     // Only touched on main.
     private var searchToken = 0
+    /// The newest search asked for, read on `queue` to skip searches typed past (0.44).
+    private let latestSearch = LockedCounter()
     private(set) var state: IndexState = .loading
     /// While building: about how many items the finished index will have (the previous
     /// index's count), for a progress figure; 0 when unknown.
@@ -122,7 +124,10 @@ final class IndexService {
     /// Loads the saved index if it still matches the settings; otherwise builds one.
     func start() {
         queue.async { [self] in
-            if let saved = try? NameIndex.load(from: storeURL), isUsable(saved) {
+            let loadStart = CFAbsoluteTimeGetCurrent()
+            let loaded = try? NameIndex.load(from: storeURL)
+            if let loaded { Self.recordTiming("载入索引", since: loadStart, detail: "\(loaded.entryCount) 项") }
+            if let saved = loaded, isUsable(saved) {
                 install(saved, watchingFrom: saved.lastEventID)
             } else {
                 // An index from an earlier version (or with stale event ids) for the same
@@ -226,7 +231,9 @@ final class IndexService {
         saveItem?.cancel()
         saveItem = nil
         guard let index else { return }
+        let start = CFAbsoluteTimeGetCurrent()
         try? index.save(to: storeURL)
+        Self.recordTiming("保存索引", since: start, detail: "\(index.entryCount) 项")
     }
 
     private func publishReady() {
@@ -249,6 +256,7 @@ final class IndexService {
     func search(_ text: String, precision: MatchPrecision, limit: Int = 200, completion: @escaping (SearchOutcome) -> Void) {
         searchToken += 1
         let token = searchToken
+        latestSearch.set(token)
         let counts = Preferences.openCounts
         let opened = Preferences.lastOpened
         let archives = Preferences.archiveSearch ? self.archives : nil
@@ -259,7 +267,8 @@ final class IndexService {
         let notes = Records.notes
         let jump = FolderJump.query(text)
         queue.async { [weak self] in
-            guard let self else { return }
+            // Typed on since (0.44): a newer search is waiting, so this one is not run at all.
+            guard let self, self.latestSearch.value == token else { return }
             let started = CFAbsoluteTimeGetCurrent()
             let trimmed = (jump ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
             var outcome = trimmed.isEmpty
@@ -283,8 +292,12 @@ final class IndexService {
             if mergeCopies, !trimmed.isEmpty, !SearchQuery(trimmed).advanced.dupe {
                 outcome.items = Self.mergingCopies(outcome.items)
             }
+            let annotateStart = CFAbsoluteTimeGetCurrent()
             Self.annotate(&outcome.items, notes: notes)
-            if !trimmed.isEmpty { Self.recordTiming("名称搜索", since: started, detail: trimmed) }
+            if !trimmed.isEmpty {
+                Self.recordTiming("书目信息", since: annotateStart, detail: "\(outcome.items.count) 个结果")
+                Self.recordTiming("名称搜索", since: started, detail: trimmed)
+            }
             DispatchQueue.main.async {
                 guard token == self.searchToken else { return }
                 completion(outcome)
@@ -297,10 +310,11 @@ final class IndexService {
     func browse(folder: String, filter: String, limit: Int = 500, completion: @escaping (SearchOutcome) -> Void) {
         searchToken += 1
         let token = searchToken
+        latestSearch.set(token)
         let counts = Preferences.openCounts
         let notes = Records.notes
         queue.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.latestSearch.value == token else { return }
             var outcome = SearchOutcome()
             outcome.browsedFolder = folder
             if let index = self.index, let kids = index.childIDs(ofFolder: folder) {
@@ -739,7 +753,7 @@ extension IndexService {
     // MARK: 性能自检 (0.42)
 
     private static let timingLock = NSLock()
-    private static var timingLog = TimingLog()
+    private static var timingLog = TimingLog(capacity: 300)
 
     static func recordTiming(_ label: String, since start: CFAbsoluteTime, detail: String = "") {
         let milliseconds = (CFAbsoluteTimeGetCurrent() - start) * 1000
@@ -926,5 +940,23 @@ enum ResultOrder: String, CaseIterable {
         case .name: return "名称"
         case .hits: return "命中次数（全文）"
         }
+    }
+}
+
+/// An Int read and written from several threads.
+final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ newValue: Int) {
+        lock.lock()
+        stored = newValue
+        lock.unlock()
     }
 }

@@ -65,10 +65,7 @@ public struct QueryChoices: Codable, Equatable, Sendable {
     }
 
     public static func load(from url: URL) -> QueryChoices {
-        guard let data = try? Data(contentsOf: url) else { return QueryChoices() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(QueryChoices.self, from: data)) ?? QueryChoices()
+        RecordFile.load(QueryChoices.self, from: url, empty: QueryChoices())
     }
 
     public func save(to url: URL) throws {
@@ -207,10 +204,7 @@ public struct FileNotes: Codable, Equatable, Sendable {
     }
 
     public static func load(from url: URL) -> FileNotes {
-        guard let data = try? Data(contentsOf: url) else { return FileNotes() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(FileNotes.self, from: data)) ?? FileNotes()
+        RecordFile.load(FileNotes.self, from: url, empty: FileNotes())
     }
 
     public func save(to url: URL) throws {

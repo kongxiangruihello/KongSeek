@@ -21,16 +21,20 @@ final class BookTextModel: ObservableObject {
 
     func reload() {
         let books = BookTextService.shared
+        // The service's state is read here, on main; only the index (locked) is read in the background.
+        let uncovered = books.uncoveredFolderCount
+        let running = books.running
+        let progress = books.progress
+        let index = books.index
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let index = books.index
             let numbers = index.summary
             let size = index.diskSize
             let found = index.problems.map { Problem(path: $0.path, problem: $0.problem) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 var text = Preferences.bookTextIndex ? "已收录 \(numbers.books) 本，约 \(max(1, numbers.characters / 10_000)) 万字，占用 \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))。" : "正文索引已关闭（设置 › 搜索）。"
-                if books.uncoveredFolderCount > 0 { text += "其中包括 Spotlight 未收录的 \(books.uncoveredFolderCount) 个文件夹中的文稿。" }
-                if books.running { text += "正在读取 \(books.progress.done) / \(books.progress.total)。" }
+                if uncovered > 0 { text += "其中包括 Spotlight 未收录的 \(uncovered) 个文件夹中的文稿。" }
+                if running { text += "正在读取 \(progress.done) / \(progress.total)。" }
                 self.summary = text
                 self.problems = found
             }

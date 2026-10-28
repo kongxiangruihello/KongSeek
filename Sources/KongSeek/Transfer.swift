@@ -19,6 +19,7 @@ enum SettingsTransfer {
     /// KongSeek's records to carry (0.29): files in Application Support, and the reading
     /// progress, which lives in the settings as data.
     static var currentRecords: [String: Data] {
+        Records.flush()
         var records: [String: Data] = [:]
         for name in SettingsArchive.recordNames where name != "reading-log.json" {
             if let data = try? Data(contentsOf: recordsFolder.appendingPathComponent(name)) { records[name] = data }
@@ -28,6 +29,7 @@ enum SettingsTransfer {
     }
 
     private static func restore(_ records: [String: Data]) {
+        Records.flush()
         try? FileManager.default.createDirectory(at: recordsFolder, withIntermediateDirectories: true)
         for (name, data) in records {
             if name == "reading-log.json" {
@@ -92,6 +94,60 @@ enum SettingsTransfer {
         restore(archive.restoredRecords(home: NSHomeDirectory()))
         relaunch()
     }
+
+    /// 从记录备份恢复 (0.44): puts back the records of a day chosen from 记录备份.
+    static func restoreBackup() {
+        Records.flush()
+        let backups = RecordBackup.backups(in: recordsFolder)
+        NSApp.activate(ignoringOtherApps: true)
+        guard !backups.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "还没有记录备份"
+            alert.informativeText = "KongSeek 每天自动备份一次备注、补全的书目、书上页码等记录，保留最近 14 份。"
+            alert.runModal()
+            return
+        }
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
+        for backup in backups {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: backup.path))?.filter { !$0.hasPrefix(".") } ?? []
+            popup.addItem(withTitle: "\(backup.lastPathComponent)（\(names.count) 份记录）")
+        }
+        let alert = NSAlert()
+        alert.messageText = "从记录备份恢复？"
+        alert.informativeText = "把所选那天的备注、补全的书目、书上页码、常用本、文件清单、废纸篓记录、引文查证历史和文本片段放回原处。"
+            + "现在的记录会先另存一份（名为“…恢复前…”，也在记录备份中），之后 KongSeek 会重新打开。"
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "恢复")
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "在访达中查看")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            do {
+                try RecordBackup.restore(backups[popup.indexOfSelectedItem], into: recordsFolder)
+                relaunch()
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        case .alertThirdButtonReturn:
+            NSWorkspace.shared.activateFileViewerSelecting([backups[popup.indexOfSelectedItem]])
+        default:
+            break
+        }
+    }
+
+    /// Makes today's backup of the records, if not made yet (on a background queue).
+    static func backUpRecordsIfDue() {
+        let folder = recordsFolder
+        DispatchQueue.global(qos: .utility).async {
+            Records.flush()
+            _ = try? RecordBackup.backUpIfDue(from: folder)
+        }
+    }
+
+    /// Records that could not be read and were moved aside (0.44).
+    static var damagedRecords: [URL] { RecordFile.damagedFiles(in: recordsFolder) }
+
+    static var lastRecordBackup: String? { RecordBackup.backups(in: recordsFolder).first?.lastPathComponent }
 
     /// Starts a fresh copy of KongSeek a second after this one quits.
     static func relaunch() {
@@ -167,18 +223,24 @@ enum DiagnosticsBundle {
     }
 
     private static func recentCrashReports(limit: Int) -> [URL] {
+        appReports().prefix(limit).map { $0.url }
+    }
+
+    /// What macOS wrote about KongSeek in DiagnosticReports (crashes, hangs, CPU or disk
+    /// overuse), newest first.
+    static func appReports() -> [(url: URL, report: CrashReport)] {
         let fm = FileManager.default
         let folders = [fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/DiagnosticReports"),
                        URL(fileURLWithPath: "/Library/Logs/DiagnosticReports")]
-        var found: [(URL, Date)] = []
+        var found: [(url: URL, report: CrashReport)] = []
         for folder in folders {
             guard let names = try? fm.contentsOfDirectory(atPath: folder.path) else { continue }
-            for name in names where name.hasPrefix("KongSeek") {
+            for name in names where CrashReport.isAboutApp(name) {
                 let url = folder.appendingPathComponent(name)
                 let date = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
-                found.append((url, date))
+                found.append((url, CrashReport(name: name, date: date)))
             }
         }
-        return found.sorted { $0.1 > $1.1 }.prefix(limit).map(\.0)
+        return found.sorted { $0.report.date > $1.report.date }
     }
 }

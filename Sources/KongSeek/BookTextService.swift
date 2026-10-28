@@ -89,6 +89,7 @@ final class BookTextService {
         queue.async { [weak self] in
             index.removeAll()
             self?.coverage = nil
+            DispatchQueue.main.async { self?.uncoveredFolderCount = 0 }
             DispatchQueue.main.async {
                 self?.running = false
                 self?.refresh(service: service)
@@ -168,6 +169,8 @@ final class BookTextService {
         }
         let uncovered = Set(known.filter { !$0.value }.map { $0.key })
         coverage = (Date(), uncovered)
+        let count = uncovered.count
+        DispatchQueue.main.async { [weak self] in self?.uncoveredFolderCount = count }
         return uncovered
     }
 
@@ -185,7 +188,9 @@ final class BookTextService {
     }
 
     /// Folders whose documents KongSeek reads itself, for 状态与诊断.
-    var uncoveredFolderCount: Int { coverage?.uncovered.count ?? 0 }
+    /// How many folders Spotlight does not index hold documents read here; main thread
+    /// (0.44: copied from `coverage`, which belongs to the queue).
+    private(set) var uncoveredFolderCount = 0
 
     private func read(_ entry: FileEntry) {
         let url = URL(fileURLWithPath: entry.path)
@@ -252,6 +257,11 @@ final class BookTextService {
     /// search and 引文查证. Safe from any thread.
     func search(_ words: [[String]], limit: Int = 300, accept: (String) -> Bool = { _ in true }) -> [BookTextIndex.Hit] {
         guard Preferences.bookTextIndex else { return [] }
+        let start = CFAbsoluteTimeGetCurrent()
+        defer {
+            IndexService.recordTiming("正文索引搜索", since: start,
+                                      detail: words.compactMap(\.first).joined(separator: " ") + "，\(index.summary.books) 本")
+        }
         return index.search(words, limit: limit, accept: accept)
     }
 }

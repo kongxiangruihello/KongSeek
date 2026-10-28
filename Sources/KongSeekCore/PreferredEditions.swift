@@ -58,8 +58,7 @@ public struct PreferredEditions: Codable, Equatable, Sendable {
     // MARK: Storage
 
     public static func load(from url: URL) -> PreferredEditions {
-        guard let data = try? Data(contentsOf: url) else { return PreferredEditions() }
-        return (try? JSONDecoder().decode(PreferredEditions.self, from: data)) ?? PreferredEditions()
+        RecordFile.load(PreferredEditions.self, from: url, iso8601Dates: false, empty: PreferredEditions())
     }
 
     public func save(to url: URL) throws {

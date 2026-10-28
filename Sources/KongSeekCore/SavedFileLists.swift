@@ -76,10 +76,7 @@ public struct SavedFileLists: Codable, Equatable, Sendable {
     // MARK: Storage
 
     public static func load(from url: URL) -> SavedFileLists {
-        guard let data = try? Data(contentsOf: url) else { return SavedFileLists() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(SavedFileLists.self, from: data)) ?? SavedFileLists()
+        RecordFile.load(SavedFileLists.self, from: url, empty: SavedFileLists())
     }
 
     public func save(to url: URL) throws {

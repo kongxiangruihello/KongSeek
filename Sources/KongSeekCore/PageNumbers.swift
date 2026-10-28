@@ -68,8 +68,7 @@ public struct PageNumbers: Codable, Equatable, Sendable {
     // MARK: Storage
 
     public static func load(from url: URL) -> PageNumbers {
-        guard let data = try? Data(contentsOf: url) else { return PageNumbers() }
-        return (try? JSONDecoder().decode(PageNumbers.self, from: data)) ?? PageNumbers()
+        RecordFile.load(PageNumbers.self, from: url, iso8601Dates: false, empty: PageNumbers())
     }
 
     public func save(to url: URL) throws {

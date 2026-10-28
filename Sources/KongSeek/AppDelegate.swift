@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         StandardKeys.install()
+        HangMonitor.shared.start()
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         ocr = OCRService(directory: support.appendingPathComponent("KongSeek/OCR"))
@@ -132,6 +133,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         setUpStatusItem()
         service.start()
+        // 记录备份 (0.44): once a day, checked at launch and every few hours.
+        SettingsTransfer.backUpRecordsIfDue()
+        let backupTimer = Timer(timeInterval: 4 * 3600, repeats: true) { _ in SettingsTransfer.backUpRecordsIfDue() }
+        RunLoop.main.add(backupTimer, forMode: .common)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in self?.checkForCrashes() }
         if !Preferences.hasLaunchedBefore {
             Preferences.hasLaunchedBefore = true
             searchWindow.show()
@@ -141,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         clipboardMonitor?.stop()
         clipboardHistory?.flush()
+        Records.flush()
         service.saveNow()
     }
 
@@ -614,16 +621,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 性能自检 (0.42): how long the last searches took.
         let timings = IndexService.timings
-        let labels = ["名称搜索", "同义词扩展", "书目筛选", "全文搜索（Spotlight）", "邻近核对", "命中统计", "正文索引读取"]
+        let labels = ["载入索引", "名称搜索", "书目信息", "同义词扩展", "书目筛选", "全文搜索（Spotlight）", "正文索引搜索", "邻近核对", "命中统计",
+                      "正文索引读取", "保存索引"]
         var anyTiming = false
         for label in labels {
             guard let summary = timings.summary(label) else { continue }
             anyTiming = true
-            let slow: Double = label == "名称搜索" ? 300 : (label == "全文搜索（Spotlight）" ? 5_000 : 60_000)
+            let slow: Double
+            switch label {
+            case "名称搜索", "书目信息": slow = 300
+            case "全文搜索（Spotlight）", "正文索引搜索", "保存索引": slow = 5_000
+            case "载入索引": slow = 10_000
+            default: slow = 60_000
+            }
             items.append(HealthItem("性能", label, summary, timings.slowest(label) > slow ? .warning : .ok))
         }
         if !anyTiming {
             items.append(HealthItem("性能", "还没有记录", "搜索几次后，这里列出各项用时（名称搜索、同义词、书目筛选、全文搜索等）", .info))
+        }
+        // 卡顿记录 (0.44).
+        if let hitches = HangMonitor.shared.hitches.summary() {
+            items.append(HealthItem("性能", "界面卡顿", hitches + "；界面停住半秒以上即记一次", .warning))
+        } else {
+            items.append(HealthItem("性能", "界面卡顿", "最近 7 天没有（界面停住半秒以上会记在这里）", .ok))
+        }
+        // 异常退出 (0.44): what macOS recorded in the last 7 days.
+        let weekAgo = Date().addingTimeInterval(-7 * 86_400)
+        let reports = CrashReport.newer(DiagnosticsBundle.appReports().map { $0.report }, than: weekAgo)
+        if let latest = reports.first {
+            let kinds = Dictionary(grouping: reports, by: { $0.kind }).map { "\($0.key) \($0.value.count) 次" }.sorted().joined(separator: "、")
+            items.append(HealthItem("稳定性", "最近 7 天：" + kinds, "最近一次 \(time(latest.date))；导出诊断包会附上这些报告", .warning,
+                                    action: ("导出诊断包…", { [weak self] in self?.exportDiagnostics() })))
+        } else {
+            items.append(HealthItem("稳定性", "最近 7 天没有异常退出", "系统没有记下 KongSeek 的崩溃、无响应或资源占用报告", .ok))
+        }
+        // 记录防损坏与备份 (0.44).
+        let damaged = SettingsTransfer.damagedRecords
+        if !damaged.isEmpty {
+            items.append(HealthItem("稳定性", "\(damaged.count) 份记录读不出，已另存", damaged.map(\.lastPathComponent).joined(separator: "、")
+                                    + "。原文件改名保留，未被覆盖；可从记录备份恢复，或把文件发给开发者", .warning,
+                                    action: ("从备份恢复…", { SettingsTransfer.restoreBackup() })))
+        }
+        if let last = SettingsTransfer.lastRecordBackup {
+            items.append(HealthItem("稳定性", "记录备份", "最近一次 \(last)；每天自动备份备注、补全的书目、书上页码、常用本等，保留 14 份", .ok,
+                                    action: ("恢复…", { SettingsTransfer.restoreBackup() })))
         }
 
         // KongSeek's own text index (0.37).
@@ -840,6 +881,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .bookText: openBookText()
         case .notes: openNotes()
         }
+    }
+
+    /// 异常退出提示 (0.44): when macOS wrote a new crash or hang report about KongSeek since
+    /// the last check, says so once and offers the diagnostics package.
+    private func checkForCrashes() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let reports = DiagnosticsBundle.appReports().map { $0.report }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let since = Preferences.lastCrashCheck
+                if let newest = reports.first?.date { Preferences.lastCrashCheck = max(newest, since ?? .distantPast) }
+                // The first check (just updated to 0.44) only notes where things stand.
+                guard let since else {
+                    if reports.isEmpty { Preferences.lastCrashCheck = Date() }
+                    return
+                }
+                let fresh = CrashReport.newer(reports, than: since).filter { $0.kind == "异常退出" || $0.kind == "无响应" }
+                guard let latest = fresh.first else { return }
+                let alert = NSAlert()
+                alert.messageText = latest.kind == "无响应" ? "KongSeek 上次曾长时间无响应" : "KongSeek 上次异常退出"
+                alert.informativeText = "时间：\(latest.date.formatted(date: .abbreviated, time: .shortened))"
+                    + (fresh.count > 1 ? "（此后共 \(fresh.count) 次）" : "") + "。\n\n"
+                    + "可以导出诊断包（含系统记下的报告、更新与构建日志，不含片段和剪贴板内容）发给开发者，便于找出原因。以后也可在 状态与诊断 中查看。"
+                alert.addButton(withTitle: "导出诊断包…")
+                alert.addButton(withTitle: "以后再说")
+                NSApp.activate(ignoringOtherApps: true)
+                if alert.runModal() == .alertFirstButtonReturn { self.exportDiagnostics() }
+            }
+        }
+    }
+
+    private func exportDiagnostics() {
+        DiagnosticsBundle.export(report: diagnosticReport(), updateLog: updater.logURL, sourceRoot: updater.state.sourceRoot)
     }
 
     /// 正文索引管理 (0.43).

@@ -101,10 +101,7 @@ public struct TrashLog: Codable, Equatable, Sendable {
     // MARK: Storage
 
     public static func load(from url: URL) -> TrashLog {
-        guard let data = try? Data(contentsOf: url) else { return TrashLog() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(TrashLog.self, from: data)) ?? TrashLog()
+        RecordFile.load(TrashLog.self, from: url, empty: TrashLog())
     }
 
     public func save(to url: URL) throws {

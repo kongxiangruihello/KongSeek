@@ -104,6 +104,12 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "autocomplete") }
     }
 
+    /// The newest crash report already told about (0.44); nil before the first check.
+    static var lastCrashCheck: Date? {
+        get { defaults.object(forKey: "lastCrashCheck") as? Date }
+        set { defaults.set(newValue, forKey: "lastCrashCheck") }
+    }
+
     /// Folders left out of KongSeek's text index (0.43).
     static var bookTextExcluded: [String] {
         get { defaults.stringArray(forKey: "bookTextExcluded") ?? [] }

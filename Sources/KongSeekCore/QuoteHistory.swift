@@ -66,10 +66,7 @@ public struct QuoteHistory: Codable, Equatable, Sendable {
     // MARK: Storage
 
     public static func load(from url: URL) -> QuoteHistory {
-        guard let data = try? Data(contentsOf: url) else { return QuoteHistory() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(QuoteHistory.self, from: data)) ?? QuoteHistory()
+        RecordFile.load(QuoteHistory.self, from: url, empty: QuoteHistory())
     }
 
     public func save(to url: URL) throws {

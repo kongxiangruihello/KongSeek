@@ -937,6 +937,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     func runSearch() {
         let text = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        HangMonitor.note("搜索：" + text)
         showingRelated = false
         refreshFilterButtons()
         refreshConditionChips()
@@ -2148,6 +2149,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     private func updatePreview() {
         let selected = selectedItem
+        if let selected { HangMonitor.note("预览：" + selected.name) }
         if let findPath = previewFindPath, findPath != selected?.path {
             previewFindPath = nil
             previewFindWords = nil
