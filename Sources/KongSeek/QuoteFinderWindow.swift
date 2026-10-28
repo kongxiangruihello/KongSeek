@@ -37,41 +37,64 @@ final class QuoteFinderModel: ObservableObject {
     @Published var quote = ""
     @Published private(set) var results: [Result] = []
     @Published private(set) var running = false
-    @Published private(set) var status = "粘贴一句引文，点“查证”：在已建立内容索引的文件和识别过的扫描件中找出处。"
+    @Published private(set) var status = "粘贴一句引文，点“查证”：在已建立内容索引的文件和识别过的扫描件中找出处。粘贴含多处引号的一段文字，会逐条查证。"
     @Published private(set) var checked = (done: 0, total: 0)
 
     private let lookup: QuoteLookup
     /// Opens 稿件引文核对 (set by the app delegate).
     var openManuscriptCheck: (() -> Void)?
+    /// Checks each quotation of a pasted passage in 稿件引文核对 (0.32; set by the app delegate).
+    var checkPassage: ((String) -> Void)?
+    /// The quotation last looked up — the words inside the marks when a passage was pasted
+    /// (0.32) — which the results are compared with.
+    private var checkedText = ""
+
+    /// The quotations in the text when it is a passage rather than one quotation (0.32).
+    var passage: [ManuscriptQuotes.Quote] { ManuscriptQuotes.inPassage(quote) }
 
     init(ocr: OCRStore) {
         lookup = QuoteLookup(ocr: ocr)
     }
 
     func run() {
-        let text = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pasted = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A passage (0.32): several quotations go to 稿件引文核对, one at a time;
+        // a single quotation with text around it is looked up by its own words.
+        let quotations = ManuscriptQuotes.inPassage(pasted)
+        if quotations.count >= 2, let check = checkPassage {
+            check(pasted)
+            status = "这段文字中有 \(quotations.count) 条引文，已在“稿件引文核对”窗口中逐条查证。"
+            return
+        }
+        let text = quotations.count == 1 ? quotations[0].text : pasted
+        let lead = quotations.count == 1 ? QuoteFinderModel.onlyInside(text) : ""
         guard QuoteMatcher.normalized(text).count >= 4 else {
             status = "引文太短，至少需要 4 个字。"
             return
         }
+        checkedText = text
         running = true
         results = []
         checked = (0, 0)
-        status = "正在查找含有这句话的文件…"
+        status = lead + "正在查找含有这句话的文件…"
         lookup.run(text, progress: { [weak self] done, total in
             self?.checked = (done, total)
-            if done == 0 { self?.status = "找到 \(total) 个可能的文件，正在逐个核对原文…" }
+            if done == 0 { self?.status = lead + "找到 \(total) 个可能的文件，正在逐个核对原文…" }
         }) { [weak self] outcome in
             guard let self else { return }
             self.running = false
             self.results = outcome.results
             self.guessPages()
             let exact = outcome.results.filter(\.exact).count
-            var text = outcome.results.isEmpty ? "没有找到出处。" : "找到 \(outcome.results.count) 处：完全一致 \(exact) 处，近似 \(outcome.results.count - exact) 处。"
+            var text = lead + (outcome.results.isEmpty ? "没有找到出处。" : "找到 \(outcome.results.count) 处：完全一致 \(exact) 处，近似 \(outcome.results.count - exact) 处。")
             if outcome.inCloud > 0 { text += "另有 \(outcome.inCloud) 个只在 iCloud 中的文件未核对。" }
             if outcome.results.isEmpty { text += "只能查到 Spotlight 已建立内容索引的文件和已识别的扫描件。" }
             self.status = text
         }
+    }
+
+    private static func onlyInside(_ text: String) -> String {
+        "只查引号内的“" + (text.count > 24 ? String(text.prefix(24)) + "…" : text) + "”。"
     }
 
     func stop() {
@@ -86,7 +109,7 @@ final class QuoteFinderModel: ObservableObject {
         let url = URL(fileURLWithPath: result.path)
         switch url.pathExtension.lowercased() {
         case "pdf":
-            PDFOpener.open(url, page: result.page, words: QuoteMatcher.probes(quote, length: 4))
+            PDFOpener.open(url, page: result.page, words: QuoteMatcher.probes(checkedText, length: 4))
         case "pptx":
             if let page = result.page { PowerPoint.open(result.path, slide: page) { _ in } } else { NSWorkspace.shared.open(url) }
         default:
@@ -143,12 +166,12 @@ final class QuoteFinderModel: ObservableObject {
     /// 逐字异文 of a near match (0.26); nil when only punctuation or character forms differ.
     func differences(_ result: Result) -> [QuoteDiff.Segment]? {
         guard !result.exact else { return nil }
-        let segments = QuoteDiff.compare(quote: quote, source: result.excerpt, equivalents: Preferences.quoteEquivalents)
+        let segments = QuoteDiff.compare(quote: checkedText, source: result.excerpt, equivalents: Preferences.quoteEquivalents)
         return QuoteDiff.differs(segments) ? segments : nil
     }
 
     func copyCorrected(_ result: Result) {
-        let corrected = QuoteDiff.corrected(quote: quote.trimmingCharacters(in: .whitespacesAndNewlines), source: result.excerpt)
+        let corrected = QuoteDiff.corrected(quote: checkedText, source: result.excerpt)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(corrected, forType: .string)
         status = "已拷贝按原文改正的引文：\(corrected)"
@@ -192,6 +215,15 @@ struct QuoteFinderView: View {
                     Button("停止") { model.stop() }
                 } else {
                     Button("查证") { model.run() }.keyboardShortcut(.defaultAction)
+                }
+            }
+            if !model.running, model.checkPassage != nil {
+                let quotations = model.passage
+                if quotations.count >= 2 {
+                    Label("这段文字中有 \(quotations.count) 条引号内的引文，点“查证”会逐条核对（在“稿件引文核对”窗口中）。", systemImage: "text.quote")
+                        .font(.caption).foregroundColor(.accentColor)
+                } else if quotations.count == 1 {
+                    Label("将只查引号内的文字。", systemImage: "text.quote").font(.caption).foregroundColor(.accentColor)
                 }
             }
             Text(model.status).font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)

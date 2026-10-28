@@ -96,4 +96,14 @@ final class EditionsAndRecordsTests: XCTestCase {
         XCTAssertEqual(SpotlightCoverage.indexingEnabled(mdutilOutput: "/Volumes/X:\n\tIndexing disabled.\n"), false)
         XCTAssertNil(SpotlightCoverage.indexingEnabled(mdutilOutput: "Error"))
     }
+
+    /// 0.32: 书库体检 lists the books with several editions and no 常用本.
+    func testBooksWithoutAPreferredEdition() {
+        var editions = PreferredEditions()
+        let lunyu = ["/书/论语译注.pdf", "/书/论语译注.epub"]
+        let mengzi = ["/书/孟子正义.pdf", "/书/孟子正义（繁体）.pdf"]
+        XCTAssertEqual(editions.unset([lunyu, mengzi, ["/书/单本.pdf"]]), [lunyu, mengzi], "a single file needs no choice")
+        editions.prefer("/书/论语译注.epub")
+        XCTAssertEqual(editions.unset([lunyu, mengzi]), [mengzi])
+    }
 }

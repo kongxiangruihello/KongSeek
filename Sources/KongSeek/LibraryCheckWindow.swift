@@ -16,6 +16,8 @@ final class LibraryCheckModel: ObservableObject {
     @Published var scope: DuplicatesModel.Scope = .everything
     @Published private(set) var items: [Item] = []
     @Published private(set) var sameBookGroups = 0
+    /// Books kept in several files (0.32), to choose a 常用本 for.
+    @Published private(set) var editionGroups: [[FileEntry]] = []
     @Published private(set) var running = false
     @Published private(set) var progress = (done: 0, total: 0)
     @Published private(set) var status = "点“开始体检”检查索引中的文件。只打开 PDF 和 EPUB 读取结构，不改动任何文件，不从 iCloud 下载。"
@@ -54,7 +56,8 @@ final class LibraryCheckModel: ObservableObject {
                 guard ext == "pdf" || ext == "epub" else { continue }
                 if entry.isLocal { toOpen.append(entry) } else { inCloud += 1 }
             }
-            let sameBooks = DuplicateFinder.sameBooks(entries).count
+            let groups = DuplicateFinder.sameBooks(entries)
+            let sameBooks = groups.count
             self.progress = (0, toOpen.count)
             self.status = "正在检查 \(toOpen.count.formatted()) 个 PDF / EPUB…"
             DispatchQueue.global(qos: .userInitiated).async {
@@ -63,6 +66,7 @@ final class LibraryCheckModel: ObservableObject {
                     self.running = false
                     self.items = (found + opened).sorted { $0.problem.rawValue != $1.problem.rawValue ? $0.problem.rawValue < $1.problem.rawValue : $0.path < $1.path }
                     self.sameBookGroups = sameBooks
+                    self.editionGroups = groups.map(\.files)
                     var text = self.isCancelled() ? "已停止。" : ""
                     text += self.items.isEmpty ? "没有发现问题文件。" : "发现 \(self.items.count) 个问题文件。"
                     if sameBooks > 0 { text += "另有 \(sameBooks) 本书存有多个文件（不同格式或版本）。" }
@@ -105,6 +109,20 @@ final class LibraryCheckModel: ObservableObject {
     func stop() { setCancelled(true) }
     private func setCancelled(_ value: Bool) { lock.lock(); cancelled = value; lock.unlock() }
     private func isCancelled() -> Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+
+    /// The books with several files and no 常用本 yet (0.32).
+    var unsetEditions: [[FileEntry]] {
+        let unset = Set(Records.editions.unset(editionGroups.map { $0.map(\.path) }).compactMap(\.first))
+        return editionGroups.filter { group in group.first.map { unset.contains($0.path) } ?? false }
+    }
+
+    func prefer(_ path: String) {
+        var editions = Records.editions
+        editions.prefer(path)
+        Records.editions = editions
+        objectWillChange.send()
+        status = "已设常用本：\((path as NSString).lastPathComponent)。"
+    }
 
     func reveal(_ path: String) { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     func open(_ path: String) { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
@@ -168,10 +186,44 @@ struct LibraryCheckView: View {
                         }
                     }
                 }
+                let editions = model.unsetEditions
+                if !editions.isEmpty {
+                    Section(header: VStack(alignment: .leading, spacing: 1) {
+                        Text("有多个版本、尚未设常用本的书（\(editions.count)）").font(.callout.weight(.semibold))
+                        Text("同一部书的几个文件（不同格式、繁简或版本）。设一个常用本，引文查证、稿件核对、出处汇编中它排在最前，拷贝出处也用它。")
+                            .font(.caption).foregroundColor(.secondary)
+                    }) {
+                        ForEach(editions, id: \.first?.path) { group in
+                            Text(bookTitle(group)).font(.callout.weight(.medium)).padding(.top, 4)
+                            ForEach(group, id: \.path) { file in editionRow(file) }
+                        }
+                    }
+                }
             }
         }
         .padding(16)
         .frame(minWidth: 760, minHeight: 520)
+    }
+
+    private func bookTitle(_ group: [FileEntry]) -> String {
+        guard let first = group.first else { return "" }
+        let stem = EbookName.splitMark(((first.path as NSString).lastPathComponent as NSString).deletingPathExtension).stem
+        return "《" + (EbookName.parse(stem)?.title ?? stem) + "》"
+    }
+
+    private func editionRow(_ file: FileEntry) -> some View {
+        HStack(spacing: 10) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: file.path)).resizable().frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text((file.path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                Text(SearchWindowController.displayLocation(of: file.path)).font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+            Button { model.open(file.path) } label: { Image(systemName: "arrow.up.forward.square") }.buttonStyle(.borderless).help("打开")
+            Button("设为常用本") { model.prefer(file.path) }.controlSize(.small)
+        }
+        .padding(.leading, 12)
     }
 
     private func sectionHeader(_ problem: LibraryCheck.Problem, _ rows: [LibraryCheckModel.Item]) -> some View {

@@ -731,6 +731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard quoteFinder == nil else { return }
         quoteFinder = QuoteFinderWindowController(ocr: ocr.store)
         quoteFinder?.model.openManuscriptCheck = { [weak self] in self?.openManuscriptCheck() }
+        quoteFinder?.model.checkPassage = { [weak self] text in self?.checkPassage(text) }
     }
 
     @objc private func openQuoteFinder() {
@@ -746,6 +747,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openManuscriptCheck() {
         if manuscriptCheck == nil { manuscriptCheck = ManuscriptCheckWindowController(ocr: ocr.store) }
         manuscriptCheck?.present()
+    }
+
+    /// The quotations of a passage pasted into 引文查证, checked one by one (0.32).
+    private func checkPassage(_ text: String) {
+        if manuscriptCheck == nil { manuscriptCheck = ManuscriptCheckWindowController(ocr: ocr.store) }
+        manuscriptCheck?.present(text: text)
     }
 
     @objc func openFeatureGuide() {

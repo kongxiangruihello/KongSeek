@@ -45,6 +45,8 @@ final class ManuscriptCheckModel: ObservableObject {
     }
 
     @Published private(set) var manuscript: URL?
+    /// "粘贴的文字（N 字）" when the quotations come from pasted text rather than a file (0.32).
+    @Published private(set) var pastedTitle: String?
     @Published private(set) var rows: [Row] = []
     @Published private(set) var running = false
     @Published private(set) var status = "选择一篇稿件或讲义（Word、PowerPoint、文本、Markdown 或 PDF），找出其中引号内的引文，逐条到书库中查证。"
@@ -87,6 +89,7 @@ final class ManuscriptCheckModel: ObservableObject {
     func load(_ url: URL) {
         stop()
         manuscript = url
+        pastedTitle = nil
         rows = []
         reading = true
         status = "正在读取稿件…"
@@ -116,6 +119,32 @@ final class ManuscriptCheckModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// The quotations of a passage pasted into 引文查证 or here (0.32), checked like a
+    /// manuscript's but without a file: no Word copy, and the results are not kept.
+    func loadText(_ text: String, start startNow: Bool = false) {
+        stop()
+        manuscript = nil
+        restoredFrom = nil
+        reading = false
+        let quotes = ManuscriptQuotes.extract(from: text)
+        pastedTitle = "粘贴的文字（\(QuoteMatcher.normalized(text).count) 字）"
+        rows = quotes.enumerated().map { Row(number: $0.offset + 1, quote: $0.element) }
+        if quotes.isEmpty {
+            status = "粘贴的文字中没有引号内的引文（至少 \(ManuscriptQuotes.minimumLength) 个字）。单独一句引文请在“引文查证”中查。"
+        } else {
+            status = "粘贴的文字中有 \(quotes.count) 条引文，点“开始核对”。"
+            if startNow { start() }
+        }
+    }
+
+    func pasteText() {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = "剪贴板中没有文字。先在讲稿、网页或 PDF 中拷贝一段含引号的文字。"
+            return
+        }
+        loadText(text)
     }
 
     private enum ReadOutcome { case success([(quote: ManuscriptQuotes.Quote, place: String?)]), failure(String) }
@@ -485,10 +514,12 @@ struct ManuscriptCheckView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(model.manuscript?.lastPathComponent ?? "未选择稿件").font(.headline).lineLimit(1).truncationMode(.middle)
+                Text(model.manuscript?.lastPathComponent ?? model.pastedTitle ?? "未选择稿件").font(.headline).lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if model.reading { ProgressView().controlSize(.small) }
                 Button("选择稿件…") { model.choose() }.disabled(model.running || model.reading)
+                Button("粘贴文字") { model.pasteText() }.disabled(model.running || model.reading)
+                    .help("不必存成文件：拷贝一段含引号的文字（讲稿的一页、网页上的一段），粘贴进来逐条核对")
                 if model.running {
                     Button("停止") { model.stop() }
                 } else {
@@ -616,6 +647,15 @@ final class ManuscriptCheckWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
-        if let url { model.load(url) } else if model.manuscript == nil { model.choose() }
+        if let url { model.load(url) } else if model.manuscript == nil && model.pastedTitle == nil { model.choose() }
+    }
+
+    /// Checks the quotations of a pasted passage (0.32).
+    func present(text: String) {
+        if window?.isVisible != true { window?.placeRemembered() }
+        NSApp.activate(ignoringOtherApps: true)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        model.loadText(text, start: true)
     }
 }

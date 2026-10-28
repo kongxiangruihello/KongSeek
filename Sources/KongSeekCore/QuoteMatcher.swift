@@ -152,4 +152,15 @@ public enum ManuscriptQuotes {
         }
         return quotes
     }
+
+    /// Text pasted into 引文查证 that is a passage rather than one quotation (0.32): the
+    /// quotations to check in it — several, or one with much text around it. Empty when
+    /// the text is itself the quotation (in quotation marks or not).
+    public static func inPassage(_ text: String) -> [Quote] {
+        let quotes = extract(from: text)
+        if quotes.count >= 2 { return quotes }
+        guard let only = quotes.first else { return [] }
+        let whole = QuoteMatcher.normalized(text).count
+        return Double(QuoteMatcher.normalized(only.text).count) < Double(whole) * 0.7 ? quotes : []
+    }
 }

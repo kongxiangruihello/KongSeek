@@ -50,6 +50,11 @@ public struct PreferredEditions: Codable, Equatable, Sendable {
         }.map(\.element)
     }
 
+    /// Groups of editions (paths of one book each) none of which is preferred yet (0.32).
+    public func unset(_ groups: [[String]]) -> [[String]] {
+        groups.filter { group in group.count > 1 && !group.contains(where: isPreferred) }
+    }
+
     // MARK: Storage
 
     public static func load(from url: URL) -> PreferredEditions {
