@@ -104,6 +104,8 @@ final class BookTextService {
             todo.append(entry)
         }
         index.prune(keeping: keep)
+        let start = CFAbsoluteTimeGetCurrent()
+        defer { if !todo.isEmpty { IndexService.recordTiming("正文索引读取", since: start, detail: "\(todo.count) 个文件") } }
         publish(done: 0, total: todo.count, current: nil, running: !todo.isEmpty)
         for (number, entry) in todo.enumerated() {
             if cancel.isCancelled || !Preferences.bookTextIndex { break }

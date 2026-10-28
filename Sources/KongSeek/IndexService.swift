@@ -260,6 +260,7 @@ final class IndexService {
         let jump = FolderJump.query(text)
         queue.async { [weak self] in
             guard let self else { return }
+            let started = CFAbsoluteTimeGetCurrent()
             let trimmed = (jump ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
             var outcome = trimmed.isEmpty
                 ? Self.recentItems(counts: counts, opened: opened)
@@ -283,6 +284,7 @@ final class IndexService {
                 outcome.items = Self.mergingCopies(outcome.items)
             }
             Self.annotate(&outcome.items, notes: notes)
+            if !trimmed.isEmpty { Self.recordTiming("名称搜索", since: started, detail: trimmed) }
             DispatchQueue.main.async {
                 guard token == self.searchToken else { return }
                 completion(outcome)
@@ -485,6 +487,8 @@ final class IndexService {
         if query.valid, !query.words.isEmpty {
             let expansions = aliases.expansions(of: query.words)
             if !expansions.isEmpty {
+                let aliasStart = CFAbsoluteTimeGetCurrent()
+                defer { Self.recordTiming("同义词扩展", since: aliasStart, detail: trimmed) }
                 var best = Dictionary(hits.map { ($0.id, $0.score) }, uniquingKeysWith: { max($0, $1) })
                 for words in expansions {
                     let alternative = query.replacingWords(words)
@@ -506,6 +510,8 @@ final class IndexService {
 
         // 作者: / 出版社: / 年: (0.38): books only, by their details.
         if query.advanced.book.isActive {
+            let bookStart = CFAbsoluteTimeGetCurrent()
+            defer { Self.recordTiming("书目筛选", since: bookStart, detail: trimmed) }
             let records = BookRecords.current()
             hits = hits.filter { hit in
                 let path = index.path(of: hit.id)
@@ -729,6 +735,24 @@ extension IndexService {
     }
 
     static let copyHashes = ContentHashCache()
+
+    // MARK: 性能自检 (0.42)
+
+    private static let timingLock = NSLock()
+    private static var timingLog = TimingLog()
+
+    static func recordTiming(_ label: String, since start: CFAbsoluteTime, detail: String = "") {
+        let milliseconds = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        timingLock.lock()
+        timingLog.add(label, milliseconds: milliseconds, detail: String(detail.prefix(40)))
+        timingLock.unlock()
+    }
+
+    static var timings: TimingLog {
+        timingLock.lock()
+        defer { timingLock.unlock() }
+        return timingLog
+    }
 
     /// A book's details for 作者: / 出版社: / 年: (0.38): from its name, an EPUB's package
     /// (read once while the file is unchanged), then the confirmed record. Nil when nothing is known.

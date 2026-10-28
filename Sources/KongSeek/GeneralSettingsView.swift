@@ -6,7 +6,7 @@ import KongSeekCore
 /// diagnostics, other apps) and "更新" (KongSeek and KongFolio updates); one class, so
 /// they share their refresh code (0.26: split, the single page had grown too tall).
 final class GeneralSettingsView: NSView {
-    enum Page { case general, updates }
+    enum Page { case general, search, updates }
 
     private let page: Page
     private let updater: Updater
@@ -40,6 +40,9 @@ final class GeneralSettingsView: NSView {
     private let completionCheckbox = NSButton(checkboxWithTitle: "输入时自动补全（→ 接受）", target: nil, action: nil)
     private let bookTextCheckbox = NSButton(checkboxWithTitle: "为 EPUB、Kindle 电子书和 GB18030 文本建立正文索引", target: nil, action: nil)
     private let uncoveredCheckbox = NSButton(checkboxWithTitle: "也为 Spotlight 未收录的文件夹中的 PDF、Word、幻灯片建立正文索引", target: nil, action: nil)
+    private let tipsCheckbox = NSButton(checkboxWithTitle: "搜索框为空时显示一条语法提示", target: nil, action: nil)
+    /// What the text index holds, on the 搜索 page (0.42).
+    private let bookTextStatus = NSTextField(wrappingLabelWithString: "")
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
     private let loginCheckbox = NSButton(checkboxWithTitle: "开机登录后自动启动 KongSeek（在菜单栏待命）", target: nil, action: nil)
@@ -127,7 +130,7 @@ final class GeneralSettingsView: NSView {
         let aliasesButton = NSButton(title: "同义词与别名…", target: self, action: #selector(editAliases))
         aliasesButton.controlSize = .small
         aliasesButton.toolTip = "搜“阳明”也找到“王守仁”，搜“四书”也找到《论语》《孟子》等；文件名搜索和全文搜索都用"
-        let historyRow = NSStackView(views: [historyCheckbox, clearHistory, aliasesButton])
+        let historyRow = NSStackView(views: [historyCheckbox, clearHistory])
         historyRow.spacing = 10
         copiesCheckbox.target = self
         copiesCheckbox.action = #selector(copiesChanged)
@@ -138,8 +141,27 @@ final class GeneralSettingsView: NSView {
         completionCheckbox.target = self
         completionCheckbox.action = #selector(completionChanged)
         completionCheckbox.toolTip = "按搜索历史、收藏的搜索和最近打开的文件名，在输入框中以选中的灰色文字给出补全；继续输入即替换，按 → 接受"
-        let copiesRow = NSStackView(views: [copiesCheckbox, completionCheckbox, filterButton])
-        copiesRow.spacing = 10
+        let toolsRow = NSStackView(views: [aliasesButton, filterButton])
+        toolsRow.spacing = 10
+        tipsCheckbox.target = self
+        tipsCheckbox.action = #selector(tipsChanged)
+        bookTextStatus.font = .systemFont(ofSize: 11)
+        bookTextStatus.textColor = .secondaryLabelColor
+        bookTextStatus.preferredMaxLayoutWidth = 520
+        /// A line of explanation under an option (0.42).
+        func note(_ text: String) -> NSTextField {
+            let label = NSTextField(wrappingLabelWithString: text)
+            label.font = .systemFont(ofSize: 11)
+            label.textColor = .secondaryLabelColor
+            label.preferredMaxLayoutWidth = 520
+            return label
+        }
+        let historyNote = note("打开或显示过结果的搜索会记下（最多 50 条）；搜索框为空时按 ↑ 查看。")
+        let completionNote = note("按搜索历史、收藏的搜索和最近打开的文件名补全；补上的部分以选中的文字显示，继续输入即替换，按 → 接受。")
+        let copiesNote = note("内容完全相同的几个文件只列一行，注明“另有 N 个副本”，⌘K 可看各副本的位置。")
+        let tipsNote = note("轮流显示一条搜索语法（如 作者:、备注:、near:、/文件夹），↩ 填入示例。")
+        let toolsNote = note("同义词：搜“阳明”也找到“王守仁”，搜“四书”也找到《论语》等。筛选按钮：搜索框下的 PDF、Word 等按钮，可改成自己的。")
+        let bookTextNote = note("Spotlight 读不到正文的 EPUB、Kindle 电子书和 GB18030 文本，KongSeek 在后台自己读出文字；只读本机已下载的文件。")
         bookTextCheckbox.target = self
         bookTextCheckbox.action = #selector(bookTextChanged)
         uncoveredCheckbox.target = self
@@ -194,9 +216,14 @@ final class GeneralSettingsView: NSView {
         case .general:
             views = [heading("启动"), loginCheckbox, loginNote, loginSettingsButton,
                      heading("PDF 阅读"), readerRow,
-                     heading("搜索与引文"), historyRow, copiesRow, bookTextCheckbox, uncoveredCheckbox, citationRow,
+                     heading("引文"), citationRow,
                      heading("备份与诊断"), transferRow, transferHelp,
                      heading("其他应用"), cliRow, claudeRow, contentCheckbox]
+        case .search:
+            // 搜索 (0.42): the options that change how searching works, each with a line saying what it does.
+            views = [heading("输入与结果"), historyRow, historyNote, completionCheckbox, completionNote, copiesCheckbox, copiesNote, tipsCheckbox, tipsNote,
+                     heading("同义词与筛选按钮"), toolsRow, toolsNote,
+                     heading("正文索引"), bookTextCheckbox, uncoveredCheckbox, bookTextNote, bookTextStatus]
         case .updates:
             views = [versionLabel, sourceLabel,
                      heading("更新 KongSeek"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
@@ -207,7 +234,7 @@ final class GeneralSettingsView: NSView {
         stack.alignment = .leading
         stack.spacing = 6
         // More room before each heading.
-        let sectionEnds: [NSView] = [sourceLabel, updateRow, loginNote, loginSettingsButton, readerRow, citationRow, transferHelp]
+        let sectionEnds: [NSView] = [sourceLabel, updateRow, loginNote, loginSettingsButton, readerRow, citationRow, transferHelp, tipsNote, toolsNote]
         for view in sectionEnds where views.contains(where: { $0 === view }) {
             stack.setCustomSpacing(14, after: view)
         }
@@ -223,6 +250,8 @@ final class GeneralSettingsView: NSView {
         case .general:
             constraints += [transferHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
                             loginNote.widthAnchor.constraint(equalTo: stack.widthAnchor)]
+        case .search:
+            constraints += [bookTextStatus.widthAnchor.constraint(equalTo: stack.widthAnchor)]
         case .updates:
             constraints += [notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
                             notesScroll.heightAnchor.constraint(equalToConstant: 110),
@@ -294,6 +323,14 @@ final class GeneralSettingsView: NSView {
         historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
         copiesCheckbox.state = Preferences.mergeCopies ? .on : .off
         completionCheckbox.state = Preferences.autocomplete ? .on : .off
+        tipsCheckbox.state = Preferences.showTips ? .on : .off
+        let books = BookTextService.shared
+        let summary = books.index.summary
+        var bookText = Preferences.bookTextIndex ? "已收录 \(summary.books) 本（约 \(max(1, summary.characters / 10_000)) 万字）" : "已关闭"
+        if Preferences.bookTextIndex && summary.problems > 0 { bookText += "；\(summary.problems) 本读不出文字" }
+        if books.uncoveredFolderCount > 0 { bookText += "；含 Spotlight 未收录的 \(books.uncoveredFolderCount) 个文件夹" }
+        if books.running { bookText += "；正在读取 \(books.progress.done) / \(books.progress.total)" }
+        if bookTextStatus.stringValue != bookText { bookTextStatus.stringValue = bookText }
         bookTextCheckbox.state = Preferences.bookTextIndex ? .on : .off
         uncoveredCheckbox.state = Preferences.indexUncoveredFolders ? .on : .off
         uncoveredCheckbox.isEnabled = Preferences.bookTextIndex
@@ -368,6 +405,10 @@ final class GeneralSettingsView: NSView {
         Preferences.indexUncoveredFolders = uncoveredCheckbox.state == .on
         uncoveredCheckbox.isEnabled = Preferences.bookTextIndex
         NotificationCenter.default.post(name: BookTextService.settingChanged, object: nil)
+    }
+
+    @objc private func tipsChanged() {
+        Preferences.showTips = tipsCheckbox.state == .on
     }
 
     @objc private func completionChanged() {

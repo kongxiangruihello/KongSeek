@@ -21,7 +21,7 @@ public struct SearchAliases: Equatable, Sendable {
     public static let none = SearchAliases()
 
     /// Common names in Chinese intellectual history: 字、号、尊称 of thinkers, and
-    /// other names of classics. Each can be changed in 设置 › 通用.
+    /// other names of classics. Each can be changed in 设置 › 搜索.
     public static let standardLines = [
         "孔子=孔丘=仲尼=孔夫子",
         "老子=李耳=老聃",

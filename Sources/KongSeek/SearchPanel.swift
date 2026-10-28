@@ -43,6 +43,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let field = NSTextField()
     /// 筛选按钮 (0.36): pieces of syntax added to the search with a click.
     private let filterBar = NSStackView()
+    /// 条件标签 (0.42): the conditions of the search, each with × to take it out.
+    private let conditionBar = NSStackView()
+    private var conditionHeight: NSLayoutConstraint!
+    private var chips: [QueryChips.Chip] = []
     /// 排序 (0.38): 相关度, 修改时间, 大小, 名称.
     private let orderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var filterBarHeight: NSLayoutConstraint!
@@ -179,6 +183,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         rebuildFilterBar()
         lastTypedLength = 0
         completion = nil
+        Preferences.nextTip += 1
         shownAt = Date()
         focusReclaims = 0
         panel.makeKeyAndOrderFront(nil)
@@ -399,7 +404,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         orderPopup.target = self
         orderPopup.action = #selector(orderChanged)
         orderPopup.toolTip = "结果按相关度、修改时间、大小或名称排序（全文搜索同样适用）"
-        for view in [orderPopup, filterBar, searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        conditionBar.orientation = .horizontal
+        conditionBar.spacing = 4
+        conditionBar.alignment = .centerY
+        for view in [conditionBar, orderPopup, filterBar, searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -427,7 +435,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             filterBar.trailingAnchor.constraint(lessThanOrEqualTo: orderPopup.leadingAnchor, constant: -8),
             orderPopup.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
             orderPopup.centerYAnchor.constraint(equalTo: filterBar.centerYAnchor),
-            topLine.topAnchor.constraint(equalTo: filterBar.bottomAnchor, constant: 6),
+            conditionBar.topAnchor.constraint(equalTo: filterBar.bottomAnchor, constant: 4),
+            conditionBar.leadingAnchor.constraint(equalTo: filterBar.leadingAnchor),
+            conditionBar.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -16),
+            topLine.topAnchor.constraint(equalTo: conditionBar.bottomAnchor, constant: 6),
             topLine.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             topLine.trailingAnchor.constraint(equalTo: background.trailingAnchor),
 
@@ -477,6 +488,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         snippetHeight.isActive = true
         filterBarHeight = filterBar.heightAnchor.constraint(equalToConstant: 0)
         filterBarHeight.isActive = true
+        conditionHeight = conditionBar.heightAnchor.constraint(equalToConstant: 0)
+        conditionHeight.isActive = true
         rebuildFilterBar()
         updateEmptyLabel()
     }
@@ -497,11 +510,52 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             button.controlSize = .small
             button.font = .systemFont(ofSize: 11)
             button.tag = index
-            button.toolTip = "加入或去掉 " + fragment.text + "（设置 › 通用 › 筛选按钮… 可改）"
+            button.toolTip = "加入或去掉 " + fragment.text + "（设置 › 搜索 › 筛选按钮… 可改）"
             filterBar.addArrangedSubview(button)
         }
         filterBarHeight.constant = 22
         refreshFilterButtons()
+    }
+
+    /// One label per condition of the search (0.42), besides those the filter buttons show,
+    /// and the order when it is not 相关度; × takes it out.
+    private func refreshConditionChips() {
+        let text = queryText
+        let shownByButtons = Set(filterFragments.filter { FilterFragments.isActive($0, in: text) }
+            .flatMap { $0.text.split(separator: " ").map { $0.lowercased() } })
+        var current = QueryChips.chips(for: text).filter { !shownByButtons.contains($0.token.lowercased()) }
+        if Preferences.resultOrder != .relevance {
+            current.append(QueryChips.Chip(title: "按" + Preferences.resultOrder.title + "排序", token: ""))
+        }
+        guard current != chips || conditionBar.arrangedSubviews.count != current.count else { return }
+        chips = current
+        for view in conditionBar.arrangedSubviews { conditionBar.removeArrangedSubview(view); view.removeFromSuperview() }
+        for (index, chip) in current.enumerated() {
+            let button = NSButton(title: chip.title + "  ×", target: self, action: #selector(removeChip(_:)))
+            button.bezelStyle = .recessed
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 11)
+            button.tag = index
+            button.toolTip = chip.token.isEmpty ? "改回按相关度排序" : "去掉条件 " + chip.token
+            conditionBar.addArrangedSubview(button)
+        }
+        conditionHeight.constant = current.isEmpty ? 0 : 20
+    }
+
+    @objc private func removeChip(_ sender: NSButton) {
+        guard chips.indices.contains(sender.tag) else { return }
+        let chip = chips[sender.tag]
+        if chip.token.isEmpty {
+            Preferences.resultOrder = .relevance
+            orderPopup.selectItem(at: 0)
+        } else {
+            let updated = QueryChips.removing(chip, from: queryText)
+            field.stringValue = updated.isEmpty ? "" : updated + " "
+            completion = nil
+        }
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.moveToEndOfDocument(nil)
+        runSearch()
     }
 
     @objc private func orderChanged() {
@@ -682,8 +736,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             }
         }
 
+        let spotlightStart = CFAbsoluteTimeGetCurrent()
         let started = contentSearch.search(queryString, scopes: roots) { [weak self] hits, finished in
             guard let self, token == self.contentToken else { return }
+            if finished && !self.spotlightFinished { IndexService.recordTiming("全文搜索（Spotlight）", since: spotlightStart, detail: text) }
             self.spotlightItems = hits.filter { hit in
                 guard !rules.excludes(path: hit.path, roots: roots),
                       query.advanced.acceptsPath(hit.path, isFolder: hit.isFolder) else { return false }
@@ -787,7 +843,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// Counts the words in each file's text (0.41), in the background, a few at a time.
     private func countHits(_ paths: [String], words: [String], token: Int) {
         let store = ocr.store
+        let start = CFAbsoluteTimeGetCurrent()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            defer { IndexService.recordTiming("命中统计", since: start, detail: "\(paths.count) 个文件") }
             var batch: [String: Int] = [:]
             func flush() {
                 let done = batch
@@ -826,7 +884,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         let distance = query.advanced.near
         let store = ocr.store
+        let start = CFAbsoluteTimeGetCurrent()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            defer { IndexService.recordTiming("邻近核对", since: start, detail: "\(paths.count) 个文件") }
             var batch: [String: Bool] = [:]
             func flush() {
                 let done = batch
@@ -862,6 +922,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let text = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         showingRelated = false
         refreshFilterButtons()
+        refreshConditionChips()
         webRows = []
         showingHistory = false
         if browsedFolder == nil && (text == "?" || text == "？") {
@@ -1545,6 +1606,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             ResultItem(path: "saved:" + text, name: names[text] ?? text, isFolder: false, score: 0,
                        fill: QueryFill(text: text, replace: true, select: nil, explanation: names[text] == nil ? "收藏的搜索" : "收藏的搜索：\(text)", isSaved: true))
         }
+        // 新功能提示 (0.42): one example of the syntax, a different one each time.
+        if Preferences.showTips, !SyntaxHelp.entries.isEmpty {
+            let entry = SyntaxHelp.entries[Preferences.nextTip % SyntaxHelp.entries.count]
+            rows.append(ResultItem(path: "tip:", name: "试试：" + entry.example, isFolder: false, score: 0,
+                                   fill: QueryFill(text: entry.example, replace: true, select: entry.select, explanation: "提示 · " + entry.explanation)))
+        }
         // Preset searches not yet added (0.35).
         let missing = SavedSearchPresets.all.filter { !saved.contains($0.query) }
         if !missing.isEmpty {
@@ -2056,7 +2123,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             definitionView.scrollToBeginningOfDocument(nil)
         } else if let item = selected, let fill = item.fill {
             definitionView.string = fill.isSaved || fill.isHistory
-                ? "↩ 搜索：\(fill.text)\n\n⌘⌫ " + (fill.isSaved ? "从收藏中移除。在任意搜索时按 ⌘S 可收藏当前搜索。" : "从搜索历史中删除。在 设置 › 通用 可关闭或清除搜索历史。")
+                ? "↩ 搜索：\(fill.text)\n\n⌘⌫ " + (fill.isSaved ? "从收藏中移除。在任意搜索时按 ⌘S 可收藏当前搜索。" : "从搜索历史中删除。在 设置 › 搜索 可关闭或清除搜索历史。")
                 : "\(fill.text)\n\n\(fill.explanation)\n\n↩ 或单击：加入搜索框" + (fill.select.map { "，并选中“\($0)”方便直接改写" } ?? "") + "。"
             definitionView.scrollToBeginningOfDocument(nil)
         } else if let item = selected, !item.isFile {

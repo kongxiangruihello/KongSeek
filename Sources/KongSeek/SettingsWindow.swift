@@ -16,6 +16,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let generalPage: GeneralSettingsView
     /// Updates of KongSeek and KongFolio (0.26: their own page, out of 通用).
     private let updatePage: GeneralSettingsView
+    /// 搜索 (0.42): the search options, moved out of 通用.
+    private let searchPage: GeneralSettingsView
     private let tabs = NSTabView()
 
     private let clipEnabledCheckbox = NSButton(checkboxWithTitle: "记录剪贴板历史（文字、图片、文件）", target: nil, action: nil)
@@ -69,6 +71,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
          updater: Updater, diagnosticReport: @escaping () -> String) {
         generalPage = GeneralSettingsView(page: .general, updater: updater, library: snippets, diagnosticReport: diagnosticReport)
         updatePage = GeneralSettingsView(page: .updates, updater: updater, library: snippets, diagnosticReport: diagnosticReport)
+        searchPage = GeneralSettingsView(page: .search, updater: updater, library: snippets, diagnosticReport: diagnosticReport)
         self.archives = archives
         self.onArchiveSettingsChange = onArchiveSettingsChange
         self.hotKey = hotKey
@@ -118,6 +121,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         indexTab.view = buildIndexView()
         tabs.addTabViewItem(launchTab)
         tabs.addTabViewItem(indexTab)
+        let searchTab = NSTabViewItem(identifier: "search")
+        searchTab.label = "搜索"
+        searchTab.view = searchPage
+        tabs.addTabViewItem(searchTab)
         let ocrTab = NSTabViewItem(identifier: "ocr")
         ocrTab.label = "文字识别"
         ocrTab.view = buildOCRView()
@@ -719,6 +726,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     func refresh() {
         generalPage.refresh()
         updatePage.refresh()
+        searchPage.refresh()
         refreshClipboard()
         snippetPage.refreshStatus()
         refreshOCR()

@@ -605,6 +605,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                     action: ("查找扫描版 PDF…", { [weak self] in self?.openScannedPDFs() })))
         }
 
+        // 性能自检 (0.42): how long the last searches took.
+        let timings = IndexService.timings
+        let labels = ["名称搜索", "同义词扩展", "书目筛选", "全文搜索（Spotlight）", "邻近核对", "命中统计", "正文索引读取"]
+        var anyTiming = false
+        for label in labels {
+            guard let summary = timings.summary(label) else { continue }
+            anyTiming = true
+            let slow: Double = label == "名称搜索" ? 300 : (label == "全文搜索（Spotlight）" ? 5_000 : 60_000)
+            items.append(HealthItem("性能", label, summary, timings.slowest(label) > slow ? .warning : .ok))
+        }
+        if !anyTiming {
+            items.append(HealthItem("性能", "还没有记录", "搜索几次后，这里列出各项用时（名称搜索、同义词、书目筛选、全文搜索等）", .info))
+        }
+
         // KongSeek's own text index (0.37).
         let books = BookTextService.shared
         if Preferences.bookTextIndex {
@@ -617,7 +631,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 items.append(HealthItem("正文索引", "\(summary.problems) 本读不出文字", "有 DRM 保护、用了不支持的压缩方式（如 HUFF/CDIC），或文件已损坏", .info))
             }
         } else {
-            items.append(HealthItem("正文索引", "已关闭", "EPUB、Kindle 等电子书的正文搜不到；可在 设置 › 通用 中打开", .info, action: settings))
+            items.append(HealthItem("正文索引", "已关闭", "EPUB、Kindle 等电子书的正文搜不到；可在 设置 › 搜索 中打开", .info, action: settings))
         }
 
         let update = updater.state

@@ -86,6 +86,18 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "indexUncoveredFolders") }
     }
 
+    /// 新功能提示 in the empty search window (0.42); on unless turned off.
+    static var showTips: Bool {
+        get { defaults.object(forKey: "showTips") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "showTips") }
+    }
+
+    /// Which tip comes next.
+    static var nextTip: Int {
+        get { defaults.integer(forKey: "nextTip") }
+        set { defaults.set(newValue, forKey: "nextTip") }
+    }
+
     /// 输入时自动补全 (0.41); on unless turned off.
     static var autocomplete: Bool {
         get { defaults.object(forKey: "autocomplete") as? Bool ?? true }

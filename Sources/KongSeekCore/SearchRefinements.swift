@@ -297,3 +297,128 @@ public enum HitCount {
         return total
     }
 }
+
+/// 条件标签 (0.42): the conditions of a search — operators (作者:、in:、dm: …), ext:,
+/// exclusions, tags — each shown as a label to take out with one click.
+public enum QueryChips {
+    public struct Chip: Equatable, Sendable {
+        /// "作者：杨伯峻", "排除：草稿".
+        public var title: String
+        /// The token as written in the search, to take out.
+        public var token: String
+
+        public init(title: String, token: String) {
+            self.title = title
+            self.token = token
+        }
+    }
+
+    /// The search split at spaces, quoted parts kept whole, each token as written.
+    static func tokens(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var closing: Character?
+        for character in text {
+            if let close = closing {
+                current.append(character)
+                if character == close { closing = nil }
+                continue
+            }
+            if character == "\"" { closing = "\"" } else if character == "“" { closing = "”" }
+            if character.isWhitespace {
+                if !current.isEmpty { tokens.append(current); current = "" }
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    public static func chips(for text: String) -> [Chip] {
+        let names = AdvancedFilters.operatorNames + ["ext", "标签", "tag"]
+        var chips: [Chip] = []
+        for token in tokens(text) {
+            let excluded = token.hasPrefix("-") && token.count > 1
+            let body = excluded ? String(token.dropFirst()) : token
+            let lowered = body.lowercased()
+            if let name = names.first(where: { lowered.hasPrefix($0 + ":") || lowered.hasPrefix($0 + "：") }) {
+                let value = String(body.dropFirst(name.count + 1)).replacingOccurrences(of: "\"", with: "")
+                let label = label(for: name)
+                chips.append(Chip(title: (excluded ? "非 " : "") + label + (value.isEmpty ? "" : "：" + value), token: token))
+            } else if body.hasPrefix("#") && body.count > 1 {
+                chips.append(Chip(title: "标签：" + body.dropFirst(), token: token))
+            } else if excluded {
+                chips.append(Chip(title: "排除：" + body.replacingOccurrences(of: "\"", with: ""), token: token))
+            }
+        }
+        return chips
+    }
+
+    static func label(for name: String) -> String {
+        switch name {
+        case "path": return "路径含"
+        case "in", "infolder": return "在"
+        case "parent": return "直接在"
+        case "size": return "大小"
+        case "dm", "datemodified": return "修改"
+        case "dc", "datecreated": return "创建"
+        case "regex": return "正则"
+        case "dupe": return "同名文件"
+        case "file": return "只要文件"
+        case "folder": return "只要文件夹"
+        case "opened", "打开过": return "打开过"
+        case "near", "相距": return "相距"
+        case "samepage", "同页": return "同一页"
+        case "author", "作者": return "作者"
+        case "publisher", "出版社": return "出版社"
+        case "year", "年", "年份": return "出版年"
+        case "note", "备注": return "备注"
+        case "ext": return "扩展名"
+        case "标签", "tag": return "标签"
+        default: return name
+        }
+    }
+
+    /// The search without the chip's token (the first one as written).
+    public static func removing(_ chip: Chip, from text: String) -> String {
+        var parts = tokens(text)
+        if let index = parts.firstIndex(of: chip.token) { parts.remove(at: index) }
+        return parts.joined(separator: " ")
+    }
+}
+
+/// 性能自检 (0.42): how long the last searches took, for 状态与诊断.
+public struct TimingLog: Sendable {
+    public struct Entry: Equatable, Sendable {
+        public var label: String
+        public var milliseconds: Double
+        public var detail: String
+    }
+
+    public private(set) var entries: [Entry] = []
+    public let capacity: Int
+
+    public init(capacity: Int = 30) {
+        self.capacity = capacity
+    }
+
+    public mutating func add(_ label: String, milliseconds: Double, detail: String = "") {
+        entries.append(Entry(label: label, milliseconds: milliseconds, detail: detail))
+        if entries.count > capacity { entries.removeFirst(entries.count - capacity) }
+    }
+
+    /// "最近 12 次：平均 18 ms，最慢 95 ms（论语 作者:杨伯峻）", for one label.
+    public func summary(_ label: String) -> String? {
+        let matching = entries.filter { $0.label == label }
+        guard let slowest = matching.max(by: { $0.milliseconds < $1.milliseconds }) else { return nil }
+        let average = matching.reduce(0) { $0 + $1.milliseconds } / Double(matching.count)
+        return "最近 \(matching.count) 次：平均 \(Int(average.rounded())) ms，最慢 \(Int(slowest.milliseconds.rounded())) ms"
+            + (slowest.detail.isEmpty ? "" : "（\(slowest.detail)）")
+    }
+
+    /// The slowest of a label, for a warning when searches feel slow.
+    public func slowest(_ label: String) -> Double {
+        entries.filter { $0.label == label }.map(\.milliseconds).max() ?? 0
+    }
+}
