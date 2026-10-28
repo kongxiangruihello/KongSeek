@@ -80,6 +80,23 @@ enum Preferences {
         CharacterEquivalents(lines: quoteEquivalentLines)
     }
 
+    /// 合并内容相同的副本 in the results (0.36); on unless turned off.
+    static var mergeCopies: Bool {
+        get { defaults.object(forKey: "mergeCopies") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "mergeCopies") }
+    }
+
+    /// 筛选按钮 under the search field (0.36): "PDF=ext:pdf" lines.
+    static var filterButtonLines: [String] {
+        get { defaults.stringArray(forKey: "filterButtons") ?? FilterFragments.standardLines }
+        set { defaults.set(newValue, forKey: "filterButtons") }
+    }
+
+    static var showFilterButtons: Bool {
+        get { defaults.object(forKey: "showFilterButtons") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "showFilterButtons") }
+    }
+
     /// 同义词与别名 (0.35): "王守仁=王阳明=阳明" lines; the common names until edited.
     static var searchAliasLines: [String] {
         get { defaults.stringArray(forKey: "searchAliases") ?? SearchAliases.standardLines }

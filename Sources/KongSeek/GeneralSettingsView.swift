@@ -36,6 +36,7 @@ final class GeneralSettingsView: NSView {
     private let kongFolioButton = NSButton(title: "安装 KongFolio", target: nil, action: nil)
     private let kongFolioLabel = NSTextField(wrappingLabelWithString: "")
     private let historyCheckbox = NSButton(checkboxWithTitle: "记录搜索历史（在空搜索框中按 ↑ 查看）", target: nil, action: nil)
+    private let copiesCheckbox = NSButton(checkboxWithTitle: "搜索结果中合并内容相同的副本", target: nil, action: nil)
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
     private let loginCheckbox = NSButton(checkboxWithTitle: "开机登录后自动启动 KongSeek（在菜单栏待命）", target: nil, action: nil)
@@ -125,6 +126,14 @@ final class GeneralSettingsView: NSView {
         aliasesButton.toolTip = "搜“阳明”也找到“王守仁”，搜“四书”也找到《论语》《孟子》等；文件名搜索和全文搜索都用"
         let historyRow = NSStackView(views: [historyCheckbox, clearHistory, aliasesButton])
         historyRow.spacing = 10
+        copiesCheckbox.target = self
+        copiesCheckbox.action = #selector(copiesChanged)
+        copiesCheckbox.toolTip = "内容完全相同的几个文件只列一行，注明“另有 N 个副本”，⌘K 可看各副本的位置"
+        let filterButton = NSButton(title: "筛选按钮…", target: self, action: #selector(editFilterButtons))
+        filterButton.controlSize = .small
+        filterButton.toolTip = "搜索框下的按钮，如 PDF = ext:pdf；点一下加入搜索，再点去掉"
+        let copiesRow = NSStackView(views: [copiesCheckbox, filterButton])
+        copiesRow.spacing = 10
         for style in Citation.Style.allCases { citationPopup.addItem(withTitle: style.title) }
         citationPopup.target = self
         citationPopup.action = #selector(citationChanged)
@@ -173,7 +182,7 @@ final class GeneralSettingsView: NSView {
         case .general:
             views = [heading("启动"), loginCheckbox, loginNote, loginSettingsButton,
                      heading("PDF 阅读"), readerRow,
-                     heading("搜索与引文"), historyRow, citationRow,
+                     heading("搜索与引文"), historyRow, copiesRow, citationRow,
                      heading("备份与诊断"), transferRow, transferHelp,
                      heading("其他应用"), cliRow, claudeRow, contentCheckbox]
         case .updates:
@@ -271,6 +280,7 @@ final class GeneralSettingsView: NSView {
         claudeLabel.stringValue = ClaudeDesktop.status
         contentCheckbox.state = Preferences.mcpReadContent ? .on : .off
         historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
+        copiesCheckbox.state = Preferences.mergeCopies ? .on : .off
         citationPopup.selectItem(at: Citation.Style.allCases.firstIndex(of: Preferences.citationStyle) ?? 0)
         refreshKongFolio()
         refreshLogin()
@@ -335,6 +345,48 @@ final class GeneralSettingsView: NSView {
             }
         }
         if kongFolioLabel.stringValue != text { kongFolioLabel.stringValue = text }
+    }
+
+    @objc private func copiesChanged() {
+        Preferences.mergeCopies = copiesCheckbox.state == .on
+    }
+
+    /// 筛选按钮 (0.36): one button per line, "名称=搜索语法".
+    @objc private func editFilterButtons() {
+        let alert = NSAlert()
+        alert.messageText = "搜索框下的筛选按钮"
+        alert.informativeText = "每行一个按钮：“名称=加入搜索的内容”，如“PDF=ext:pdf”“书库=in:电子书”“本学期讲义=in:论语 dm:thisyear”。"
+            + "点按钮把内容加入搜索框，再点一次去掉；可以同时按下几个。"
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 380, height: 200)
+        scroll.borderType = .bezelBorder
+        let text = scroll.documentView as! NSTextView
+        text.font = .systemFont(ofSize: 13)
+        text.isRichText = false
+        text.string = Preferences.filterButtonLines.joined(separator: "\n")
+        let show = NSButton(checkboxWithTitle: "在搜索框下显示筛选按钮", target: nil, action: nil)
+        show.state = Preferences.showFilterButtons ? .on : .off
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([scroll.widthAnchor.constraint(equalToConstant: 380), scroll.heightAnchor.constraint(equalToConstant: 200)])
+        let stack = NSStackView(views: [scroll, show])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.frame = NSRect(x: 0, y: 0, width: 380, height: 228)
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "恢复默认按钮")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let lines = text.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            Preferences.filterButtonLines = FilterFragments(lines: lines).lines
+            Preferences.showFilterButtons = show.state == .on
+        case .alertThirdButtonReturn:
+            Preferences.filterButtonLines = FilterFragments.standardLines
+            Preferences.showFilterButtons = true
+        default:
+            break
+        }
     }
 
     /// 同义词与别名 (0.35): one group per line, "王守仁=王阳明=阳明", or "四书>论语,孟子,大学,中庸".

@@ -35,6 +35,8 @@ enum SyntaxHelp {
         Entry(example: "标签:工作", explanation: "带某个访达标签（也可写 #工作）", section: "时间与大小", select: "工作"),
         Entry(example: "regex:^第.+讲", explanation: "名称匹配正则表达式（含 / 时匹配路径）", section: "高级", select: "^第.+讲"),
         Entry(example: "dupe:", explanation: "只列出同名文件，同名的排在一起", section: "高级"),
+        Entry(example: "near:30", explanation: "全文搜索：几个词相距 30 字以内（如 格物 致知 near:30）；PDF 等按页判断（0.36）", section: "高级", select: "30"),
+        Entry(example: "同页:", explanation: "全文搜索：几个词在同一页（0.36）", section: "高级"),
         Entry(example: "hd 仁", explanation: "网页搜索：hd 汉典、ct 中国哲学书、zw 知网、db 豆瓣、gs Google 学术（设置 › 网页搜索）", section: "其他", replace: true, select: "仁"),
         Entry(example: "cd 仁", explanation: "查系统词典（任何应用中选中字词按 ⌃⌥D 也可）", section: "其他", replace: true, select: "仁"),
     ]

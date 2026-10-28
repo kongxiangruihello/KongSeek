@@ -13,6 +13,8 @@ import Foundation
 ///     dupe:            only files whose name occurs more than once among the results
 ///     打开过:7d  opened:7d  opened from KongSeek in that range (same values as dm:);
 ///                      打开过: alone = ever (0.35, after Everything's daterun:)
+///     near:30  相距:30  full text: the words within 30 characters of each other (0.36)
+///     同页:  samepage:  full text: the words on one page (0.36)
 ///
 /// Operators combine with AND. Values with spaces go in quotes: in:"~/My Folder".
 public struct AdvancedFilters: Sendable {
@@ -29,6 +31,12 @@ public struct AdvancedFilters: Sendable {
     public var opened = false
     public var openedFrom: Date?
     public var openedBefore: Date?
+    /// near: / 同页: (0.36): how close the words of a full-text search must stand.
+    public var near: Int?
+    public var samePage = false
+
+    /// Whether full-text results must be checked for how close the words stand.
+    public var needsProximity: Bool { near != nil || samePage }
     /// Shown under the results ("在 ~/Documents 中", "大小 ≥ 10 MB").
     public var descriptions: [String] = []
     /// Problems with operator values; any makes the query invalid.
@@ -38,7 +46,7 @@ public struct AdvancedFilters: Sendable {
 
     public var isEmpty: Bool {
         pathTerms.isEmpty && excludedPathTerms.isEmpty && scopes.isEmpty && regexes.isEmpty && excludedRegexes.isEmpty
-            && kind == .any && !dupe && !attributes.isActive && !opened
+            && kind == .any && !dupe && !attributes.isActive && !opened && !needsProximity
     }
 
     /// Whether an item last opened at `date` passes 打开过:.
@@ -51,7 +59,7 @@ public struct AdvancedFilters: Sendable {
     }
 
     /// Operator names the lexer recognizes (besides ext:, which 3.2 already had).
-    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "dc", "datecreated", "regex", "dupe", "file", "folder", "opened", "打开过"]
+    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "dc", "datecreated", "regex", "dupe", "file", "folder", "opened", "打开过", "near", "相距", "samepage", "同页"]
 
     /// Applies one operator token. Returns a value to treat as an ordinary word
     /// (file:合同 = files whose name matches 合同), if any.
@@ -142,6 +150,20 @@ public struct AdvancedFilters: Sendable {
             if let start = range.start { openedFrom = max(openedFrom ?? start, start) }
             if let end = range.end { openedBefore = min(openedBefore ?? end, end) }
             descriptions.append("打开过：\(value)")
+        case "near", "相距":
+            guard needValue(), noExclusion() else { return nil }
+            let digits = value.filter(\.isNumber)
+            guard let number = Int(digits), (1...2_000).contains(number), digits.count == value.filter({ !"字个chars".contains($0) }).count else {
+                errors.append("无法识别 \(name):\(value)（例：near:30，即相距 30 字以内）")
+                return nil
+            }
+            near = min(near ?? number, number)
+            descriptions.append("相距 \(number) 字以内（全文搜索）")
+        case "samepage", "同页":
+            guard noExclusion() else { return nil }
+            if !samePage { descriptions.append("在同一页（全文搜索）") }
+            samePage = true
+            return value.isEmpty ? nil : value
         case "dupe":
             guard noExclusion() else { return nil }
             if !dupe { descriptions.append("同名文件") }

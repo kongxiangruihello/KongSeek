@@ -19,6 +19,8 @@ struct ResultItem: Equatable {
     var fill: QueryFill? = nil
     /// A folder heading when results are grouped by folder (⌘G, 0.19); not selectable.
     var isHeader = false
+    /// Other files with the same content, merged into this row (0.36).
+    var copies: [String] = []
 
     var isFile: Bool { link == nil && definition == nil && fill == nil && !isHeader }
     var isInArchive: Bool { innerPath != nil }
@@ -234,6 +236,7 @@ final class IndexService {
         let archives = Preferences.archiveSearch ? self.archives : nil
         let aliases = Preferences.searchAliases
         let chosen = Records.queryChoices.preferred(for: text)
+        let mergeCopies = Preferences.mergeCopies
         queue.async { [weak self] in
             guard let self else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -242,6 +245,9 @@ final class IndexService {
                 : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts, opened: opened, aliases: aliases, chosen: chosen)
             if !trimmed.isEmpty, let archives {
                 Self.mergeArchiveHits(into: &outcome, query: SearchQuery(trimmed), archives: archives, limit: limit)
+            }
+            if mergeCopies, !trimmed.isEmpty, !SearchQuery(trimmed).advanced.dupe {
+                outcome.items = Self.mergingCopies(outcome.items)
             }
             DispatchQueue.main.async {
                 guard token == self.searchToken else { return }
@@ -556,6 +562,29 @@ final class IndexService {
 }
 
 extension IndexService {
+    /// Results with the same content shown once (0.36): the best placed, with the
+    /// others as its copies. Files only in iCloud are not read.
+    static func mergingCopies(_ items: [ResultItem]) -> [ResultItem] {
+        let files = items.compactMap { item -> (path: String, size: Int64)? in
+            guard item.isFile, !item.isFolder, !item.isInArchive else { return nil }
+            var info = stat()
+            guard lstat(item.path, &info) == 0, info.st_mode & 0o170000 == 0o100000 else { return nil }
+            return (item.path, Int64(info.st_size))
+        }
+        let groups = CopyGroups.group(files) { path, size in copyHashes.hash(path, size: size) }
+        guard !groups.isEmpty else { return items }
+        let hidden = Set(groups.values.flatMap { $0 })
+        return items.compactMap { item -> ResultItem? in
+            guard !item.isInArchive else { return item }
+            if hidden.contains(item.path) { return nil }
+            var merged = item
+            if let copies = groups[item.path] { merged.copies = copies }
+            return merged
+        }
+    }
+
+    static let copyHashes = ContentHashCache()
+
     /// How good a match is, without the finer 3.2 score folded into refined scores
     /// (Relevance.combined = relevance × 100,000 + 3.2 score): matches at one level
     /// may be reordered by how often they were opened.
@@ -591,5 +620,31 @@ final class CancelFlag {
         lock.lock()
         value = true
         lock.unlock()
+    }
+}
+
+/// Content hashes of files, kept while their size and date stay the same (0.36), so
+/// merging copies in the results reads a file once, not on every keystroke.
+final class ContentHashCache {
+    private let lock = NSLock()
+    private var entries: [String: (size: Int64, modified: Double, hash: String)] = [:]
+
+    func hash(_ path: String, size: Int64) -> String? {
+        let modified = IndexService.modificationTime(path)
+        lock.lock()
+        if let entry = entries[path], entry.size == size, entry.modified == modified {
+            lock.unlock()
+            return entry.hash
+        }
+        lock.unlock()
+        // A file only in iCloud would be downloaded by reading it.
+        let url = URL(fileURLWithPath: path)
+        if (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus == .notDownloaded { return nil }
+        guard let hash = CopyGroups.contentHash(path, size: size) else { return nil }
+        lock.lock()
+        if entries.count > 5_000 { entries.removeAll() }
+        entries[path] = (size, modified, hash)
+        lock.unlock()
+        return hash
     }
 }

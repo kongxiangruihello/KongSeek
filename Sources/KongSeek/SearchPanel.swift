@@ -41,6 +41,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let service: IndexService
     private let ocr: OCRService
     private let field = NSTextField()
+    /// 筛选按钮 (0.36): pieces of syntax added to the search with a click.
+    private let filterBar = NSStackView()
+    private var filterBarHeight: NSLayoutConstraint!
+    private var filterFragments: [FilterFragments.Fragment] = []
+    private var filterLines: [String] = []
     private let table = ResultTable()
     private let preview: QLPreviewView
     /// Over the preview when the hit is on a known page of a PDF: that page, with the
@@ -65,6 +70,17 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// Where the words were found in the selected file (from the passage shown above the
     /// preview), for ⌥↩ "open at the hit" and "拷贝引文" (0.18).
     private var lastHit: (path: String, page: Int?)?
+    /// Every hit in the selected file (0.36, after Recoll's snippets window), and which is shown.
+    private var hitList: (path: String, places: [HitPlace])?
+    private var hitPosition = 0
+    /// 邻近搜索 (0.36): which full-text results have the words close together.
+    private var proximityChecked: [String: Bool] = [:]
+    private var proximityStarted = false
+
+    struct HitPlace {
+        var page: Int?
+        var snippet: Snippet
+    }
     private var pendingContentSearch: DispatchWorkItem?
     /// The full-text search in progress: Spotlight results and recognized-text
     /// (OCR) results arrive separately and are merged.
@@ -115,7 +131,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private var focusReclaims = 0
 
     private static let width: CGFloat = 800
-    private static let height: CGFloat = 500
+    private static let height: CGFloat = 524
 
     init(service: IndexService, ocr: OCRService) {
         self.service = service
@@ -149,6 +165,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             panel.setFrameOrigin(origin)
         }
         updateStatus()
+        rebuildFilterBar()
         shownAt = Date()
         focusReclaims = 0
         panel.makeKeyAndOrderFront(nil)
@@ -358,7 +375,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         hitPreview.backgroundColor = .windowBackgroundColor
         hitPreview.isHidden = true
 
-        for view in [searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        filterBar.orientation = .horizontal
+        filterBar.spacing = 4
+        filterBar.alignment = .centerY
+        filterBar.detachesHiddenViews = true
+        for view in [filterBar, searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -381,7 +402,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             modeButton.widthAnchor.constraint(equalToConstant: 52),
             field.heightAnchor.constraint(equalToConstant: 30),
 
-            topLine.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 12),
+            filterBar.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 6),
+            filterBar.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: -2),
+            filterBar.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -16),
+            topLine.topAnchor.constraint(equalTo: filterBar.bottomAnchor, constant: 6),
             topLine.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             topLine.trailingAnchor.constraint(equalTo: background.trailingAnchor),
 
@@ -429,7 +453,51 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         ])
         snippetHeight = snippetLabel.heightAnchor.constraint(equalToConstant: 0)
         snippetHeight.isActive = true
+        filterBarHeight = filterBar.heightAnchor.constraint(equalToConstant: 0)
+        filterBarHeight.isActive = true
+        rebuildFilterBar()
         updateEmptyLabel()
+    }
+
+    // MARK: - Filter buttons (0.36)
+
+    /// The buttons from the settings; rebuilt when they change.
+    private func rebuildFilterBar() {
+        let lines = Preferences.showFilterButtons ? Preferences.filterButtonLines : []
+        guard lines != filterLines || filterBar.arrangedSubviews.isEmpty != lines.isEmpty else { return }
+        filterLines = lines
+        filterFragments = FilterFragments(lines: lines).fragments
+        for view in filterBar.arrangedSubviews { filterBar.removeArrangedSubview(view); view.removeFromSuperview() }
+        for (index, fragment) in filterFragments.enumerated() {
+            let button = NSButton(title: fragment.title, target: self, action: #selector(filterButtonClicked(_:)))
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .recessed
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 11)
+            button.tag = index
+            button.toolTip = "加入或去掉 " + fragment.text + "（设置 › 通用 › 筛选按钮… 可改）"
+            filterBar.addArrangedSubview(button)
+        }
+        filterBarHeight.constant = filterFragments.isEmpty ? 0 : 22
+        refreshFilterButtons()
+    }
+
+    /// Each button pressed while its piece of syntax is in the search.
+    private func refreshFilterButtons() {
+        let text = field.stringValue
+        for case let button as NSButton in filterBar.arrangedSubviews where filterFragments.indices.contains(button.tag) {
+            button.state = FilterFragments.isActive(filterFragments[button.tag], in: text) ? .on : .off
+        }
+    }
+
+    @objc private func filterButtonClicked(_ sender: NSButton) {
+        guard filterFragments.indices.contains(sender.tag) else { return }
+        let updated = FilterFragments.toggled(filterFragments[sender.tag], in: field.stringValue)
+        field.stringValue = updated.isEmpty ? "" : updated + " "
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.moveToEndOfDocument(nil)
+        refreshFilterButtons()
+        runSearch()
     }
 
     // MARK: - Searching
@@ -505,6 +573,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         spotlightItems = []
         spotlightFinished = false
         ocrItems = []
+        proximityChecked = [:]
+        proximityStarted = false
 
         // Recognized text of scans, searched in memory off the main thread.
         let store = ocr.store
@@ -561,14 +631,71 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func publishContent(note: String? = nil) {
         let query = contentQuery
         var seen = Set(ocrItems.map(\.path))
-        let merged = ocrItems + spotlightItems.filter { seen.insert($0.path).inserted }
+        var merged = ocrItems + spotlightItems.filter { seen.insert($0.path).inserted }
         var outcome = SearchOutcome(highlightWords: query.highlightWords + contentAliasWords, notes: query.descriptions + query.natural.descriptions + (note.map { [$0] } ?? []))
         if !contentAliasWords.isEmpty { outcome.notes.append("同义词：" + contentAliasWords.joined(separator: "、")) }
         outcome.isContent = true
         outcome.gathering = !spotlightFinished
+        if query.advanced.needsProximity {
+            // near: / 同页: (0.36): each file's text is read to see how close the words stand.
+            let candidates = Array(merged.prefix(Self.proximityLimit))
+            if spotlightFinished && !proximityStarted {
+                proximityStarted = true
+                checkProximity(candidates.map(\.path), query: query, token: contentToken)
+            }
+            let checked = candidates.filter { proximityChecked[$0.path] != nil }.count
+            if spotlightFinished && checked < candidates.count {
+                outcome.gathering = true
+                outcome.notes.append("正在核对词语的距离：\(checked) / \(candidates.count)")
+            } else if merged.count > Self.proximityLimit {
+                outcome.notes.append("只核对了前 \(Self.proximityLimit) 个文件")
+            }
+            merged = candidates.filter { proximityChecked[$0.path] == true }
+        }
         outcome.matchCount = merged.count
         outcome.items = Array(merged.prefix(200))
         show(outcome)
+    }
+
+    static let proximityLimit = 300
+
+    /// Reads each file's text (from the text cache when it is there) and keeps those
+    /// where the words stand within `near:` characters, or on one page.
+    private func checkProximity(_ paths: [String], query: SearchQuery, token: Int) {
+        let aliases = Preferences.searchAliases
+        let words = (query.words + query.phrases).map { word -> [String] in
+            var forms: [String] = []
+            for name in [word] + (query.words.contains(word) ? aliases.alternatives(for: word) : []) {
+                for variant in SearchText.scriptVariants(name) where !forms.contains(variant) { forms.append(variant) }
+            }
+            return forms
+        }
+        let distance = query.advanced.near
+        let store = ocr.store
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var batch: [String: Bool] = [:]
+            func flush() {
+                let done = batch
+                batch = [:]
+                DispatchQueue.main.async {
+                    guard let self, token == self.contentToken else { return }
+                    self.proximityChecked.merge(done) { _, new in new }
+                    self.publishContent()
+                }
+            }
+            for (number, path) in paths.enumerated() {
+                guard let current = self, token == current.contentToken else { return }
+                let url = URL(fileURLWithPath: path)
+                var close = false
+                if (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus != .notDownloaded,
+                   let pages = QuoteLookup.readCached(url, ocr: store) {
+                    close = Proximity.firstPage(pages.pages, words: words, distance: distance) != nil
+                }
+                batch[path] = close
+                if number % 5 == 4 { flush() }
+            }
+            flush()
+        }
     }
 
     /// The ext: and -ext: parts of a query, for results that did not come from Spotlight.
@@ -579,6 +706,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     func runSearch() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        refreshFilterButtons()
         webRows = []
         showingHistory = false
         if browsedFolder == nil && (text == "?" || text == "？") {
@@ -833,6 +961,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             case 16: // ⌘Y: Quick Look
                 toggleQuickLook()
                 return true
+            case 30: // ⌘]: next hit in the file (0.36)
+                return stepHit(1)
+            case 33: // ⌘[: previous hit
+                return stepHit(-1)
+            case 38: // ⌘J: every hit in the file
+                return showHitMenu()
             case 125: // ⌘↓: enter folder
                 if let item = selectedItem, item.isFolder { enterFolder(item) }
                 return true
@@ -1481,6 +1615,24 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         add("在访达中显示", "\r") { [weak self] in self?.hide(); self?.actions.reveal(item) }
         add("快速查看", "y") { [weak self] in self?.toggleQuickLook() }
+        if !item.copies.isEmpty {
+            // Copies with the same content, merged into this row (0.36).
+            let copies = NSMenu()
+            for path in item.copies {
+                copies.addItem(ClosureMenuItem(title: Self.displayLocation(of: path) + "/" + (path as NSString).lastPathComponent, key: "") { [weak self] in
+                    self?.hide()
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                })
+            }
+            copies.addItem(.separator())
+            copies.addItem(ClosureMenuItem(title: "在访达中全部显示", key: "") { [weak self] in
+                self?.hide()
+                NSWorkspace.shared.activateFileViewerSelecting(([item.path] + item.copies).map { URL(fileURLWithPath: $0) })
+            })
+            let copiesItem = NSMenuItem(title: "内容相同的副本（\(item.copies.count)）", action: nil, keyEquivalent: "")
+            copiesItem.submenu = copies
+            menu.addItem(copiesItem)
+        }
         let ext = (item.path as NSString).pathExtension.lowercased()
         let hitPage = self.hitPage(for: item)
         if !item.isFolder && ext == "pdf" {
@@ -1632,6 +1784,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             image = icon(forExtension: (item.name as NSString).pathExtension)
         } else {
             location = Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "")
+                + (item.copies.isEmpty ? "" : " · 另有 \(item.copies.count) 个副本（⌘K 查看）")
             image = icon(for: item.path)
         }
         cell.configure(
@@ -1718,12 +1871,71 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 if case .found(let place) = found {
                     self.lastHit = (item.path, place.page)
                     self.showHitPage(item.path, page: place.page, words: needles)
+                    self.findAllHits(item.path, needles: needles, firstPage: place.page, token: token)
                 } else {
                     self.hideHitPreview()
                 }
                 self.snippetLabel.attributedStringValue = Self.snippetText(found)
             }
         }
+    }
+
+    /// Every place the words occur in the file (0.36), read in the background; then
+    /// ⌘] and ⌘[ step through them and ⌘J lists them.
+    private func findAllHits(_ path: String, needles: [String], firstPage: Int?, token: Int) {
+        let store = ocr.store
+        hitList = nil
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var places: [HitPlace] = []
+            if let pages = QuoteLookup.readCached(URL(fileURLWithPath: path), ocr: store) {
+                for (index, text) in pages.pages.enumerated() where places.count < 300 {
+                    for snippet in Snippet.findAll(in: text, needles: needles, limit: 20) where places.count < 300 {
+                        places.append(HitPlace(page: pages.isPaged ? pages.firstPage + index : nil, snippet: snippet))
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self, token == self.snippetToken, self.selectedItem?.path == path, places.count > 1 else { return }
+                self.hitList = (path, places)
+                self.hitPosition = places.firstIndex { $0.page == firstPage } ?? 0
+                self.showHitPlace()
+            }
+        }
+    }
+
+    /// Shows the current hit of `hitList`: its passage, and its page in the preview.
+    private func showHitPlace() {
+        guard let list = hitList, list.places.indices.contains(hitPosition) else { return }
+        let place = list.places[hitPosition]
+        lastHit = (list.path, place.page)
+        showHitPage(list.path, page: place.page, words: outcome.highlightWords)
+        let text = NSMutableAttributedString(attributedString: Self.placeText(page: place.page, recognized: false, snippet: place.snippet))
+        text.append(NSAttributedString(string: "\n第 \(hitPosition + 1) / \(list.places.count) 处\(list.places.count >= 300 ? "（只列前 300 处）" : "") · ⌘] 下一处 · ⌘[ 上一处 · ⌘J 列出全部",
+                                       attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+        snippetLabel.attributedStringValue = text
+    }
+
+    private func stepHit(_ delta: Int) -> Bool {
+        guard let list = hitList, list.path == selectedItem?.path, !list.places.isEmpty else { return false }
+        hitPosition = (hitPosition + delta + list.places.count) % list.places.count
+        showHitPlace()
+        return true
+    }
+
+    private func showHitMenu() -> Bool {
+        guard let list = hitList, list.path == selectedItem?.path, !list.places.isEmpty else { return false }
+        let menu = NSMenu()
+        for (index, place) in list.places.enumerated() {
+            let passage = place.snippet.text.count > 40 ? String(place.snippet.text.prefix(40)) + "…" : place.snippet.text
+            let entry = ClosureMenuItem(title: (place.page.map { "第 \($0) 页　" } ?? "") + passage, key: "") { [weak self] in
+                self?.hitPosition = index
+                self?.showHitPlace()
+            }
+            entry.state = index == hitPosition ? .on : .off
+            menu.addItem(entry)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 8, y: snippetLabel.bounds.height), in: snippetLabel)
+        return true
     }
 
     /// In name mode, when the words also occur in the selected document's text, the
@@ -1794,24 +2006,32 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if snippetHeight.constant != height { snippetHeight.constant = height }
     }
 
+    /// A hit's page and passage, the matched words in yellow.
+    private static func placeText(page: Int?, recognized: Bool, snippet: Snippet) -> NSAttributedString {
+        let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.labelColor]
+        let note: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]
+        let result = NSMutableAttributedString()
+        if let page {
+            result.append(NSAttributedString(string: "第 \(page) 页", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]))
+            result.append(NSAttributedString(string: "（⌥↩ 打开到此处，⌘K 拷贝引文）  ", attributes: note))
+        }
+        if recognized {
+            result.append(NSAttributedString(string: "识别文字  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.systemOrange]))
+        }
+        let start = result.length
+        result.append(NSAttributedString(string: snippet.text, attributes: base))
+        let range = NSRange(location: start + snippet.highlight.location, length: snippet.highlight.length)
+        result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.4), range: range)
+        return result
+    }
+
     private static func snippetText(_ outcome: ContentPreview.Outcome) -> NSAttributedString {
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.labelColor]
         let note: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]
         switch outcome {
         case .found(let found):
-            let result = NSMutableAttributedString()
-            if let page = found.page {
-                result.append(NSAttributedString(string: "第 \(page) 页", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.controlAccentColor]))
-                result.append(NSAttributedString(string: "（⌥↩ 打开到此处，⌘K 拷贝引文）  ", attributes: note))
-            }
-            if found.recognized {
-                result.append(NSAttributedString(string: "识别文字  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.systemOrange]))
-            }
-            let start = result.length
-            result.append(NSAttributedString(string: found.snippet.text, attributes: base))
-            let range = NSRange(location: start + found.snippet.highlight.location, length: found.snippet.highlight.length)
-            result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.4), range: range)
-            return result
+            _ = base
+            return placeText(page: found.page, recognized: found.recognized, snippet: found.snippet)
         case .notFound:
             return NSAttributedString(string: "Spotlight 认为此文件匹配，但未能定位原文（可能命中的是元数据，或词语被分隔）。", attributes: note)
         case .notDownloaded:
