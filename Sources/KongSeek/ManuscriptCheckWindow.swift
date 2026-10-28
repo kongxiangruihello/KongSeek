@@ -49,11 +49,22 @@ final class ManuscriptCheckModel: ObservableObject {
     @Published private(set) var running = false
     @Published private(set) var status = "选择一篇稿件或讲义（Word、PowerPoint、文本、Markdown 或 PDF），找出其中引号内的引文，逐条到书库中查证。"
     @Published var selection: Row.ID?
-    private let lookup: QuoteLookup
+    /// Several quotations are checked at a time (0.31): each worker its own lookup.
+    private let lookups: [QuoteLookup]
+    private var busy: [Int: Row.ID] = [:]
     private var stopped = false
+    /// When the results were last saved for this manuscript, if restored from an earlier session.
+    @Published private(set) var restoredFrom: Date?
+    /// 推测书上页码 for sources without page numbering (0.31), by file.
+    @Published private(set) var pageGuesses: [String: PageNumberGuess.Guess] = [:]
+
+    static let workers = 3
+    private static var sessionsFolder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("KongSeek/ManuscriptChecks", isDirectory: true)
+    }
 
     init(ocr: OCRStore) {
-        lookup = QuoteLookup(ocr: ocr)
+        lookups = (0..<ManuscriptCheckModel.workers).map { _ in QuoteLookup(ocr: ocr) }
     }
 
     var summary: String {
@@ -88,10 +99,18 @@ final class ManuscriptCheckModel: ObservableObject {
                 case .success(let found):
                     let quotes = found.map { $0.quote }
                     self.rows = found.enumerated().map { Row(number: $0.offset + 1, quote: $0.element.quote, place: $0.element.place) }
+                    let restored = self.restoreSession()
                     let inNotes = quotes.filter { $0.context.hasPrefix("〔注〕") }.count
-                    self.status = quotes.isEmpty
-                        ? "稿件中没有找到引号内的引文（至少 \(ManuscriptQuotes.minimumLength) 个字）。"
-                        : "找到 \(quotes.count) 条引文" + (inNotes > 0 ? "（其中脚注、尾注中 \(inNotes) 条）" : "") + "，点“开始核对”。"
+                    if quotes.isEmpty {
+                        self.status = "稿件中没有找到引号内的引文（至少 \(ManuscriptQuotes.minimumLength) 个字）。"
+                    } else if restored > 0, let date = self.restoredFrom {
+                        let waiting = self.rows.count - restored
+                        self.status = "接着 \(date.formatted(date: .abbreviated, time: .shortened)) 的核对：\(restored) 条沿用上次的结果"
+                            + (waiting > 0 ? "，\(waiting) 条是新增或改动的，点“开始核对”只查这些。" : "，没有新增或改动的引文。")
+                        self.guessPages()
+                    } else {
+                        self.status = "找到 \(quotes.count) 条引文" + (inNotes > 0 ? "（其中脚注、尾注中 \(inNotes) 条）" : "") + "，点“开始核对”。"
+                    }
                 case .failure(let message):
                     self.status = message
                 }
@@ -141,34 +160,127 @@ final class ManuscriptCheckModel: ObservableObject {
         return .success(found)
     }
 
-    func start() {
-        guard !rows.isEmpty, !running else { return }
-        stopped = false
-        running = true
-        next()
+    // MARK: Earlier sessions (0.31)
+
+    /// Results kept from the last time this manuscript was checked, for quotations it still
+    /// has (by their words); returns how many were restored.
+    private func restoreSession() -> Int {
+        restoredFrom = nil
+        guard let manuscript, let session = ManuscriptSession.load(for: manuscript.path, in: Self.sessionsFolder) else { return 0 }
+        var restored = 0
+        for index in rows.indices {
+            guard let checked = session.result(for: rows[index].quote.text) else { continue }
+            rows[index].state = .done
+            rows[index].best = checked.source.map(Self.result)
+            rows[index].others = checked.others
+            restored += 1
+        }
+        if restored > 0 { restoredFrom = session.saved }
+        return restored
     }
 
-    /// Checks the next waiting quotation; one at a time, so Spotlight is not flooded.
-    private func next() {
-        guard !stopped, let index = rows.firstIndex(where: { $0.state == .waiting }) else {
-            running = false
-            status = stopped ? "已停止。" + summary : "核对完成。" + summary
+    private static func result(_ source: ManuscriptSession.Source) -> QuoteLookup.Result {
+        QuoteLookup.Result(path: source.path, title: source.title, page: source.page, unit: source.unit, score: source.score,
+                           excerpt: source.excerpt, book: source.book, label: source.label)
+    }
+
+    private func saveSession() {
+        guard let manuscript else { return }
+        let checked = rows.filter { $0.state == .done }.map { row in
+            ManuscriptSession.Checked(quote: row.quote.text, source: row.best.map {
+                ManuscriptSession.Source(path: $0.path, title: $0.title, page: $0.page, unit: $0.unit, score: $0.score,
+                                         excerpt: $0.excerpt, book: $0.book, label: $0.label)
+            }, others: row.others)
+        }
+        let session = ManuscriptSession(manuscript: manuscript.path, checked: checked)
+        DispatchQueue.global(qos: .utility).async { try? session.save(in: ManuscriptCheckModel.sessionsFolder) }
+    }
+
+    /// Checks every quotation again, the earlier results set aside.
+    func recheckAll() {
+        stop()
+        for index in rows.indices {
+            rows[index].state = .waiting
+            rows[index].best = nil
+            rows[index].others = 0
+        }
+        restoredFrom = nil
+        start()
+    }
+
+    // MARK: Checking
+
+    func start() {
+        guard !rows.isEmpty, !running else { return }
+        guard rows.contains(where: { $0.state == .waiting }) else {
+            status = "没有待核对的引文。要全部重查，点“全部重查”。"
             return
         }
-        rows[index].state = .checking
-        status = "正在核对第 \(index + 1) / \(rows.count) 条…"
-        lookup.run(rows[index].quote.text, maximumCandidates: 80) { [weak self] outcome in
-            guard let self, self.rows.indices.contains(index) else { return }
-            self.rows[index].state = .done
-            self.rows[index].best = outcome.results.first
-            self.rows[index].others = max(0, outcome.results.count - 1)
-            self.next()
+        stopped = false
+        running = true
+        busy = [:]
+        fillWorkers()
+    }
+
+    /// Gives each idle worker the next waiting quotation (0.31: three at a time; with the
+    /// text cache, a book read for one is not read again for the next).
+    private func fillWorkers() {
+        guard !stopped else { return }
+        for worker in lookups.indices where busy[worker] == nil {
+            guard let index = rows.firstIndex(where: { $0.state == .waiting }) else { break }
+            let id = rows[index].id
+            rows[index].state = .checking
+            busy[worker] = id
+            lookups[worker].run(rows[index].quote.text, maximumCandidates: 80) { [weak self] outcome in
+                guard let self else { return }
+                self.busy[worker] = nil
+                if let row = self.rows.firstIndex(where: { $0.id == id }), self.rows[row].state == .checking {
+                    self.rows[row].state = .done
+                    self.rows[row].best = outcome.results.first
+                    self.rows[row].others = max(0, outcome.results.count - 1)
+                }
+                self.saveSession()
+                self.fillWorkers()
+            }
         }
+        let done = rows.filter { $0.state == .done }.count
+        if busy.isEmpty {
+            running = false
+            status = (stopped ? "已停止。" : "核对完成。") + summary
+            guessPages()
+        } else {
+            status = "正在核对（同时 \(busy.count) 条）：已完成 \(done) / \(rows.count) 条…"
+        }
+    }
+
+    // MARK: Printed page numbers (0.31)
+
+    /// Guesses the printed page numbers of sources that have none, in the background.
+    func guessPages() {
+        let paths = Set(rows.compactMap { row -> String? in
+            guard let best = row.best, best.printed?.source == .pdf, pageGuesses[best.path] == nil else { return nil }
+            return best.path
+        })
+        PageGuesses.guess(Array(paths)) { [weak self] path, guess in
+            self?.pageGuesses[path] = guess
+        }
+    }
+
+    /// Takes the guessed numbering for the book of `row`.
+    func acceptGuess(_ row: Row) {
+        guard let best = row.best, let page = best.page, let guess = pageGuesses[best.path] else { return }
+        var numbers = Records.pageNumbers
+        numbers.set(path: best.path, pdfPage: page, printedPage: guess.printed(forPDFPage: page))
+        Records.pageNumbers = numbers
+        pageGuesses[best.path] = nil
+        objectWillChange.send()
+        status = "已采用推测的页码：《\(best.title)》PDF 第 \(page) 页 = 书上第 \(guess.printed(forPDFPage: page)) 页，这本书的其他出处也随之换算。"
     }
 
     func stop() {
         stopped = true
-        lookup.stop()
+        lookups.forEach { $0.stop() }
+        busy = [:]
         if running {
             running = false
             for index in rows.indices where rows[index].state == .checking { rows[index].state = .waiting }
@@ -381,6 +493,10 @@ struct ManuscriptCheckView: View {
                     Button("停止") { model.stop() }
                 } else {
                     Button("开始核对") { model.start() }.keyboardShortcut(.defaultAction).disabled(model.rows.isEmpty)
+                    if model.rows.contains(where: { $0.state == .done }) {
+                        Button("全部重查") { model.recheckAll() }
+                            .help("不用上次保存的结果，把每条引文重新查一遍")
+                    }
                 }
                 Button("导出 Excel…") { model.export() }.disabled(model.rows.isEmpty || model.running)
                 Menu("参考文献表") {
@@ -451,6 +567,14 @@ struct ManuscriptCheckView: View {
                 Text("出处：" + model.reference(row) + (row.others > 0 ? "（另有 \(row.others) 处）" : ""))
                     .font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle).padding(.leading, 98)
                 Text("原文：" + best.excerpt).font(.caption).foregroundColor(.secondary).lineLimit(2).padding(.leading, 98)
+                if let page = best.page, best.printed?.source == .pdf, let guess = model.pageGuesses[best.path] {
+                    HStack(spacing: 6) {
+                        Text("书上可能是第 \(guess.printed(forPDFPage: page)) 页（读了 \(guess.sampled) 页的页眉页脚，\(guess.agreeing) 页一致）")
+                            .font(.caption).foregroundColor(.blue)
+                        Button("采用") { model.acceptGuess(row) }.controlSize(.small)
+                    }
+                    .padding(.leading, 98)
+                }
                 if let differences = row.differences {
                     HStack(alignment: .firstTextBaseline) {
                         QuoteDiffText.line(differences).font(.caption).lineLimit(3)

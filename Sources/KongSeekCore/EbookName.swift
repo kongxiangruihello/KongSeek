@@ -13,7 +13,7 @@ import Foundation
 /// checksum, an ISBN, or "书名 by 作者"); names the user wrote ("李欧梵--上海摩登")
 /// are left alone, since there is no telling title from author. Marks the user added
 /// at the end ("_已读") are kept.
-public struct EbookName: Equatable, Sendable {
+public struct EbookName: Equatable, Sendable, Codable {
     public var title: String
     public var authors: String?
     public var publisher: String?

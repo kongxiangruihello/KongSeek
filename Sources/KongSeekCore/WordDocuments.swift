@@ -309,31 +309,60 @@ enum WordFootnotes {
     static let closingMarks: Set<Character> = ["”", "」", "』", "’", "﹂", "﹄", "\""]
 
     /// Puts a footnote reference after the first place `quote` stands in a paragraph.
+    /// Spaces, line breaks, punctuation and character forms may differ (0.31).
     static func insert(_ quote: String, id: Int, referenceStyle: String?, into document: inout String) -> Bool {
-        let needle = quote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let needle = QuoteMatcher.normalized(quote)
         guard !needle.isEmpty else { return false }
         let whole = document as NSString
+        let needleText = String(needle)
         for paragraph in WordComments.paragraphs(in: document) {
-            guard paragraph.text.contains(needle) else { continue }
+            guard String(QuoteMatcher.normalized(paragraph.text)).contains(needleText) else { continue }
             let elements = textElements(in: paragraph.range, of: whole)
-            let text = elements.map(\.text).joined()
-            guard let found = text.range(of: needle) else { continue }
-            var end = found.upperBound
-            if end < text.endIndex, closingMarks.contains(text[end]) { end = text.index(after: end) }
-            let offset = text.distance(from: text.startIndex, to: end)
+            let text = Array(elements.map(\.text).joined())
+            guard let end = endOfQuotation(needle, in: text) else { continue }
             // The element the quotation ends in, and how far into it.
             var consumed = 0
             for element in elements {
                 let count = element.text.count
-                guard offset <= consumed + count else { consumed += count; continue }
-                let within = offset - consumed
+                guard end <= consumed + count else { consumed += count; continue }
                 let run = referenceStyle.map { "<w:r><w:rPr><w:rStyle w:val=\"\($0)\"/></w:rPr><w:footnoteReference w:id=\"\(id)\"/></w:r>" }
                     ?? reference.replacingOccurrences(of: "%ID%", with: String(id))
-                return splitRun(at: element, within: within, inserting: run, document: &document)
+                return splitRun(at: element, within: end - consumed, inserting: run, document: &document)
             }
         }
         return false
     }
+
+    /// Where the footnote mark goes: after the quotation's last letter, and after its own
+    /// closing punctuation and quotation mark when one follows within three characters
+    /// ("…不亦说乎？”" — the mark after ”).
+    static func endOfQuotation(_ needle: [Character], in text: [Character]) -> Int? {
+        // Letters and digits of the paragraph, folded, with where each stands.
+        var letters: [Character] = []
+        var positions: [Int] = []
+        for (index, character) in text.enumerated() where character.isLetter || character.isNumber {
+            letters.append(contentsOf: Array(SearchText.fold(String(character))))
+            positions.append(contentsOf: Array(repeating: index, count: SearchText.fold(String(character)).count))
+        }
+        guard needle.count <= letters.count else { return nil }
+        var start = 0
+        while start + needle.count <= letters.count {
+            if Array(letters[start..<(start + needle.count)]) == needle {
+                var end = positions[start + needle.count - 1] + 1
+                var look = end
+                while look < text.count, look - end < 3, !(text[look].isLetter || text[look].isNumber || text[look].isWhitespace) {
+                    if closingMarks.contains(text[look]) { end = look + 1; break }
+                    if openingMarks.contains(text[look]) { break }
+                    look += 1
+                }
+                return end
+            }
+            start += 1
+        }
+        return nil
+    }
+
+    static let openingMarks: Set<Character> = ["“", "「", "『", "‘", "﹁", "﹃", "（", "("]
 
     /// Splits the run holding `element` after `within` characters and puts `run` between
     /// the halves (or after the run, when the quotation ends with the element).

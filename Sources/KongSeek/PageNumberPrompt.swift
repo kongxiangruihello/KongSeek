@@ -17,9 +17,19 @@ enum PageNumberPrompt {
             info += "\n\n现在按" + (current.source == .reader ? "你设的对应" : "PDF 自带的页码") + "算作第 \(current.text) 页。"
         }
         alert.informativeText = info
+        // A guess from the running heads and feet (0.31), filled in for the reader to confirm.
+        let guess = hasOffset ? nil : (PageGuesses.cached(path) ?? PageGuesses.compute(path))
+        if let guess {
+            info += "\n\nKongSeek 读了书中 \(guess.sampled) 页的页眉页脚，其中 \(guess.agreeing) 页一致显示：PDF 第 \(pdfPage) 页 = 书上第 \(guess.printed(forPDFPage: pdfPage)) 页。已填在下面，请看一眼这一页确认。"
+            alert.informativeText = info
+        }
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
         field.placeholderString = "如 15"
-        if let current, Int(current.text) != nil { field.stringValue = current.text }
+        if let guess, guess.printed(forPDFPage: pdfPage) >= 1 {
+            field.stringValue = String(guess.printed(forPDFPage: pdfPage))
+        } else if let current, Int(current.text) != nil {
+            field.stringValue = current.text
+        }
         alert.accessoryView = field
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")

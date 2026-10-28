@@ -65,6 +65,7 @@ final class QuoteFinderModel: ObservableObject {
             guard let self else { return }
             self.running = false
             self.results = outcome.results
+            self.guessPages()
             let exact = outcome.results.filter(\.exact).count
             var text = outcome.results.isEmpty ? "没有找到出处。" : "找到 \(outcome.results.count) 处：完全一致 \(exact) 处，近似 \(outcome.results.count - exact) 处。"
             if outcome.inCloud > 0 { text += "另有 \(outcome.inCloud) 个只在 iCloud 中的文件未核对。" }
@@ -101,6 +102,23 @@ final class QuoteFinderModel: ObservableObject {
         let stem = (result.path as NSString).lastPathComponent
         let place = result.printed.map { "第 \($0.text) 页" } ?? result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" }
         return "《\((stem as NSString).deletingPathExtension)》" + (place ?? "")
+    }
+
+    /// 推测书上页码 (0.31) for results whose books number neither their pages nor have been told.
+    @Published private(set) var pageGuesses: [String: PageNumberGuess.Guess] = [:]
+
+    private func guessPages() {
+        let paths = Set(results.prefix(8).compactMap { $0.printed?.source == .pdf ? $0.path : nil })
+        PageGuesses.guess(Array(paths)) { [weak self] path, guess in self?.pageGuesses[path] = guess }
+    }
+
+    func acceptGuess(_ result: Result) {
+        guard let page = result.page, let guess = pageGuesses[result.path] else { return }
+        var numbers = Records.pageNumbers
+        numbers.set(path: result.path, pdfPage: page, printedPage: guess.printed(forPDFPage: page))
+        Records.pageNumbers = numbers
+        pageGuesses[result.path] = nil
+        status = "已采用推测的页码：《\(result.title)》PDF 第 \(page) 页 = 书上第 \(guess.printed(forPDFPage: page)) 页。"
     }
 
     /// Asks which printed page this PDF page is (0.27).
@@ -213,6 +231,13 @@ struct QuoteFinderView: View {
                         .fixedSize()
                     }
                     Text(result.excerpt).font(.callout).foregroundColor(.secondary).lineLimit(3)
+                    if let page = result.page, result.printed?.source == .pdf, let guess = model.pageGuesses[result.path] {
+                        HStack(spacing: 6) {
+                            Text("书上可能是第 \(guess.printed(forPDFPage: page)) 页（读了 \(guess.sampled) 页的页眉页脚，\(guess.agreeing) 页一致）")
+                                .font(.caption).foregroundColor(.blue)
+                            Button("采用") { model.acceptGuess(result) }.controlSize(.small)
+                        }
+                    }
                     if let differences = model.differences(result) {
                         HStack(alignment: .firstTextBaseline) {
                             QuoteDiffText.line(differences).font(.caption).lineLimit(3)

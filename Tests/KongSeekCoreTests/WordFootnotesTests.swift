@@ -90,4 +90,19 @@ final class WordFootnotesTests: XCTestCase {
         XCTAssertTrue(notes.contains(#"<w:footnote w:id="2"><w:p><w:pPr><w:pStyle w:val="a5"/></w:pPr>"#))
         XCTAssertFalse(notes.contains("不应再加"))
     }
+
+    /// 0.31: found although spaces, punctuation and character forms differ.
+    func testFootnoteFoundDespiteSmallDifferences() throws {
+        let body = #"<w:p><w:r><w:t xml:space="preserve">子曰：“學而時習之， 不亦說乎？”有朋自遠方來。</w:t></w:r></w:p>"#
+        let source = try makeDocx(body)
+        let output = folder.appendingPathComponent("出3.docx")
+        let placement = try WordComments.write(source: source, destination: output, comments: [], footnotes: [
+            .init(quote: "学而时习之，不亦说乎？", text: "《论语注疏》"),
+        ])
+        XCTAssertEqual(placement.footnotes, [true])
+        let document = try part("word/document.xml", of: output)
+        XCTAssertTrue(wellFormed(document))
+        XCTAssertTrue(document.contains(#"不亦說乎？”</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="1"/></w:r><w:r><w:t xml:space="preserve">有朋自遠方來。</w:t></w:r>"#),
+                      "after the question mark and the closing quotation mark")
+    }
 }
