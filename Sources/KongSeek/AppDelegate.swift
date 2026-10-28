@@ -94,6 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lookupHotKey.register(Preferences.lookupShortcut)
         quoteHotKey = HotKey(id: 4) { [weak self] in self?.checkSelectedQuote() }
         quoteHotKey.register(Preferences.quoteShortcut)
+        service.onFilesChanged = { [weak self] paths in
+            guard let self else { return }
+            BookTextService.shared.noteChanges(paths, service: self.service)
+        }
         service.onStateChange = { [weak self] state in
             guard let self else { return }
             self.searchWindow.indexStateChanged()

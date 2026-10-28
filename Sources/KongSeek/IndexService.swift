@@ -99,6 +99,8 @@ final class IndexService {
     /// Names inside .zip archives, searched along with the index when set.
     var archives: ArchiveIndex?
     var onStateChange: ((IndexState) -> Void)?
+    /// Paths FSEvents reported changed (0.38), on main: the e-book text index follows them.
+    var onFilesChanged: (([String]) -> Void)?
 
     init(roots: [String], rules: ExclusionRules) {
         self.roots = roots
@@ -196,6 +198,10 @@ final class IndexService {
         }
         let summary = index.apply(batch.changes, eventID: batch.lastEventID > 0 ? batch.lastEventID : nil)
         if summary.added > 0 || summary.removed > 0 { publishReady() }
+        let paths = batch.changes.map(\.path)
+        if !paths.isEmpty {
+            DispatchQueue.main.async { [weak self] in self?.onFilesChanged?(paths) }
+        }
         scheduleSave()
     }
 
@@ -239,12 +245,13 @@ final class IndexService {
         let aliases = Preferences.searchAliases
         let chosen = Records.queryChoices.preferred(for: text)
         let mergeCopies = Preferences.mergeCopies
+        let order = Preferences.resultOrder
         queue.async { [weak self] in
             guard let self else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             var outcome = trimmed.isEmpty
                 ? Self.recentItems(counts: counts, opened: opened)
-                : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts, opened: opened, aliases: aliases, chosen: chosen)
+                : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts, opened: opened, aliases: aliases, chosen: chosen, order: order)
             if !trimmed.isEmpty, let archives {
                 Self.mergeArchiveHits(into: &outcome, query: SearchQuery(trimmed), archives: archives, limit: limit)
             }
@@ -377,7 +384,8 @@ final class IndexService {
     }
 
     private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int],
-                           opened: [String: Double] = [:], aliases: SearchAliases = .none, chosen: [String] = []) -> SearchOutcome {
+                           opened: [String: Double] = [:], aliases: SearchAliases = .none, chosen: [String] = [],
+                           order: ResultOrder = .relevance) -> SearchOutcome {
         guard let index, let session else { return SearchOutcome() }
         let query = SearchQuery(trimmed)
         // 打开过: (0.35) searches only what was opened from KongSeek, in that time.
@@ -422,6 +430,22 @@ final class IndexService {
             }
         }
 
+        // 作者: / 出版社: / 年: (0.38): books only, by their details.
+        if query.advanced.book.isActive {
+            let records = BookRecords.current()
+            hits = hits.filter { hit in
+                let path = index.path(of: hit.id)
+                guard DuplicateFinder.bookExtensions.contains((path as NSString).pathExtension.lowercased()) else { return false }
+                return query.advanced.book.accepts(details: Self.bookDetails(path, records: records), fileName: index.name(of: hit.id), aliases: aliases)
+            }
+            if hits.isEmpty {
+                var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions)
+                outcome.notes.append("书目信息取自文件名、EPUB 自带书目和补全过的书目；可在搜索结果上 ⌘K › 补全书目信息")
+                return outcome
+            }
+            extraWords += (query.advanced.book.authors + query.advanced.book.publishers).filter { !$0.excluded }.map(\.text)
+        }
+
         // 搜不到时的建议 (0.35): names that sound the same or differ in one character.
         if hits.isEmpty, query.valid, !query.words.isEmpty, within == nil {
             let suggested = suggestions(for: query, index: index)
@@ -433,9 +457,53 @@ final class IndexService {
                 return outcome
             }
         }
-        var outcome = rank(hits, query: query, index: index, limit: limit, counts: counts, chosen: chosen)
+        var outcome = order == .relevance || query.advanced.dupe
+            ? rank(hits, query: query, index: index, limit: limit, counts: counts, chosen: chosen)
+            : ordered(hits, by: order, query: query, index: index, limit: limit)
         outcome.highlightWords += extraWords
         outcome.notes += extraNotes
+        return outcome
+    }
+
+    /// Results sorted by date, size or name instead of relevance (0.38). Up to 50,000 of
+    /// the best matches are sorted (their dates and sizes read from disk).
+    private func ordered(_ hits: [SearchHit], by order: ResultOrder, query: SearchQuery, index: NameIndex, limit: Int) -> SearchOutcome {
+        var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions)
+        outcome.matchCount = hits.count
+        outcome.notes.append("按\(order.title)排序")
+        var pool = hits
+        if pool.count > 50_000 {
+            pool = Array(pool.sorted { $0.score != $1.score ? $0.score > $1.score : $0.id < $1.id }.prefix(50_000))
+            outcome.notes.append("只排了最匹配的 5 万项")
+        }
+        struct Keyed { let hit: SearchHit; let modified: Double; let size: Int64; let name: String }
+        let keyed = pool.map { hit -> Keyed in
+            var info = stat()
+            let path = index.path(of: hit.id)
+            let found = lstat(path, &info) == 0
+            let modified = found ? Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9 : 0
+            return Keyed(hit: hit, modified: modified, size: found ? Int64(info.st_size) : 0, name: order == .name ? index.name(of: hit.id) : "")
+        }
+        let sorted: [Keyed]
+        switch order {
+        case .modified: sorted = keyed.sorted { $0.modified != $1.modified ? $0.modified > $1.modified : $0.hit.id < $1.hit.id }
+        case .size: sorted = keyed.sorted { $0.size != $1.size ? $0.size > $1.size : $0.hit.id < $1.hit.id }
+        case .name: sorted = keyed.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        case .relevance: sorted = keyed
+        }
+        var items: [ResultItem] = []
+        var examined = 0
+        for entry in sorted where items.count < limit {
+            let path = index.path(of: entry.hit.id)
+            if query.needsMetadata {
+                examined += 1
+                if examined > 3_000 { break }
+                guard query.acceptsMetadata(EntryMetadata.read(path: path)) else { continue }
+            }
+            let flags = index.flags(of: entry.hit.id)
+            items.append(ResultItem(path: path, name: index.name(of: entry.hit.id), isFolder: flags.contains(.directory) && !flags.contains(.package), score: entry.hit.score))
+        }
+        outcome.items = items
         return outcome
     }
 
@@ -587,6 +655,28 @@ extension IndexService {
 
     static let copyHashes = ContentHashCache()
 
+    /// A book's details for 作者: / 出版社: / 年: (0.38): from its name, an EPUB's package
+    /// (read once while the file is unchanged), then the confirmed record. Nil when nothing is known.
+    static func bookDetails(_ path: String, records: BookRecords) -> EbookName? {
+        let url = URL(fileURLWithPath: path)
+        let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
+        var details = EbookName.parse(stem)
+        if url.pathExtension.lowercased() == "epub", details?.authors == nil || details?.publisher == nil || details?.year == nil,
+           let package = epubDetails.details(path) {
+            var merged = details ?? EbookName(title: stem)
+            merged.authors = merged.authors ?? package.authors
+            merged.publisher = merged.publisher ?? package.publisher
+            merged.year = merged.year ?? package.year
+            details = merged
+        }
+        if records.record(for: path) != nil {
+            details = records.apply(to: details ?? EbookName(title: stem), path: path)
+        }
+        return details
+    }
+
+    static let epubDetails = EpubDetailsCache()
+
     /// How good a match is, without the finer 3.2 score folded into refined scores
     /// (Relevance.combined = relevance × 100,000 + 3.2 score): matches at one level
     /// may be reordered by how often they were opened.
@@ -648,5 +738,49 @@ final class ContentHashCache {
         entries[path] = (size, modified, hash)
         lock.unlock()
         return hash
+    }
+}
+
+/// The authors, publisher and year an EPUB's package gives (0.38), kept while the file
+/// is unchanged, so 作者: does not open every EPUB on every keystroke. Files only in
+/// iCloud are not read.
+final class EpubDetailsCache {
+    private let lock = NSLock()
+    private var entries: [String: (modified: Double, details: EbookName?)] = [:]
+
+    func details(_ path: String) -> EbookName? {
+        let modified = IndexService.modificationTime(path)
+        lock.lock()
+        if let entry = entries[path], entry.modified == modified {
+            lock.unlock()
+            return entry.details
+        }
+        lock.unlock()
+        let url = URL(fileURLWithPath: path)
+        var details: EbookName?
+        if (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus != .notDownloaded,
+           let package = EpubMetadata.read(url) {
+            details = EbookName(title: package.title ?? "", authors: package.creators.isEmpty ? nil : package.creators.joined(separator: "、"),
+                                publisher: package.publisher, year: package.year)
+        }
+        lock.lock()
+        if entries.count > 20_000 { entries.removeAll() }
+        entries[path] = (modified, details)
+        lock.unlock()
+        return details
+    }
+}
+
+/// How results are ordered (0.38): by how well they match, or by date, size or name.
+enum ResultOrder: String, CaseIterable {
+    case relevance, modified, size, name
+
+    var title: String {
+        switch self {
+        case .relevance: return "相关度"
+        case .modified: return "修改时间"
+        case .size: return "大小"
+        case .name: return "名称"
+        }
     }
 }

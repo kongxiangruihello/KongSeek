@@ -80,6 +80,12 @@ enum Preferences {
         CharacterEquivalents(lines: quoteEquivalentLines)
     }
 
+    /// How search results are ordered (0.38): 相关度 unless changed.
+    static var resultOrder: ResultOrder {
+        get { ResultOrder(rawValue: defaults.string(forKey: "resultOrder") ?? "") ?? .relevance }
+        set { defaults.set(newValue.rawValue, forKey: "resultOrder") }
+    }
+
     /// KongSeek's own text index of e-books Spotlight does not read (0.37); on unless turned off.
     static var bookTextIndex: Bool {
         get { defaults.object(forKey: "bookTextIndex") as? Bool ?? true }

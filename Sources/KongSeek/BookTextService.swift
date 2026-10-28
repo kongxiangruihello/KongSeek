@@ -41,7 +41,30 @@ final class BookTextService {
         }
     }
 
+    /// Changes reported by FSEvents (0.38): when e-books, text files or folders changed,
+    /// a pass runs about half a minute later (only new and changed books are read), so a
+    /// book just downloaded can be searched within a minute.
+    func noteChanges(_ paths: [String], service: IndexService) {
+        guard Preferences.bookTextIndex, timer != nil else { return }
+        let relevant = paths.contains { path in
+            let ext = (path as NSString).pathExtension.lowercased()
+            return Self.extensions.contains(ext) || ext.isEmpty
+        }
+        guard relevant else { return }
+        pendingPass?.invalidate()
+        pendingPass = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self, weak service] _ in
+            guard let self, let service else { return }
+            if self.running { self.passAgain = true } else { self.refresh(service: service) }
+        }
+    }
+
+    private var pendingPass: Timer?
+    /// A change came in during a pass: run once more when it ends.
+    private var passAgain = false
+    private weak var lastService: IndexService?
+
     func refresh(service: IndexService) {
+        lastService = service
         guard Preferences.bookTextIndex, !running else { return }
         running = true
         let flag = CancelFlag()
@@ -119,7 +142,13 @@ final class BookTextService {
             self.progress = (done, total)
             self.current = current
             self.running = running
-            if !running { self.lastRun = Date() }
+            if !running {
+                self.lastRun = Date()
+                if self.passAgain, let service = self.lastService {
+                    self.passAgain = false
+                    self.refresh(service: service)
+                }
+            }
         }
     }
 

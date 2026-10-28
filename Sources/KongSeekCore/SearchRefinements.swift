@@ -154,3 +154,77 @@ public enum CopyGroups {
         return DuplicateFinder.fullHash(path)
     }
 }
+
+/// 按书目信息搜索 (0.38): 作者:、出版社:、年: — a book's details as its file name
+/// gives them (a site's long name), as its EPUB package says, or as confirmed in
+/// 补全书目信息. Where a book has no such detail, its file name is looked in instead
+/// ("论语译注 杨伯峻 中华书局 1980.pdf"). Authors may be named by another name in
+/// 同义词与别名 (朱子 for 朱熹).
+public struct BookFilter: Equatable, Sendable {
+    public struct Term: Equatable, Sendable {
+        public var text: String
+        public var excluded: Bool
+    }
+
+    public var authors: [Term] = []
+    public var publishers: [Term] = []
+    public var yearFrom: Int?
+    public var yearTo: Int?
+
+    public init() {}
+
+    public var isActive: Bool { !authors.isEmpty || !publishers.isEmpty || yearFrom != nil || yearTo != nil }
+
+    /// "1980", "1980..1995", ">=2000", "<1949", "1980-1990" as inclusive bounds.
+    public static func yearRange(_ text: String) -> (from: Int?, to: Int?)? {
+        let value = text.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "年", with: "")
+        func year(_ part: String) -> Int? {
+            guard part.count == 4, let number = Int(part), (1000...2999).contains(number) else { return nil }
+            return number
+        }
+        for separator in ["..", "–", "—", "-", "~", "至"] {
+            if let range = value.range(of: separator), range.lowerBound != value.startIndex {
+                guard let low = year(String(value[..<range.lowerBound])), let high = year(String(value[range.upperBound...])), low <= high else { return nil }
+                return (low, high)
+            }
+        }
+        for (op, kind) in [(">=", 0), ("<=", 1), (">", 2), ("<", 3)] where value.hasPrefix(op) {
+            guard let number = year(String(value.dropFirst(op.count))) else { return nil }
+            switch kind {
+            case 0: return (number, nil)
+            case 1: return (nil, number)
+            case 2: return (number + 1, nil)
+            default: return (nil, number - 1)
+            }
+        }
+        guard let number = year(value) else { return nil }
+        return (number, number)
+    }
+
+    /// The first year (1000–2999) written in a file name.
+    static func year(inName name: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: "(?<![0-9])(1[0-9]{3}|2[0-9]{3})(?![0-9])"),
+              let match = regex.firstMatch(in: name, range: NSRange(location: 0, length: (name as NSString).length)) else { return nil }
+        return Int((name as NSString).substring(with: match.range(at: 1)))
+    }
+
+    /// Whether a book passes: `details` from its name, package or confirmed record (nil
+    /// when nothing is known), `fileName` to fall back on.
+    public func accepts(details: EbookName?, fileName: String, aliases: SearchAliases = .none) -> Bool {
+        let foldedName = SearchText.fold(fileName)
+        func matches(_ term: Term, in field: String?) -> Bool {
+            let forms = ([term.text] + aliases.alternatives(for: term.text)).map(SearchText.fold)
+            let haystack = field.map(SearchText.fold) ?? foldedName
+            let found = forms.contains { !$0.isEmpty && haystack.contains($0) }
+            return found != term.excluded
+        }
+        for term in authors where !matches(term, in: details?.authors) { return false }
+        for term in publishers where !matches(term, in: details?.publisher) { return false }
+        if yearFrom != nil || yearTo != nil {
+            guard let year = details?.year.flatMap({ Int($0.prefix(4)) }) ?? Self.year(inName: fileName) else { return false }
+            if let yearFrom, year < yearFrom { return false }
+            if let yearTo, year > yearTo { return false }
+        }
+        return true
+    }
+}

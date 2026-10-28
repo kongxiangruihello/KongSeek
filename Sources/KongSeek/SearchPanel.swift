@@ -43,6 +43,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let field = NSTextField()
     /// 筛选按钮 (0.36): pieces of syntax added to the search with a click.
     private let filterBar = NSStackView()
+    /// 排序 (0.38): 相关度, 修改时间, 大小, 名称.
+    private let orderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var filterBarHeight: NSLayoutConstraint!
     private var filterFragments: [FilterFragments.Fragment] = []
     private var filterLines: [String] = []
@@ -379,7 +381,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         filterBar.spacing = 4
         filterBar.alignment = .centerY
         filterBar.detachesHiddenViews = true
-        for view in [filterBar, searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        orderPopup.controlSize = .small
+        orderPopup.font = .systemFont(ofSize: 11)
+        for order in ResultOrder.allCases { orderPopup.addItem(withTitle: "按" + order.title) }
+        orderPopup.selectItem(at: ResultOrder.allCases.firstIndex(of: Preferences.resultOrder) ?? 0)
+        orderPopup.target = self
+        orderPopup.action = #selector(orderChanged)
+        orderPopup.toolTip = "结果按相关度、修改时间、大小或名称排序（全文搜索同样适用）"
+        for view in [orderPopup, filterBar, searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -404,7 +413,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
             filterBar.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 6),
             filterBar.leadingAnchor.constraint(equalTo: field.leadingAnchor, constant: -2),
-            filterBar.trailingAnchor.constraint(lessThanOrEqualTo: background.trailingAnchor, constant: -16),
+            filterBar.trailingAnchor.constraint(lessThanOrEqualTo: orderPopup.leadingAnchor, constant: -8),
+            orderPopup.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
+            orderPopup.centerYAnchor.constraint(equalTo: filterBar.centerYAnchor),
             topLine.topAnchor.constraint(equalTo: filterBar.bottomAnchor, constant: 6),
             topLine.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             topLine.trailingAnchor.constraint(equalTo: background.trailingAnchor),
@@ -478,8 +489,16 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             button.toolTip = "加入或去掉 " + fragment.text + "（设置 › 通用 › 筛选按钮… 可改）"
             filterBar.addArrangedSubview(button)
         }
-        filterBarHeight.constant = filterFragments.isEmpty ? 0 : 22
+        filterBarHeight.constant = 22
         refreshFilterButtons()
+    }
+
+    @objc private func orderChanged() {
+        let all = ResultOrder.allCases
+        Preferences.resultOrder = all[max(0, min(orderPopup.indexOfSelectedItem, all.count - 1))]
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.moveToEndOfDocument(nil)
+        runSearch()
     }
 
     /// Each button pressed while its piece of syntax is in the search.
@@ -665,6 +684,35 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 outcome.notes.append("只核对了前 \(Self.proximityLimit) 个文件")
             }
             merged = candidates.filter { proximityChecked[$0.path] == true }
+        }
+        // 作者: / 出版社: / 年: (0.38) on full-text results: by name and confirmed records (no EPUB reading here).
+        if query.advanced.book.isActive {
+            let records = BookRecords.current()
+            let aliases = Preferences.searchAliases
+            merged = merged.filter { item in
+                guard DuplicateFinder.bookExtensions.contains((item.path as NSString).pathExtension.lowercased()) else { return false }
+                let stem = EbookName.splitMark(((item.name as NSString).deletingPathExtension)).stem
+                var details = EbookName.parse(stem)
+                if records.record(for: item.path) != nil { details = records.apply(to: details ?? EbookName(title: stem), path: item.path) }
+                return query.advanced.book.accepts(details: details, fileName: item.name, aliases: aliases)
+            }
+        }
+        // 排序 (0.38).
+        let order = Preferences.resultOrder
+        if order != .relevance {
+            func key(_ item: ResultItem) -> (Double, Int64) {
+                var info = stat()
+                guard lstat(item.path, &info) == 0 else { return (0, 0) }
+                return (Double(info.st_mtimespec.tv_sec), Int64(info.st_size))
+            }
+            let keys = Dictionary(merged.map { ($0.path, key($0)) }, uniquingKeysWith: { first, _ in first })
+            switch order {
+            case .modified: merged.sort { (keys[$0.path]?.0 ?? 0) > (keys[$1.path]?.0 ?? 0) }
+            case .size: merged.sort { (keys[$0.path]?.1 ?? 0) > (keys[$1.path]?.1 ?? 0) }
+            case .name: merged.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            case .relevance: break
+            }
+            outcome.notes.append("按\(order.title)排序")
         }
         outcome.matchCount = merged.count
         outcome.items = Array(merged.prefix(200))
