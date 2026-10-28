@@ -80,6 +80,12 @@ enum Preferences {
         CharacterEquivalents(lines: quoteEquivalentLines)
     }
 
+    /// Documents in folders Spotlight does not index also go into KongSeek's text index (0.39).
+    static var indexUncoveredFolders: Bool {
+        get { defaults.object(forKey: "indexUncoveredFolders") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "indexUncoveredFolders") }
+    }
+
     /// How search results are ordered (0.38): 相关度 unless changed.
     static var resultOrder: ResultOrder {
         get { ResultOrder(rawValue: defaults.string(forKey: "resultOrder") ?? "") ?? .relevance }

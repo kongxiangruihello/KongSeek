@@ -38,6 +38,7 @@ final class GeneralSettingsView: NSView {
     private let historyCheckbox = NSButton(checkboxWithTitle: "记录搜索历史（在空搜索框中按 ↑ 查看）", target: nil, action: nil)
     private let copiesCheckbox = NSButton(checkboxWithTitle: "搜索结果中合并内容相同的副本", target: nil, action: nil)
     private let bookTextCheckbox = NSButton(checkboxWithTitle: "为 EPUB、Kindle 电子书和 GB18030 文本建立正文索引", target: nil, action: nil)
+    private let uncoveredCheckbox = NSButton(checkboxWithTitle: "也为 Spotlight 未收录的文件夹中的 PDF、Word、幻灯片建立正文索引", target: nil, action: nil)
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
     private let loginCheckbox = NSButton(checkboxWithTitle: "开机登录后自动启动 KongSeek（在菜单栏待命）", target: nil, action: nil)
@@ -137,6 +138,9 @@ final class GeneralSettingsView: NSView {
         copiesRow.spacing = 10
         bookTextCheckbox.target = self
         bookTextCheckbox.action = #selector(bookTextChanged)
+        uncoveredCheckbox.target = self
+        uncoveredCheckbox.action = #selector(bookTextChanged)
+        uncoveredCheckbox.toolTip = "Spotlight 不收录的文件夹（在“系统设置 › Spotlight”中排除的、关闭了索引的磁盘上的）里的文件，全文搜不到；KongSeek 每天检查一次，由它自己读取这些文件的正文"
         bookTextCheckbox.toolTip = "Spotlight 读不到这些文件的正文；KongSeek 在后台读取（只读本机已下载的文件），全文搜索、引文查证、出处汇编就能找到它们"
         for style in Citation.Style.allCases { citationPopup.addItem(withTitle: style.title) }
         citationPopup.target = self
@@ -186,7 +190,7 @@ final class GeneralSettingsView: NSView {
         case .general:
             views = [heading("启动"), loginCheckbox, loginNote, loginSettingsButton,
                      heading("PDF 阅读"), readerRow,
-                     heading("搜索与引文"), historyRow, copiesRow, bookTextCheckbox, citationRow,
+                     heading("搜索与引文"), historyRow, copiesRow, bookTextCheckbox, uncoveredCheckbox, citationRow,
                      heading("备份与诊断"), transferRow, transferHelp,
                      heading("其他应用"), cliRow, claudeRow, contentCheckbox]
         case .updates:
@@ -286,6 +290,8 @@ final class GeneralSettingsView: NSView {
         historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
         copiesCheckbox.state = Preferences.mergeCopies ? .on : .off
         bookTextCheckbox.state = Preferences.bookTextIndex ? .on : .off
+        uncoveredCheckbox.state = Preferences.indexUncoveredFolders ? .on : .off
+        uncoveredCheckbox.isEnabled = Preferences.bookTextIndex
         citationPopup.selectItem(at: Citation.Style.allCases.firstIndex(of: Preferences.citationStyle) ?? 0)
         refreshKongFolio()
         refreshLogin()
@@ -354,6 +360,8 @@ final class GeneralSettingsView: NSView {
 
     @objc private func bookTextChanged() {
         Preferences.bookTextIndex = bookTextCheckbox.state == .on
+        Preferences.indexUncoveredFolders = uncoveredCheckbox.state == .on
+        uncoveredCheckbox.isEnabled = Preferences.bookTextIndex
         NotificationCenter.default.post(name: BookTextService.settingChanged, object: nil)
     }
 

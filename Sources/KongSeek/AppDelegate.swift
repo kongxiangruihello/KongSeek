@@ -610,8 +610,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Preferences.bookTextIndex {
             let summary = books.index.summary
             var detail = "已收录 \(summary.books) 本（约 \(max(1, summary.characters / 10_000)) 万字），全文搜索、引文查证、出处汇编都会用到"
+            if books.uncoveredFolderCount > 0 { detail += "；含 Spotlight 未收录的 \(books.uncoveredFolderCount) 个文件夹中的文稿" }
             if books.running { detail += "；正在读取 \(books.progress.done) / \(books.progress.total)" }
-            items.append(HealthItem("正文索引", "EPUB、Kindle 与 GB18030 文本", detail, .ok))
+            items.append(HealthItem("正文索引", Preferences.indexUncoveredFolders ? "EPUB、Kindle、GB18030 文本，及 Spotlight 未收录的文稿" : "EPUB、Kindle 与 GB18030 文本", detail, .ok))
             if summary.problems > 0 {
                 items.append(HealthItem("正文索引", "\(summary.problems) 本读不出文字", "有 DRM 保护、用了不支持的压缩方式（如 HUFF/CDIC），或文件已损坏", .info))
             }

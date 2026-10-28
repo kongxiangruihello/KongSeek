@@ -69,7 +69,8 @@ final class BookTextService {
         running = true
         let flag = CancelFlag()
         cancel = flag
-        service.fileEntries(under: nil, minimumSize: 1, extensions: Self.extensions) { [weak self] entries in
+        let wanted = Preferences.indexUncoveredFolders ? Self.extensions.union(Self.documentExtensions) : Self.extensions
+        service.fileEntries(under: nil, minimumSize: 1, extensions: wanted) { [weak self] entries in
             guard let self else { return }
             self.queue.async { self.process(entries, cancel: flag) }
         }
@@ -88,9 +89,16 @@ final class BookTextService {
         }
         var keep = Set<String>()
         var todo: [FileEntry] = []
+        // Documents (0.39): only those in folders Spotlight does not index.
+        let documents = entries.filter { Self.documentExtensions.contains(($0.path as NSString).pathExtension.lowercased()) }
+        let uncovered = documents.isEmpty ? [] : uncoveredFolders(documents, cancel: cancel)
         for entry in entries {
             let ext = (entry.path as NSString).pathExtension.lowercased()
-            guard Self.extensions.contains(ext) else { continue }
+            if Self.documentExtensions.contains(ext) {
+                guard uncovered.contains((entry.path as NSString).deletingLastPathComponent) else { continue }
+            } else {
+                guard Self.extensions.contains(ext) else { continue }
+            }
             keep.insert(entry.path)
             if index.isCurrent(path: entry.path, size: entry.size, modified: entry.modified) || !entry.isLocal { continue }
             todo.append(entry)
@@ -107,9 +115,77 @@ final class BookTextService {
         publish(done: todo.count, total: todo.count, current: nil, running: false)
     }
 
+    // MARK: Folders Spotlight does not index (0.39)
+
+    static let documentExtensions: Set<String> = ["pdf", "docx", "doc", "rtf", "pptx", "odt"]
+    private var coverage: (checked: Date, uncovered: Set<String>)?
+
+    /// Folders holding documents Spotlight does not know: up to three documents of each
+    /// folder are asked about with mdls; a folder where none is known is left to
+    /// KongSeek. Checked once a day.
+    private func uncoveredFolders(_ documents: [FileEntry], cancel: CancelFlag) -> Set<String> {
+        if let coverage, Date().timeIntervalSince(coverage.checked) < 86_400 { return coverage.uncovered }
+        var byFolder: [String: [String]] = [:]
+        for document in documents where document.isLocal {
+            byFolder[(document.path as NSString).deletingLastPathComponent, default: []].append(document.path)
+        }
+        var samples: [(folder: String, path: String)] = []
+        for (folder, paths) in byFolder {
+            let sorted = paths.sorted()
+            let step = max(1, sorted.count / 3)
+            for index in stride(from: 0, to: sorted.count, by: step).prefix(3) { samples.append((folder, sorted[index])) }
+        }
+        var known: [String: Bool] = [:]
+        var position = 0
+        while position < samples.count {
+            if cancel.isCancelled { return coverage?.uncovered ?? [] }
+            let batch = Array(samples[position..<min(samples.count, position + 150)])
+            let output = Self.run("/usr/bin/mdls", ["-raw", "-name", "kMDItemFSName"] + batch.map { $0.path })
+            for (sample, isKnown) in zip(batch, SpotlightCoverage.indexed(mdlsOutput: output, count: batch.count)) {
+                known[sample.folder] = (known[sample.folder] ?? false) || isKnown
+            }
+            position += 150
+        }
+        let uncovered = Set(known.filter { !$0.value }.map { $0.key })
+        coverage = (Date(), uncovered)
+        return uncovered
+    }
+
+    private static func run(_ executable: String, _ arguments: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Folders whose documents KongSeek reads itself, for 状态与诊断.
+    var uncoveredFolderCount: Int { coverage?.uncovered.count ?? 0 }
+
     private func read(_ entry: FileEntry) {
         let url = URL(fileURLWithPath: entry.path)
         let ext = url.pathExtension.lowercased()
+        if Self.documentExtensions.contains(ext) {
+            // A document in a folder Spotlight does not index (0.39).
+            do {
+                let read = try DocumentText.read(url, maximumPages: 3_000)
+                if read.pages.allSatisfy({ $0.isEmpty }) {
+                    index.markUnreadable(path: entry.path, size: entry.size, modified: entry.modified, problem: "没有文字")
+                } else {
+                    try index.store(path: entry.path, size: entry.size, modified: entry.modified, pages: read.pages)
+                }
+            } catch DocumentText.Failure.noText(_) {
+                index.markUnreadable(path: entry.path, size: entry.size, modified: entry.modified, problem: "扫描件")
+            } catch {
+                index.markUnreadable(path: entry.path, size: entry.size, modified: entry.modified, problem: "无法读取")
+            }
+            return
+        }
         if ext == "txt" {
             guard entry.size <= Int64(Self.textLimit), let data = try? Data(contentsOf: url) else {
                 index.markUnreadable(path: entry.path, size: entry.size, modified: entry.modified, problem: BookTextIndex.readBySpotlight)

@@ -59,6 +59,19 @@ public struct Snippet: Equatable {
         return result
     }
 
+    /// The passage cut to about `radius` characters either side of the match (0.39: a
+    /// long passage for the preview, a short one for the line above it).
+    public func trimmed(radius: Int) -> Snippet {
+        let whole = text as NSString
+        let start = max(0, highlight.location - radius)
+        let end = min(whole.length, highlight.location + highlight.length + radius)
+        guard start > 0 || end < whole.length else { return self }
+        let prefix = start > 0 ? "…" : ""
+        let body = whole.substring(with: NSRange(location: start, length: end - start))
+        return Snippet(text: prefix + body + (end < whole.length ? "…" : ""),
+                       highlight: NSRange(location: (prefix as NSString).length + highlight.location - start, length: highlight.length))
+    }
+
     static func collapse(_ text: String) -> String {
         text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }

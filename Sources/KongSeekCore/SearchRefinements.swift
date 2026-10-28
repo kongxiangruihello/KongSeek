@@ -228,3 +228,43 @@ public struct BookFilter: Equatable, Sendable {
         return true
     }
 }
+
+/// 相关文件 (0.39): for one file, the other editions of the same book (by the title in
+/// the name, as 查找重复 groups them) and other versions of the same document ("v2",
+/// "副本", "终稿", dates), newest first.
+public enum RelatedFiles {
+    public struct Groups: Equatable, Sendable {
+        public var editions: [String] = []
+        public var versions: [String] = []
+    }
+
+    /// The extensions that count as the same kind of document as `path`.
+    public static func familyExtensions(of path: String) -> Set<String> {
+        let ext = (path as NSString).pathExtension.lowercased()
+        switch DuplicateFinder.family(path) {
+        case "slides": return ["ppt", "pptx", "key"]
+        case "text": return ["doc", "docx", "pages", "rtf", "odt"]
+        case "sheet": return ["xls", "xlsx", "numbers", "csv"]
+        case "image": return ["jpg", "jpeg", "png", "heic", "tif", "tiff"]
+        default: return [ext]
+        }
+    }
+
+    public static func find(for path: String, among files: [FileEntry]) -> Groups {
+        let name = (path as NSString).lastPathComponent
+        var groups = Groups()
+        let others = files.filter { $0.path != path }.sorted { $0.modified > $1.modified }
+        if DuplicateFinder.bookExtensions.contains((path as NSString).pathExtension.lowercased()), let key = DuplicateFinder.bookKey(name) {
+            groups.editions = others.filter {
+                DuplicateFinder.bookExtensions.contains(($0.path as NSString).pathExtension.lowercased()) && DuplicateFinder.bookKey($0.name) == key
+            }.map(\.path)
+        }
+        let versionKey = DuplicateFinder.versionKey(name)
+        let family = DuplicateFinder.family(path)
+        let editions = Set(groups.editions)
+        groups.versions = others.filter {
+            !editions.contains($0.path) && DuplicateFinder.family($0.path) == family && DuplicateFinder.versionKey($0.name) == versionKey
+        }.map(\.path)
+        return groups
+    }
+}

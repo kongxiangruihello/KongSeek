@@ -63,6 +63,8 @@ struct SearchOutcome {
     var notes: [String] = []
     /// Not matches but suggestions (0.35): names that sound alike or differ in one character.
     var isSuggestion = false
+    /// 相关文件 of one file (0.39), in groups with their own headings.
+    var isRelated = false
 }
 
 enum IndexState: Equatable {
@@ -330,6 +332,43 @@ final class IndexService {
         queue.async { [weak self] in
             let entries = self?.index?.fileEntries(under: folder, minimumSize: minimumSize, extensions: extensions) ?? []
             DispatchQueue.main.async { completion(entries) }
+        }
+    }
+
+    /// 相关文件 (0.39): other editions of the same book, other versions of the same
+    /// document, and what changed lately in the same folder. Calls back on main.
+    func related(to path: String, completion: @escaping (SearchOutcome) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let index = self.index else { return }
+            let ext = (path as NSString).pathExtension.lowercased()
+            var wanted = RelatedFiles.familyExtensions(of: path)
+            if DuplicateFinder.bookExtensions.contains(ext) { wanted.formUnion(DuplicateFinder.bookExtensions) }
+            let groups = RelatedFiles.find(for: path, among: index.fileEntries(under: nil, minimumSize: 1, extensions: wanted))
+            let folder = (path as NSString).deletingLastPathComponent
+            let listed = (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: folder),
+                                                                       includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+                                                                       options: [.skipsHiddenFiles])) ?? []
+            let shown = Set(groups.editions + groups.versions)
+            let recent = listed.compactMap { url -> (String, Date)? in
+                let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey])
+                guard values?.isDirectory != true, url.path != path, !shown.contains(url.path) else { return nil }
+                return (url.path, values?.contentModificationDate ?? .distantPast)
+            }.sorted { $0.1 > $1.1 }.prefix(10).map { $0.0 }
+
+            var outcome = SearchOutcome()
+            outcome.isRelated = true
+            outcome.notes = ["“\((path as NSString).lastPathComponent)”的相关文件 · ⎋ 返回搜索"]
+            func add(_ title: String, _ paths: [String]) {
+                guard !paths.isEmpty else { return }
+                outcome.items.append(ResultItem(path: "header:related:" + title, name: title, isFolder: false, score: paths.count, isHeader: true))
+                outcome.items += paths.map { ResultItem(path: $0, name: ($0 as NSString).lastPathComponent, isFolder: false, score: 0) }
+            }
+            add("同一部书的其他版本", groups.editions)
+            add("同一文稿的其他版本", groups.versions)
+            add("同一文件夹中最近改过的", Array(recent))
+            outcome.matchCount = outcome.items.filter { !$0.isHeader }.count
+            if outcome.items.isEmpty { outcome.notes.append("没有找到其他版本，文件夹中也没有其他文件") }
+            DispatchQueue.main.async { completion(outcome) }
         }
     }
 

@@ -78,6 +78,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// 邻近搜索 (0.36): which full-text results have the words close together.
     private var proximityChecked: [String: Bool] = [:]
     private var proximityStarted = false
+    /// Showing 相关文件 of one result (0.39); ⎋ goes back to the search.
+    private var showingRelated = false
+    private var ebookPreviewToken = 0
 
     struct HitPlace {
         var page: Int?
@@ -768,6 +771,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     func runSearch() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        showingRelated = false
         refreshFilterButtons()
         webRows = []
         showingHistory = false
@@ -817,7 +821,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if results.isEmpty && browsedFolder == nil && !query.isEmpty && !newOutcome.gathering && !newOutcome.isRecentList {
             results = Preferences.quickLinks.filter(\.fallback).compactMap { ResultItem.web($0, query: query) }
         }
-        if Preferences.groupByFolder && browsedFolder == nil && !newOutcome.isRecentList && !query.isEmpty {
+        if Preferences.groupByFolder && browsedFolder == nil && !newOutcome.isRecentList && !newOutcome.isRelated && !query.isEmpty {
             results = Self.groupedByFolder(results)
         }
         table.reloadData()
@@ -933,7 +937,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             guard browsedFolder != nil, fieldEmpty else { return false }
             goBack()
         case #selector(NSResponder.cancelOperation(_:)):
-            if browsedFolder != nil {
+            if showingRelated {
+                runSearch()
+            } else if browsedFolder != nil {
                 leaveBrowsing()
             } else if fieldEmpty {
                 hide()
@@ -1318,6 +1324,18 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         runSearch()
     }
 
+    /// 相关文件 (0.39) of a result, in place of the results until ⎋.
+    private func showRelated(_ item: ResultItem) {
+        statusLabel.stringValue = "正在查找“\(item.name)”的相关文件…"
+        service.related(to: item.path) { [weak self] outcome in
+            guard let self else { return }
+            self.contentToken += 1
+            self.contentSearch.stop()
+            self.show(outcome)
+            self.showingRelated = true
+        }
+    }
+
     /// Which file was opened after this name search (0.35), so the same query puts it first.
     private func rememberChoice(_ item: ResultItem) {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1677,6 +1695,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         add("在访达中显示", "\r") { [weak self] in self?.hide(); self?.actions.reveal(item) }
         add("快速查看", "y") { [weak self] in self?.toggleQuickLook() }
+        if !item.isFolder {
+            add("相关文件（其他版本、同一文件夹中最近改过的）") { [weak self] in self?.showRelated(item) }
+        }
         if !item.copies.isEmpty {
             // Copies with the same content, merged into this row (0.36).
             let copies = NSMenu()
@@ -1820,7 +1841,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 field.lineBreakMode = .byTruncatingHead
                 return field
             }()
-            label.stringValue = "  📁 " + item.name + "（\(item.score) 个）"
+            label.stringValue = (item.path.hasPrefix("header:related:") ? "  " : "  📁 ") + item.name + "（\(item.score) 个）"
             label.toolTip = String(item.path.dropFirst("header:".count))
             return label
         }
@@ -1902,12 +1923,50 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 ?? "↩ 在浏览器中打开：\n\(item.link?.absoluteString ?? "")"
             definitionView.scrollToBeginningOfDocument(nil)
         }
-        let url = selected.flatMap(previewURL(for:))
+        var url = selected.flatMap(previewURL(for:))
+        // E-books (0.39): their text in place of Quick Look, which shows little of them.
+        if let item = selected, Self.isEbook(item) {
+            url = nil
+            showEbookPreview(item)
+        }
         if let item = selected, item.isInArchive { loadArchivePreview(item) }
         if (preview.previewItem as? NSURL).map({ $0 as URL }) != url {
             preview.previewItem = url as NSURL?
         }
         updateSnippet()
+    }
+
+    static func isEbook(_ item: ResultItem) -> Bool {
+        item.isFile && !item.isFolder && !item.isInArchive && EbookText.supports((item.path as NSString).pathExtension)
+    }
+
+    /// The opening of an e-book's text in the preview area (0.39), from the text index
+    /// when it is there; a hit's passage replaces it once the hits are found.
+    private func showEbookPreview(_ item: ResultItem) {
+        ebookPreviewToken += 1
+        let token = ebookPreviewToken
+        definitionScroll.isHidden = false
+        definitionView.string = "正在读取“\(item.name)”…"
+        let path = item.path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var text = BookTextService.shared.index.pages(for: path)?.joined(separator: "\n\n")
+            if text == nil, (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus != .notDownloaded {
+                text = (try? EbookText.read(URL(fileURLWithPath: path)))?.joined(separator: "\n\n")
+            }
+            let opening = text.map { $0.count > 4_000 ? String($0.prefix(4_000)) + "\n\n……" : $0 }
+            DispatchQueue.main.async {
+                guard let self, token == self.ebookPreviewToken, self.selectedItem?.path == path else { return }
+                if let list = self.hitList, list.path == path { return }
+                let body = opening ?? "读不出这本书的文字（可能有 DRM 保护，或只在 iCloud 中）。"
+                let result = NSMutableAttributedString(string: item.name + "\n\n", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.labelColor])
+                result.append(NSAttributedString(string: body, attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]))
+                for range in TextLocator.ranges(of: self.outcome.highlightWords, in: result.string) {
+                    result.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.4), range: range)
+                }
+                self.definitionView.textStorage?.setAttributedString(result)
+                self.definitionView.scrollToBeginningOfDocument(nil)
+            }
+        }
     }
 
     /// In full-text mode, the passage around the first match, with its PDF page.
@@ -1950,14 +2009,17 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var places: [HitPlace] = []
             if let pages = QuoteLookup.readCached(URL(fileURLWithPath: path), ocr: store) {
+                // E-books get long passages (0.39), shown whole in the preview area.
+                let radius = EbookText.supports((path as NSString).pathExtension) ? 400 : 60
                 for (index, text) in pages.pages.enumerated() where places.count < 300 {
-                    for snippet in Snippet.findAll(in: text, needles: needles, limit: 20) where places.count < 300 {
+                    for snippet in Snippet.findAll(in: text, needles: needles, radius: radius, limit: radius > 60 ? 300 : 20) where places.count < 300 {
                         places.append(HitPlace(page: pages.isPaged ? pages.firstPage + index : nil, snippet: snippet))
                     }
                 }
             }
             DispatchQueue.main.async {
-                guard let self, token == self.snippetToken, self.selectedItem?.path == path, places.count > 1 else { return }
+                let ebook = EbookText.supports((path as NSString).pathExtension)
+                guard let self, token == self.snippetToken, self.selectedItem?.path == path, places.count > (ebook ? 0 : 1) else { return }
                 self.hitList = (path, places)
                 self.hitPosition = places.firstIndex { $0.page == firstPage } ?? 0
                 self.showHitPlace()
@@ -1971,7 +2033,19 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let place = list.places[hitPosition]
         lastHit = (list.path, place.page)
         showHitPage(list.path, page: place.page, words: outcome.highlightWords)
-        let text = NSMutableAttributedString(attributedString: Self.placeText(page: place.page, recognized: false, snippet: place.snippet))
+        let ebook = EbookText.supports((list.path as NSString).pathExtension)
+        if ebook {
+            // The whole passage in the preview area, the words in yellow (0.39).
+            let passage = NSMutableAttributedString(string: place.snippet.text, attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor])
+            for range in TextLocator.ranges(of: outcome.highlightWords, in: place.snippet.text) {
+                passage.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.4), range: range)
+            }
+            definitionScroll.isHidden = false
+            definitionView.textStorage?.setAttributedString(passage)
+            definitionView.scrollRangeToVisible(place.snippet.highlight)
+        }
+        let shown = ebook ? place.snippet.trimmed(radius: 60) : place.snippet
+        let text = NSMutableAttributedString(attributedString: Self.placeText(page: place.page, recognized: false, snippet: shown))
         text.append(NSAttributedString(string: "\n第 \(hitPosition + 1) / \(list.places.count) 处\(list.places.count >= 300 ? "（只列前 300 处）" : "") · ⌘] 下一处 · ⌘[ 上一处 · ⌘J 列出全部",
                                        attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
         snippetLabel.attributedStringValue = text
@@ -1988,7 +2062,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         guard let list = hitList, list.path == selectedItem?.path, !list.places.isEmpty else { return false }
         let menu = NSMenu()
         for (index, place) in list.places.enumerated() {
-            let passage = place.snippet.text.count > 40 ? String(place.snippet.text.prefix(40)) + "…" : place.snippet.text
+            let brief = place.snippet.trimmed(radius: 18).text
+            let passage = brief.count > 44 ? String(brief.prefix(44)) + "…" : brief
             let entry = ClosureMenuItem(title: (place.page.map { "第 \($0) 页　" } ?? "") + passage, key: "") { [weak self] in
                 self?.hitPosition = index
                 self?.showHitPlace()
