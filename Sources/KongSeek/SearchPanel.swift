@@ -719,6 +719,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         outcome.matchCount = merged.count
         outcome.items = Array(merged.prefix(200))
+        IndexService.annotate(&outcome.items, notes: Records.notes)
         show(outcome)
     }
 
@@ -1139,6 +1140,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             openFromArchive(item)
             return
         }
+        // 文件夹跳转 (0.40): ↩ goes into the folder.
+        if outcome.isFolderJump && item.isFolder {
+            rememberChoice(item)
+            enterFolder(item)
+            return
+        }
         hide()
         actions.open(item)
     }
@@ -1322,6 +1329,32 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             editor.selectedRange = range
         }
         runSearch()
+    }
+
+    /// 文件备注 (0.40): a line or two about the file, kept by KongSeek; searched with 备注:.
+    private func editNote(_ item: ResultItem) {
+        let alert = NSAlert()
+        alert.messageText = "备注：" + item.name
+        alert.informativeText = "写给自己看的一两句话，如“讲‘仁’的部分在第三章”。存在 KongSeek 里，不改动文件；搜索 备注:仁 可找出来，结果中也会显示。清空即删除。"
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 360, height: 90)
+        scroll.borderType = .bezelBorder
+        let text = scroll.documentView as! NSTextView
+        text.font = .systemFont(ofSize: 13)
+        text.isRichText = false
+        text.string = Records.notes.note(for: item.path)?.text ?? ""
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = text
+        alert.beginSheetModal(for: panel) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            var notes = Records.notes
+            notes.set(text.string, for: item.path)
+            Records.notes = notes
+            self?.statusLabel.stringValue = notes.note(for: item.path) == nil ? "已删除备注：\(item.name)" : "已保存备注：\(item.name)（搜索 备注: 可列出全部有备注的文件）"
+            self?.runSearch()
+        }
     }
 
     /// 相关文件 (0.39) of a result, in place of the results until ⎋.
@@ -1698,6 +1731,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if !item.isFolder {
             add("相关文件（其他版本、同一文件夹中最近改过的）") { [weak self] in self?.showRelated(item) }
         }
+        add(item.note == nil ? "写备注…" : "修改备注…") { [weak self] in self?.editNote(item) }
         if !item.copies.isEmpty {
             // Copies with the same content, merged into this row (0.36).
             let copies = NSMenu()
@@ -1866,7 +1900,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             location = Self.displayLocation(of: item.path) + " › 压缩包 " + (item.path as NSString).lastPathComponent + (folder.isEmpty ? "" : " › " + folder)
             image = icon(forExtension: (item.name as NSString).pathExtension)
         } else {
-            location = Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "") + (item.ownText ? " · KongSeek 正文索引" : "")
+            // A book's details and the reader's note first (0.40), then where it is.
+            let leading = [item.bookLine, item.note.map { "📝 " + $0 }].compactMap { $0 }
+            location = (leading.isEmpty ? "" : leading.joined(separator: "  ") + "  —  ")
+                + Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "") + (item.ownText ? " · KongSeek 正文索引" : "")
                 + (item.copies.isEmpty ? "" : " · 另有 \(item.copies.count) 个副本（⌘K 查看）")
             image = icon(for: item.path)
         }

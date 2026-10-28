@@ -67,6 +67,10 @@ enum Records {
         let preferredBefore = preferred
         for move in moves { preferred.move(from: move.from, to: move.to) }
         if preferred != preferredBefore { editions = preferred }
+        var notesNow = notes
+        let notesBefore = notesNow
+        for move in moves { notesNow.move(from: move.from, to: move.to) }
+        if notesNow != notesBefore { notes = notesNow }
         var choices = queryChoices
         let choicesBefore = choices
         for move in moves { choices.move(from: move.from, to: move.to) }
@@ -75,6 +79,25 @@ enum Records {
         let booksBefore = books
         for move in moves { books.move(from: move.from, to: move.to) }
         if books != booksBefore { try? books.save() }
+    }
+
+    // MARK: 文件备注 (0.40)
+
+    private static var notesURL: URL { folder.appendingPathComponent("file-notes.json") }
+    private static var cachedNotes: FileNotes?
+
+    static var notes: FileNotes {
+        get {
+            if let cachedNotes { return cachedNotes }
+            let loaded = FileNotes.load(from: notesURL)
+            cachedNotes = loaded
+            return loaded
+        }
+        set {
+            cachedNotes = newValue
+            try? newValue.save(to: notesURL)
+            NotificationCenter.default.post(name: changed, object: nil)
+        }
     }
 
     // MARK: 按查询记住选择 (0.35)

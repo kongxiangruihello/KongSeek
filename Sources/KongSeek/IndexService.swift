@@ -21,6 +21,10 @@ struct ResultItem: Equatable {
     var isHeader = false
     /// Other files with the same content, merged into this row (0.36).
     var copies: [String] = []
+    /// For a book: "杨伯峻 · 中华书局 · 1980 · 在读" (0.40).
+    var bookLine: String? = nil
+    /// The reader's note on the file (0.40).
+    var note: String? = nil
     /// Found in KongSeek's own text index of e-books (0.37), not by Spotlight.
     var ownText = false
 
@@ -65,6 +69,8 @@ struct SearchOutcome {
     var isSuggestion = false
     /// 相关文件 of one file (0.39), in groups with their own headings.
     var isRelated = false
+    /// 文件夹跳转 "/讲义" (0.40): folders only; ↩ enters the folder.
+    var isFolderJump = false
 }
 
 enum IndexState: Equatable {
@@ -248,18 +254,33 @@ final class IndexService {
         let chosen = Records.queryChoices.preferred(for: text)
         let mergeCopies = Preferences.mergeCopies
         let order = Preferences.resultOrder
+        let notes = Records.notes
+        let jump = FolderJump.query(text)
         queue.async { [weak self] in
             guard let self else { return }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = (jump ?? text).trimmingCharacters(in: .whitespacesAndNewlines)
             var outcome = trimmed.isEmpty
                 ? Self.recentItems(counts: counts, opened: opened)
-                : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts, opened: opened, aliases: aliases, chosen: chosen, order: order)
+                : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts, opened: opened, aliases: aliases, chosen: chosen,
+                                 order: order, notes: notes)
+            if jump != nil {
+                // Folders the reader works in first: opens of what is inside them.
+                let affinity = Dictionary(outcome.items.map { ($0.path, FolderJump.affinity(of: $0.path, counts: counts)) }, uniquingKeysWith: { first, _ in first })
+                let ranked = outcome.items.enumerated().sorted { a, b in
+                    let x = affinity[a.element.path] ?? 0, y = affinity[b.element.path] ?? 0
+                    return x != y ? x > y : a.offset < b.offset
+                }
+                outcome.items = ranked.map { $0.element }
+                outcome.isFolderJump = true
+                outcome.notes.append("文件夹跳转：常去的在前 · ↩ 进入浏览 · ⌘↩ 在访达中显示")
+            }
             if !trimmed.isEmpty, let archives {
                 Self.mergeArchiveHits(into: &outcome, query: SearchQuery(trimmed), archives: archives, limit: limit)
             }
             if mergeCopies, !trimmed.isEmpty, !SearchQuery(trimmed).advanced.dupe {
                 outcome.items = Self.mergingCopies(outcome.items)
             }
+            Self.annotate(&outcome.items, notes: notes)
             DispatchQueue.main.async {
                 guard token == self.searchToken else { return }
                 completion(outcome)
@@ -273,6 +294,7 @@ final class IndexService {
         searchToken += 1
         let token = searchToken
         let counts = Preferences.openCounts
+        let notes = Records.notes
         queue.async { [weak self] in
             guard let self else { return }
             var outcome = SearchOutcome()
@@ -297,6 +319,7 @@ final class IndexService {
             } else {
                 outcome.folderNotIndexed = true
             }
+            Self.annotate(&outcome.items, notes: notes)
             DispatchQueue.main.async {
                 guard token == self.searchToken else { return }
                 completion(outcome)
@@ -424,7 +447,7 @@ final class IndexService {
 
     private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int],
                            opened: [String: Double] = [:], aliases: SearchAliases = .none, chosen: [String] = [],
-                           order: ResultOrder = .relevance) -> SearchOutcome {
+                           order: ResultOrder = .relevance, notes: FileNotes = FileNotes()) -> SearchOutcome {
         guard let index, let session else { return SearchOutcome() }
         let query = SearchQuery(trimmed)
         // 打开过: (0.35) searches only what was opened from KongSeek, in that time.
@@ -436,6 +459,16 @@ final class IndexService {
             if within?.isEmpty ?? true {
                 var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions)
                 outcome.notes.append("没有符合条件的打开记录（只记从 KongSeek 打开的文件）")
+                return outcome
+            }
+        }
+        // 备注: (0.40) searches only the files with such a note.
+        if let terms = query.advanced.noteTerms {
+            let noted = Set(notes.paths(matching: terms).compactMap { index.id(forPath: $0) })
+            within = (within.map { Set($0).intersection(noted) } ?? noted).sorted()
+            if within?.isEmpty ?? true {
+                var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions)
+                outcome.notes.append("没有这样的备注（⌘K › 写备注… 可给文件写备注）")
                 return outcome
             }
         }
@@ -716,6 +749,42 @@ extension IndexService {
 
     static let epubDetails = EpubDetailsCache()
 
+    /// The book line and note of each result (0.40). An EPUB's package is used only if
+    /// read before; the others are read in the background for next time.
+    static func annotate(_ items: inout [ResultItem], notes: FileNotes) {
+        let records = BookRecords.current()
+        var unread: [String] = []
+        for index in items.indices where items[index].isFile && !items[index].isFolder && !items[index].isInArchive {
+            let path = items[index].path
+            items[index].note = notes.note(for: path)?.text
+            let ext = (path as NSString).pathExtension.lowercased()
+            guard DuplicateFinder.bookExtensions.contains(ext) else { continue }
+            let stem = EbookName.splitMark(((path as NSString).lastPathComponent as NSString).deletingPathExtension).stem
+            var details = EbookName.parse(stem)
+            if ext == "epub" {
+                switch epubDetails.cached(path) {
+                case .some(let package):
+                    if let package {
+                        var merged = details ?? EbookName(title: stem)
+                        merged.authors = merged.authors ?? package.authors
+                        merged.publisher = merged.publisher ?? package.publisher
+                        merged.year = merged.year ?? package.year
+                        details = merged
+                    }
+                case .none:
+                    unread.append(path)
+                }
+            }
+            if records.record(for: path) != nil { details = records.apply(to: details ?? EbookName(title: stem), path: path) }
+            var parts = [details?.authors, details?.publisher, details?.year].compactMap { $0 }.filter { !$0.isEmpty }
+            if let state = FinderTags.readingState(of: path) { parts.append(state) }
+            items[index].bookLine = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        if !unread.isEmpty {
+            DispatchQueue.global(qos: .utility).async { for path in unread.prefix(200) { _ = epubDetails.details(path) } }
+        }
+    }
+
     /// How good a match is, without the finer 3.2 score folded into refined scores
     /// (Relevance.combined = relevance × 100,000 + 3.2 score): matches at one level
     /// may be reordered by how often they were opened.
@@ -786,6 +855,14 @@ final class ContentHashCache {
 final class EpubDetailsCache {
     private let lock = NSLock()
     private var entries: [String: (modified: Double, details: EbookName?)] = [:]
+
+    /// What was read before, without reading: .none when not read yet (0.40).
+    func cached(_ path: String) -> EbookName?? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[path] else { return .none }
+        return .some(entry.details)
+    }
 
     func details(_ path: String) -> EbookName? {
         let modified = IndexService.modificationTime(path)

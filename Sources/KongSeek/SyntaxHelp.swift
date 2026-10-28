@@ -35,6 +35,8 @@ enum SyntaxHelp {
         Entry(example: "标签:工作", explanation: "带某个访达标签（也可写 #工作）", section: "时间与大小", select: "工作"),
         Entry(example: "regex:^第.+讲", explanation: "名称匹配正则表达式（含 / 时匹配路径）", section: "高级", select: "^第.+讲"),
         Entry(example: "dupe:", explanation: "只列出同名文件，同名的排在一起", section: "高级"),
+        Entry(example: "备注:仁", explanation: "备注含“仁”的文件；只写 备注: 为全部有备注的文件（⌘K › 写备注…，0.40）", section: "高级", select: "仁"),
+        Entry(example: "/讲义", explanation: "文件夹跳转：只列文件夹，常去的在前，↩ 进入浏览（0.40）", section: "高级", replace: true, select: "讲义"),
         Entry(example: "作者:杨伯峻", explanation: "电子书按作者（也认别名，如 作者:朱子）；同样有 出版社:中华书局、年:1980..1995（0.38）", section: "高级", select: "杨伯峻"),
         Entry(example: "年:1980..1995", explanation: "电子书按出版年；也可写 年:1980、年:>=2000（0.38）", section: "高级", select: "1980..1995"),
         Entry(example: "near:30", explanation: "全文搜索：几个词相距 30 字以内（如 格物 致知 near:30）；PDF 等按页判断（0.36）", section: "高级", select: "30"),

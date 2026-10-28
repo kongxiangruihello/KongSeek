@@ -162,3 +162,78 @@ public enum SavedSearchPresets {
         Preset(name: "同名文件", query: "dupe: file:", detail: "名称重复出现的文件"),
     ]
 }
+
+/// 文件备注 (0.40): a line or two the reader keeps about a file ("讲‘仁’的部分在第三章"),
+/// kept by KongSeek, not written into the file; searched with 备注:.
+public struct FileNotes: Codable, Equatable, Sendable {
+    public struct Note: Codable, Equatable, Sendable {
+        public var text: String
+        public var date: Date
+
+        public init(text: String, date: Date = Date()) {
+            self.text = text
+            self.date = date
+        }
+    }
+
+    public private(set) var notes: [String: Note] = [:]
+
+    public init() {}
+
+    public func note(for path: String) -> Note? { notes[path] }
+
+    /// Sets the note; an empty text removes it.
+    public mutating func set(_ text: String, for path: String, date: Date = Date()) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        notes[path] = trimmed.isEmpty ? nil : Note(text: trimmed, date: date)
+    }
+
+    public mutating func move(from old: String, to new: String) {
+        guard let note = notes.removeValue(forKey: old) else { return }
+        notes[new] = note
+    }
+
+    public mutating func remove(_ path: String) {
+        notes[path] = nil
+    }
+
+    /// Paths whose note holds every term (繁简 alike); every noted path when there are no terms.
+    public func paths(matching terms: [String]) -> [String] {
+        let folded = terms.map(SearchText.fold).filter { !$0.isEmpty }
+        return notes.filter { _, note in
+            let text = SearchText.fold(note.text)
+            return folded.allSatisfy { text.contains($0) }
+        }.map { $0.key }.sorted()
+    }
+
+    public static func load(from url: URL) -> FileNotes {
+        guard let data = try? Data(contentsOf: url) else { return FileNotes() }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode(FileNotes.self, from: data)) ?? FileNotes()
+    }
+
+    public func save(to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(self).write(to: url, options: .atomic)
+    }
+}
+
+/// 文件夹跳转 (0.40): "/讲义" lists only folders. Nil for a real path ("/Users/…").
+public enum FolderJump {
+    public static func query(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("/") || trimmed.hasPrefix("／") else { return nil }
+        let rest = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
+        guard !rest.isEmpty, !rest.contains("/"), !rest.hasPrefix("Users"), !rest.hasPrefix("Volumes") else { return nil }
+        return "folder: " + rest
+    }
+
+    /// How much the reader works in `folder`: opens of items inside it, the more recent the more.
+    public static func affinity(of folder: String, counts: [String: Int]) -> Int {
+        let prefix = folder.hasSuffix("/") ? folder : folder + "/"
+        return counts.reduce(0) { total, entry in entry.key == folder || entry.key.hasPrefix(prefix) ? total + entry.value : total }
+    }
+}

@@ -16,6 +16,7 @@ import Foundation
 ///     near:30  相距:30  full text: the words within 30 characters of each other (0.36)
 ///     同页:  samepage:  full text: the words on one page (0.36)
 ///     作者:朱熹  出版社:中华书局  年:1980..1995  books by their details (0.38)
+///     备注:仁  note:   files with a note holding the words; 备注: alone = every noted file (0.40)
 ///
 /// Operators combine with AND. Values with spaces go in quotes: in:"~/My Folder".
 public struct AdvancedFilters: Sendable {
@@ -37,6 +38,8 @@ public struct AdvancedFilters: Sendable {
     public var samePage = false
     /// 作者: / 出版社: / 年: (0.38).
     public var book = BookFilter()
+    /// 备注: (0.40): nil unless used; the words the note must hold (none: any note).
+    public var noteTerms: [String]?
 
     /// Whether full-text results must be checked for how close the words stand.
     public var needsProximity: Bool { near != nil || samePage }
@@ -49,7 +52,7 @@ public struct AdvancedFilters: Sendable {
 
     public var isEmpty: Bool {
         pathTerms.isEmpty && excludedPathTerms.isEmpty && scopes.isEmpty && regexes.isEmpty && excludedRegexes.isEmpty
-            && kind == .any && !dupe && !attributes.isActive && !opened && !needsProximity && !book.isActive
+            && kind == .any && !dupe && !attributes.isActive && !opened && !needsProximity && !book.isActive && noteTerms == nil
     }
 
     /// Whether an item last opened at `date` passes 打开过:.
@@ -62,7 +65,7 @@ public struct AdvancedFilters: Sendable {
     }
 
     /// Operator names the lexer recognizes (besides ext:, which 3.2 already had).
-    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "dc", "datecreated", "regex", "dupe", "file", "folder", "opened", "打开过", "near", "相距", "samepage", "同页", "author", "作者", "publisher", "出版社", "year", "年", "年份"]
+    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "dc", "datecreated", "regex", "dupe", "file", "folder", "opened", "打开过", "near", "相距", "samepage", "同页", "author", "作者", "publisher", "出版社", "year", "年", "年份", "note", "备注"]
 
     /// Applies one operator token. Returns a value to treat as an ordinary word
     /// (file:合同 = files whose name matches 合同), if any.
@@ -177,6 +180,12 @@ public struct AdvancedFilters: Sendable {
             if let low = range.from { book.yearFrom = max(book.yearFrom ?? low, low) }
             if let high = range.to { book.yearTo = min(book.yearTo ?? high, high) }
             descriptions.append("出版年：\(value)")
+        case "note", "备注":
+            guard noExclusion() else { return nil }
+            var terms = noteTerms ?? []
+            if !value.isEmpty { terms.append(value) }
+            noteTerms = terms
+            descriptions.append(value.isEmpty ? "有备注的" : "备注含：\(value)")
         case "samepage", "同页":
             guard noExclusion() else { return nil }
             if !samePage { descriptions.append("在同一页（全文搜索）") }

@@ -23,7 +23,7 @@ public struct SettingsArchive {
 
     /// KongSeek's own records carried too (0.29): book page numbering, confirmed book
     /// details, 常用本, saved file lists and reading progress — by file name.
-    public static let recordNames: Set<String> = ["page-numbers.json", "book-records.json", "preferred-editions.json", "file-lists.json", "reading-log.json", "query-choices.json"]
+    public static let recordNames: Set<String> = ["page-numbers.json", "book-records.json", "preferred-editions.json", "file-lists.json", "reading-log.json", "query-choices.json", "file-notes.json"]
 
     public var defaults: [String: Any]
     public var snippets: [TextSnippet]
