@@ -44,6 +44,10 @@ final class ArchiveAndEquivalentsTests: XCTestCase {
         let both = QuoteDiff.compare(quote: "学而时习之，不亦悦乎！人不知而不温", source: "學而時習之，不亦說乎？人不知而不慍", equivalents: table)
         XCTAssertTrue(QuoteDiff.hasErrors(both))
         XCTAssertEqual(QuoteDiff.summary(both), "异文 1 处（温/慍）、另有通假或古今字 1 处（悦/說），不算错")
+        // A wrong last character, with more of the source after it: still one 异字, the rest is context.
+        XCTAssertEqual(QuoteDiff.compare(quote: "人不知而不温", source: "人不知而不慍，不亦君子乎？"),
+                       [.same("人不知而不"), .changed(quote: "温", source: "慍")])
+        XCTAssertEqual(QuoteDiff.corrected(quote: "人不知而不温", source: "人不知而不慍，不亦君子乎？"), "人不知而不慍")
         // Without a table, as before.
         XCTAssertEqual(QuoteDiff.compare(quote: "不亦悦乎", source: "不亦說乎")[1], .changed(quote: "悦", source: "說"))
         XCTAssertFalse(CharacterEquivalents.standard.isEmpty)

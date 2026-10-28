@@ -65,7 +65,18 @@ public enum QuoteDiff {
         }
         // The source passage may run on before and after the quotation: that is context, not 脱字.
         while let first = steps.first, case .missing = first { steps.removeFirst() }
-        while let last = steps.last, case .missing = last { steps.removeLast() }
+        // At the end, though, the source's next characters may be what the quotation's last
+        // (wrong) characters stand for: as many as the quotation has extra there are kept,
+        // to pair with them as 异字 (0.29: "…而不温" against "…而不慍，不亦君子乎").
+        var tail = steps.count
+        while tail > 0, case .missing = steps[tail - 1] { tail -= 1 }
+        var extras = 0
+        var index = tail - 1
+        while index >= 0, case .extra = steps[index] {
+            extras += 1
+            index -= 1
+        }
+        steps.removeSubrange(min(steps.count, tail + extras)...)
         return steps
     }
 
