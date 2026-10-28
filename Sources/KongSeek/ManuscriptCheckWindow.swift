@@ -193,10 +193,10 @@ final class ManuscriptCheckModel: ObservableObject {
         }
     }
 
-    func reference(_ row: Row) -> String {
+    func reference(_ row: Row, style: Citation.Style? = nil) -> String {
         guard let best = row.best else { return "" }
         if let book = best.book {
-            return Citation.make(Preferences.citationStyle, name: book, fallbackTitle: book.title, page: best.page, pageLabel: best.printed?.text).text
+            return Citation.make(style ?? Preferences.citationStyle, name: book, fallbackTitle: book.title, page: best.page, pageLabel: best.printed?.text).text
         }
         let place = best.printed.map { "第 \($0.text) 页" } ?? best.page.map { "第 \($0) \(best.unit)" }
         return "《\(((best.path as NSString).lastPathComponent as NSString).deletingPathExtension)》" + (place ?? "")
@@ -269,18 +269,21 @@ final class ManuscriptCheckModel: ObservableObject {
 
     /// A copy of the Word manuscript with a comment on each quotation that differs from its
     /// source or was not found (0.27). The manuscript itself is not changed.
-    func writeComments() {
+    /// With `footnotes` (0.30), every quotation whose source was found also gets a footnote
+    /// with the reference (脚注体, page as printed in the book) right after it.
+    func writeComments(footnotes withFootnotes: Bool = false) {
         guard let manuscript, manuscript.pathExtension.lowercased() == "docx" else { return }
         let flagged = rows.filter { $0.needsAttention && !$0.quote.context.hasPrefix("〔注〕") }
-        guard !flagged.isEmpty else {
-            status = "已核对的引文都与原文一致，不需要批注。"
+        let sourced = withFootnotes ? rows.filter { $0.state == .done && $0.best != nil && !$0.quote.context.hasPrefix("〔注〕") } : []
+        guard !flagged.isEmpty || !sourced.isEmpty else {
+            status = withFootnotes ? "还没有核对到出处，无法加脚注。" : "已核对的引文都与原文一致，不需要批注。"
             return
         }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "docx") ?? .data]
         panel.directoryURL = manuscript.deletingLastPathComponent()
-        panel.nameFieldStringValue = manuscript.deletingPathExtension().lastPathComponent + "（引文核对）.docx"
-        panel.message = "原稿不动，另存一份在页边加了批注的副本"
+        panel.nameFieldStringValue = manuscript.deletingPathExtension().lastPathComponent + (withFootnotes ? "（引文核对与出处）.docx" : "（引文核对）.docx")
+        panel.message = withFootnotes ? "原稿不动，另存一份：有问题的引文加批注，找到出处的引文后加脚注" : "原稿不动，另存一份在页边加了批注的副本"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         guard url.standardizedFileURL != manuscript.standardizedFileURL else {
             status = "请换一个文件名：原稿不会被覆盖。"
@@ -300,11 +303,18 @@ final class ManuscriptCheckModel: ObservableObject {
             }
             return WordComments.Comment(anchor: row.quote.text, text: lines.joined(separator: "\n"))
         }
+        let notes = sourced.map { WordComments.Footnote(quote: $0.quote.text, text: reference($0, style: .footnote)) }
         do {
-            let placed = try WordComments.write(source: manuscript, destination: url, comments: comments)
-            let count = placed.filter { $0 }.count
-            status = "已在 \(count) 处加批注，存为“\(url.lastPathComponent)”" + (count < comments.count ? "；\(comments.count - count) 条在稿中没能定位到段落，未加。" : "。")
-                + (rows.contains { $0.quote.context.hasPrefix("〔注〕") } ? "脚注中的引文不加批注，请看 Excel 核对表。" : "")
+            let placement = try WordComments.write(source: manuscript, destination: url, comments: comments, footnotes: notes)
+            let count = placement.comments.filter { $0 }.count
+            var text = "已存为“\(url.lastPathComponent)”：\(count) 处批注"
+            if count < comments.count { text += "（\(comments.count - count) 条没能定位到段落，未加）" }
+            if withFootnotes {
+                let added = placement.footnotes.filter { $0 }.count
+                text += "，\(added) 条出处脚注"
+                if added < notes.count { text += "（\(notes.count - added) 条已有脚注、或在稿中没能按原样找到，未加）" }
+            }
+            status = text + "。" + (rows.contains { $0.quote.context.hasPrefix("〔注〕") } ? "原稿脚注中的引文不加批注，请看 Excel 核对表。" : "")
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
             status = "生成批注副本失败：\(error.localizedDescription)"
@@ -383,9 +393,13 @@ struct ManuscriptCheckView: View {
                 .fixedSize()
                 .disabled(model.running || !model.rows.contains { $0.best != nil })
                 if model.manuscript?.pathExtension.lowercased() == "docx" {
-                    Button("生成带批注的 Word…") { model.writeComments() }
-                        .disabled(model.running || !model.rows.contains { $0.state == .done })
-                        .help("另存一份稿件，在有异文、找不到出处的引文旁加 Word 批注；原稿不动")
+                    Menu("生成 Word 副本") {
+                        Button("加批注（有异文、找不到出处的引文）…") { model.writeComments() }
+                        Button("加批注和出处脚注（找到出处的引文后加脚注）…") { model.writeComments(footnotes: true) }
+                    }
+                    .fixedSize()
+                    .disabled(model.running || !model.rows.contains { $0.state == .done })
+                    .help("另存一份稿件：有问题的引文旁加 Word 批注；也可为找到出处的引文加脚注（书上页码、脚注体）。原稿不动")
                 }
             }
             Text(model.status).font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
