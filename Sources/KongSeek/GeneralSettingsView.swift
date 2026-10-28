@@ -40,6 +40,7 @@ final class GeneralSettingsView: NSView {
     private let completionCheckbox = NSButton(checkboxWithTitle: "输入时自动补全（→ 接受）", target: nil, action: nil)
     private let bookTextCheckbox = NSButton(checkboxWithTitle: "为 EPUB、Kindle 电子书和 GB18030 文本建立正文索引", target: nil, action: nil)
     private let uncoveredCheckbox = NSButton(checkboxWithTitle: "也为 Spotlight 未收录的文件夹中的 PDF、Word、幻灯片建立正文索引", target: nil, action: nil)
+    private let manageBookTextButton = NSButton(title: "管理正文索引…", target: nil, action: nil)
     private let tipsCheckbox = NSButton(checkboxWithTitle: "搜索框为空时显示一条语法提示", target: nil, action: nil)
     /// What the text index holds, on the 搜索 page (0.42).
     private let bookTextStatus = NSTextField(wrappingLabelWithString: "")
@@ -141,6 +142,9 @@ final class GeneralSettingsView: NSView {
         completionCheckbox.target = self
         completionCheckbox.action = #selector(completionChanged)
         completionCheckbox.toolTip = "按搜索历史、收藏的搜索和最近打开的文件名，在输入框中以选中的灰色文字给出补全；继续输入即替换，按 → 接受"
+        manageBookTextButton.target = self
+        manageBookTextButton.action = #selector(openBookTextManager)
+        manageBookTextButton.controlSize = .small
         let toolsRow = NSStackView(views: [aliasesButton, filterButton])
         toolsRow.spacing = 10
         tipsCheckbox.target = self
@@ -223,7 +227,7 @@ final class GeneralSettingsView: NSView {
             // 搜索 (0.42): the options that change how searching works, each with a line saying what it does.
             views = [heading("输入与结果"), historyRow, historyNote, completionCheckbox, completionNote, copiesCheckbox, copiesNote, tipsCheckbox, tipsNote,
                      heading("同义词与筛选按钮"), toolsRow, toolsNote,
-                     heading("正文索引"), bookTextCheckbox, uncoveredCheckbox, bookTextNote, bookTextStatus]
+                     heading("正文索引"), bookTextCheckbox, uncoveredCheckbox, bookTextNote, bookTextStatus, manageBookTextButton]
         case .updates:
             views = [versionLabel, sourceLabel,
                      heading("更新 KongSeek"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
@@ -405,6 +409,10 @@ final class GeneralSettingsView: NSView {
         Preferences.indexUncoveredFolders = uncoveredCheckbox.state == .on
         uncoveredCheckbox.isEnabled = Preferences.bookTextIndex
         NotificationCenter.default.post(name: BookTextService.settingChanged, object: nil)
+    }
+
+    @objc private func openBookTextManager() {
+        NotificationCenter.default.post(name: BookTextService.openManager, object: nil)
     }
 
     @objc private func tipsChanged() {

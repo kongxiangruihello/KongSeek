@@ -10,6 +10,8 @@ final class BookTextService {
     static let shared = BookTextService()
     /// Posted when the setting is turned on or off.
     static let settingChanged = Notification.Name("KongSeekBookTextSettingChanged")
+    /// Asks for 正文索引管理 (from the settings).
+    static let openManager = Notification.Name("KongSeekOpenBookTextManager")
 
     let index: BookTextIndex
     private let queue = DispatchQueue(label: "KongSeek.book-text", qos: .utility)
@@ -80,6 +82,20 @@ final class BookTextService {
         cancel.cancel()
     }
 
+    /// Reads every book again (0.43: 重建正文索引).
+    func rebuild(service: IndexService) {
+        stop()
+        let index = self.index
+        queue.async { [weak self] in
+            index.removeAll()
+            self?.coverage = nil
+            DispatchQueue.main.async {
+                self?.running = false
+                self?.refresh(service: service)
+            }
+        }
+    }
+
     private func process(_ entries: [FileEntry], cancel: CancelFlag) {
         let index = self.index
         // No list (the name index not loaded yet): nothing to compare with, so nothing is forgotten.
@@ -92,7 +108,9 @@ final class BookTextService {
         // Documents (0.39): only those in folders Spotlight does not index.
         let documents = entries.filter { Self.documentExtensions.contains(($0.path as NSString).pathExtension.lowercased()) }
         let uncovered = documents.isEmpty ? [] : uncoveredFolders(documents, cancel: cancel)
-        for entry in entries {
+        // Folders the reader left out (0.43).
+        let excluded = Preferences.bookTextExcluded.map(Paths.canonical)
+        for entry in entries where !excluded.contains(where: { Paths.isWithin(entry.path, $0) }) {
             let ext = (entry.path as NSString).pathExtension.lowercased()
             if Self.documentExtensions.contains(ext) {
                 guard uncovered.contains((entry.path as NSString).deletingLastPathComponent) else { continue }

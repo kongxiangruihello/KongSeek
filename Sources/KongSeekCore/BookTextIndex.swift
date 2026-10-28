@@ -106,6 +106,29 @@ public final class BookTextIndex {
         if let file = removed?.file, !file.isEmpty { try? FileManager.default.removeItem(at: directory.appendingPathComponent(file)) }
     }
 
+    /// Books with no readable text and why (0.43: 正文索引管理), by path; text files
+    /// Spotlight reads itself are not among them.
+    public var problems: [(path: String, problem: String)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.compactMap { path, entry -> (path: String, problem: String)? in
+            guard let problem = entry.problem, problem != Self.readBySpotlight else { return nil }
+            return (path, problem)
+        }.sorted { $0.path < $1.path }
+    }
+
+    /// Bytes the index takes on disk.
+    public var diskSize: Int64 {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) }
+    }
+
+    /// Forgets everything, so every book is read again (重建).
+    public func removeAll() {
+        for path in paths { remove(path) }
+        try? saveManifest()
+    }
+
     /// Forgets books no longer among `paths` (deleted, moved, or in folders no longer indexed).
     public func prune(keeping paths: Set<String>) {
         for path in self.paths where !paths.contains(path) { remove(path) }

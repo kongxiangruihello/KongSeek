@@ -7,7 +7,7 @@ import KongSeekCore
 enum FeatureGuide {
     enum Action: Equatable {
         case openSearch, search(String), clipboard, quoteFinder, manuscriptCheck, compare, fileList,
-             batchRename, duplicates, space, libraryCheck, scannedPDFs, status, settings, trashLog, concordance
+             batchRename, duplicates, space, libraryCheck, scannedPDFs, status, settings, trashLog, concordance, bookText, notes
     }
 
     struct Entry: Identifiable {
@@ -43,6 +43,8 @@ enum FeatureGuide {
               how: "搜索结果中的电子书上 ⌘K › 批量补全这次搜索中 N 本书的书目信息…", action: .openSearch, keywords: "书目 isbn 出版社 批量"),
         Entry(category: "搜索", title: "文件备注", detail: "给文件写一两句备注（存在 KongSeek 里，不改文件），结果行显示；搜索 备注:仁 找出来。",
               how: "搜索结果上 ⌘K › 写备注…；搜索 备注:", action: .search("备注:"), keywords: "笔记 注释 note 标注"),
+        Entry(category: "搜索", title: "备注一览", detail: "所有写过备注的文件列在一处，可筛选、修改、删除，导出 Excel 或 Word。",
+              how: "菜单栏图标 › 写作与引文 › 备注一览…", action: .notes, keywords: "笔记 备注 汇总 导出"),
         Entry(category: "搜索", title: "文件夹跳转", detail: "以 / 开头输入（如 /讲义）只列文件夹，常去的在前，↩ 直接进入浏览。",
               how: "搜索框输入 /文件夹名", action: .search("/讲义"), keywords: "目录 文件夹 跳转 folder"),
         Entry(category: "搜索", title: "相关文件", detail: "列出同一部书的其他版本、同一文稿的其他版本（v2、副本、终稿），以及同一文件夹中最近改过的文件。",
@@ -52,7 +54,9 @@ enum FeatureGuide {
         Entry(category: "搜索", title: "结果排序", detail: "按相关度、修改时间、大小、名称排序；全文搜索还可按命中次数，词语出现最多的书在前。",
               how: "搜索框右下方的排序菜单", action: .openSearch, keywords: "排序 时间 大小 名称 最新"),
         Entry(category: "搜索", title: "KongSeek 正文索引", detail: "Spotlight 读不到的 EPUB、Kindle 电子书和 GB18030 文本，KongSeek 在后台读出文字，全文搜索、引文查证、出处汇编都能找到；新放进来的书约一分钟内可搜；Spotlight 未收录的文件夹中的 PDF、Word 也由它读取。选中电子书时预览区显示正文。",
-              how: "自动；状态与诊断 中看收录情况；设置 › 搜索 可关闭", action: .status, keywords: "epub mobi azw3 kindle 电子书 正文 gbk"),
+              how: "菜单栏图标 › 书库 › 正文索引…（读不出的书、排除的文件夹、重建）；设置 › 搜索 可关闭", action: .bookText, keywords: "epub mobi azw3 kindle 电子书 正文 gbk"),
+        Entry(category: "搜索", title: "在预览中查找", detail: "选中一个文件后按 ⌘F，在这个文件里查找别的词：预览翻到第一处并标黄，⌘] ⌘[ 跳转，⌘J 列出全部，⎋ 关闭。",
+              how: "选中结果后按 ⌘F", action: .openSearch, keywords: "查找 文件内 find 页内"),
         Entry(category: "搜索", title: "全部命中处", detail: "全文结果中，一个文件里每一处命中逐一查看：⌘] 下一处、⌘[ 上一处，⌘J 列出全部（页码和上下文）。",
               how: "全文模式中选中结果后按 ⌘] ⌘[ ⌘J", action: .openSearch, keywords: "摘录 页码 多处 snippets"),
         Entry(category: "搜索", title: "邻近搜索", detail: "全文搜索中，near:30 要求几个词相距 30 字以内，同页: 要求在同一页，如 格物 致知 near:30。",

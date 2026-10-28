@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var tidyWindow: DownloadTidyWindowController?
     private var quoteFinder: QuoteFinderWindowController?
     private var libraryCheck: LibraryCheckWindowController?
+    private var bookTextWindow: BookTextWindowController?
+    private var notesWindow: NotesWindowController?
     private var manuscriptCheck: ManuscriptCheckWindowController?
     private var featureGuide: FeatureGuideWindowController?
     private var trashLog: TrashLogWindowController?
@@ -56,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ReaderWindowController.ocrStore = ocr.store
         NotificationCenter.default.addObserver(forName: .ocrSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             self?.ocr.configure(Preferences.ocrSettings)
+        }
+        NotificationCenter.default.addObserver(forName: BookTextService.openManager, object: nil, queue: .main) { [weak self] _ in
+            self?.openBookText()
         }
         NotificationCenter.default.addObserver(forName: BookTextService.settingChanged, object: nil, queue: .main) { [weak self] _ in
             guard let self, Preferences.bookTextIndex else { return }
@@ -377,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item("出处汇编…", #selector(openConcordanceWindow)),
             item("两版讲义对比…", #selector(openCompare)),
             item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)),
+            item("备注一览…", #selector(openNotes)),
         ]
         if let lists = savedListsItem() { writing.append(lists) }
         menu.addItem(submenu("写作与引文", symbol: "text.quote", writing))
@@ -389,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("书库", symbol: "books.vertical", [
             item("书库体检…", #selector(openLibraryCheck)),
             item("查找扫描版 PDF…", #selector(openScannedPDFs)),
+            item("正文索引…", #selector(openBookText)),
         ]))
         menu.addItem(.separator())
         menu.addItem(item("功能导览…", #selector(openFeatureGuide)))
@@ -626,7 +633,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var detail = "已收录 \(summary.books) 本（约 \(max(1, summary.characters / 10_000)) 万字），全文搜索、引文查证、出处汇编都会用到"
             if books.uncoveredFolderCount > 0 { detail += "；含 Spotlight 未收录的 \(books.uncoveredFolderCount) 个文件夹中的文稿" }
             if books.running { detail += "；正在读取 \(books.progress.done) / \(books.progress.total)" }
-            items.append(HealthItem("正文索引", Preferences.indexUncoveredFolders ? "EPUB、Kindle、GB18030 文本，及 Spotlight 未收录的文稿" : "EPUB、Kindle 与 GB18030 文本", detail, .ok))
+            items.append(HealthItem("正文索引", Preferences.indexUncoveredFolders ? "EPUB、Kindle、GB18030 文本，及 Spotlight 未收录的文稿" : "EPUB、Kindle 与 GB18030 文本", detail, .ok,
+                                    action: ("管理…", { [weak self] in self?.openBookText() })))
             if summary.problems > 0 {
                 items.append(HealthItem("正文索引", "\(summary.problems) 本读不出文字", "有 DRM 保护、用了不支持的压缩方式（如 HUFF/CDIC），或文件已损坏", .info))
             }
@@ -829,7 +837,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .settings: openSettings()
         case .trashLog: openTrashLog()
         case .concordance: openConcordance(query: nil)
+        case .bookText: openBookText()
+        case .notes: openNotes()
         }
+    }
+
+    /// 正文索引管理 (0.43).
+    @objc func openBookText() {
+        if bookTextWindow == nil { bookTextWindow = BookTextWindowController(service: service, ocr: ocr) }
+        bookTextWindow?.present()
+    }
+
+    /// 备注一览 (0.43).
+    @objc func openNotes() {
+        if notesWindow == nil { notesWindow = NotesWindowController() }
+        notesWindow?.present()
     }
 
     @objc private func openLibraryCheck() {

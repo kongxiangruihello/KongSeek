@@ -104,6 +104,12 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "autocomplete") }
     }
 
+    /// Folders left out of KongSeek's text index (0.43).
+    static var bookTextExcluded: [String] {
+        get { defaults.stringArray(forKey: "bookTextExcluded") ?? [] }
+        set { defaults.set(newValue, forKey: "bookTextExcluded") }
+    }
+
     /// How search results are ordered (0.38): 相关度 unless changed.
     static var resultOrder: ResultOrder {
         get { ResultOrder(rawValue: defaults.string(forKey: "resultOrder") ?? "") ?? .relevance }

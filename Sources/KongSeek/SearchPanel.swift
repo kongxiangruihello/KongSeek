@@ -36,7 +36,7 @@ final class SearchPanel: NSPanel, QLPreviewPanelDataSource {
 }
 
 /// The search window: query field, results list, Quick Look preview, status line.
-final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     let panel: SearchPanel
     private let service: IndexService
     private let ocr: OCRService
@@ -47,6 +47,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let conditionBar = NSStackView()
     private var conditionHeight: NSLayoutConstraint!
     private var chips: [QueryChips.Chip] = []
+    /// 在预览中查找 (0.43): ⌘F looks for other words inside the selected file.
+    private let previewFind = NSSearchField()
+    private var previewFindWords: [String]?
+    private var previewFindPath: String?
     /// 排序 (0.38): 相关度, 修改时间, 大小, 名称.
     private let orderPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var filterBarHeight: NSLayoutConstraint!
@@ -407,7 +411,15 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         conditionBar.orientation = .horizontal
         conditionBar.spacing = 4
         conditionBar.alignment = .centerY
-        for view in [conditionBar, orderPopup, filterBar, searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints] as [NSView] {
+        previewFind.placeholderString = "在这个文件中查找（↩ 查找，⎋ 关闭）"
+        previewFind.controlSize = .small
+        previewFind.font = .systemFont(ofSize: 12)
+        previewFind.sendsWholeSearchString = true
+        previewFind.target = self
+        previewFind.action = #selector(previewFindSubmitted)
+        previewFind.delegate = self
+        previewFind.isHidden = true
+        for view in [conditionBar, orderPopup, filterBar, searchIcon, field, helpButton, modeButton, topLine, scroll, middleLine, snippetLabel, preview, hitPreview, definitionScroll, emptyLabel, bottomLine, statusLabel, hints, previewFind] as [NSView] { // previewFind last: above the preview
             view.translatesAutoresizingMaskIntoConstraints = false
             background.addSubview(view)
         }
@@ -464,6 +476,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             hitPreview.bottomAnchor.constraint(equalTo: preview.bottomAnchor),
             hitPreview.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
             hitPreview.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
+            previewFind.topAnchor.constraint(equalTo: preview.topAnchor, constant: 6),
+            previewFind.trailingAnchor.constraint(equalTo: preview.trailingAnchor, constant: -8),
+            previewFind.widthAnchor.constraint(equalToConstant: 240),
 
             definitionScroll.topAnchor.constraint(equalTo: preview.topAnchor),
             definitionScroll.bottomAnchor.constraint(equalTo: preview.bottomAnchor),
@@ -490,6 +505,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         filterBarHeight.isActive = true
         conditionHeight = conditionBar.heightAnchor.constraint(equalToConstant: 0)
         conditionHeight.isActive = true
+
         rebuildFilterBar()
         updateEmptyLabel()
     }
@@ -587,6 +603,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     // MARK: - Searching
 
     func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === field else { return }
         // Wait while a Chinese input method is still composing.
         if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
         applyCompletion()
@@ -1063,6 +1080,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     // MARK: - Keyboard
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if control === previewFind {
+            if selector == #selector(NSResponder.cancelOperation(_:)) {
+                closePreviewFind()
+                return true
+            }
+            return false
+        }
         let fieldEmpty = field.stringValue.isEmpty
         switch selector {
         case #selector(NSResponder.insertTab(_:)):
@@ -1128,6 +1152,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func handleShortcut(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
         let keyCode = event.keyCode
+        // Typing in 在预览中查找: only the hit keys (⌘] ⌘[ ⌘J ⌘F) act on the file; ⌘⌫ and
+        // the rest stay with the text being typed.
+        if let editor = panel.firstResponder as? NSTextView, (editor.delegate as AnyObject?) === previewFind,
+           !(modifiers == [.command] && [30, 33, 38, 3].contains(keyCode)) {
+            return false
+        }
         if modifiers == [.option], keyCode == 36 || keyCode == 76 {
             // ⌥↩: open at the page / slide of the hit.
             if let item = selectedItem, item.isFile, !item.isFolder, !item.isInArchive {
@@ -1193,6 +1223,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 return stepHit(-1)
             case 38: // ⌘J: every hit in the file
                 return showHitMenu()
+            case 3: // ⌘F: find inside the selected file (0.43)
+                return openPreviewFind()
             case 125: // ⌘↓: enter folder
                 if let item = selectedItem, item.isFolder { enterFolder(item) }
                 return true
@@ -2116,6 +2148,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     private func updatePreview() {
         let selected = selectedItem
+        if let findPath = previewFindPath, findPath != selected?.path {
+            previewFindPath = nil
+            previewFindWords = nil
+            previewFind.isHidden = true
+            previewFind.stringValue = ""
+        }
         if hitPreview.document?.documentURL?.path != selected?.path { hideHitPreview() }
         definitionScroll.isHidden = selected?.isFile ?? true
         if let item = selected, let fill = item.fill, fill.isPresetPicker {
@@ -2227,7 +2265,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             }
             DispatchQueue.main.async {
                 let ebook = EbookText.supports((path as NSString).pathExtension)
-                guard let self, token == self.snippetToken, self.selectedItem?.path == path, places.count > (ebook ? 0 : 1) else { return }
+                guard let self, token == self.snippetToken, self.selectedItem?.path == path, self.previewFindWords == nil,
+                      places.count > (ebook ? 0 : 1) else { return }
                 self.hitList = (path, places)
                 self.hitPosition = places.firstIndex { $0.page == firstPage } ?? 0
                 self.showHitPlace()
@@ -2240,12 +2279,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         guard let list = hitList, list.places.indices.contains(hitPosition) else { return }
         let place = list.places[hitPosition]
         lastHit = (list.path, place.page)
-        showHitPage(list.path, page: place.page, words: outcome.highlightWords)
+        let words = previewFindWords ?? outcome.highlightWords
+        showHitPage(list.path, page: place.page, words: words)
         let ebook = EbookText.supports((list.path as NSString).pathExtension)
         if ebook {
             // The whole passage in the preview area, the words in yellow (0.39).
             let passage = NSMutableAttributedString(string: place.snippet.text, attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor])
-            for range in TextLocator.ranges(of: outcome.highlightWords, in: place.snippet.text) {
+            for range in TextLocator.ranges(of: words, in: place.snippet.text) {
                 passage.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.4), range: range)
             }
             definitionScroll.isHidden = false
@@ -2257,6 +2297,65 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         text.append(NSAttributedString(string: "\n第 \(hitPosition + 1) / \(list.places.count) 处\(list.places.count >= 300 ? "（只列前 300 处）" : "") · ⌘] 下一处 · ⌘[ 上一处 · ⌘J 列出全部",
                                        attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
         snippetLabel.attributedStringValue = text
+    }
+
+    // MARK: Find in the preview (0.43)
+
+    private func openPreviewFind() -> Bool {
+        guard let item = selectedItem, item.isFile, !item.isFolder, !item.isInArchive, ContentPreview.canRead(item.path) else { return false }
+        previewFind.isHidden = false
+        previewFindPath = item.path
+        panel.makeFirstResponder(previewFind)
+        statusLabel.stringValue = "在“\(item.name)”中查找：输入后按 ↩；⌘] ⌘[ 前后跳转；⎋ 关闭"
+        return true
+    }
+
+    private func closePreviewFind() {
+        let wasFinding = previewFindWords != nil
+        previewFind.isHidden = true
+        previewFind.stringValue = ""
+        previewFindWords = nil
+        previewFindPath = nil
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.moveToEndOfDocument(nil)
+        if wasFinding {
+            hitList = nil
+            updatePreview()
+        }
+    }
+
+    @objc private func previewFindSubmitted() {
+        let term = previewFind.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let item = selectedItem, item.isFile, !term.isEmpty else { return }
+        let path = item.path
+        let name = item.name
+        let words = term.split(separator: " ").map(String.init)
+        statusLabel.stringValue = "正在“\(name)”中查找“\(term)”…"
+        let store = ocr.store
+        let ebook = EbookText.supports((path as NSString).pathExtension)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var places: [HitPlace] = []
+            if let pages = QuoteLookup.readCached(URL(fileURLWithPath: path), ocr: store) {
+                for (index, text) in pages.pages.enumerated() where places.count < 300 {
+                    for snippet in Snippet.findAll(in: text, needles: words, radius: ebook ? 400 : 60, limit: ebook || !pages.isPaged ? 300 : 20) where places.count < 300 {
+                        places.append(HitPlace(page: pages.isPaged ? pages.firstPage + index : nil, snippet: snippet))
+                    }
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self, self.selectedItem?.path == path else { return }
+                guard !places.isEmpty else {
+                    self.statusLabel.stringValue = "“\(name)”中没有找到“\(term)”"
+                    return
+                }
+                self.previewFindWords = words
+                self.hitList = (path, places)
+                self.hitPosition = 0
+                if !self.contentMode { self.setNameSnippetVisible(true) }
+                self.showHitPlace()
+                self.statusLabel.stringValue = "在“\(name)”中找到 \(places.count) 处“\(term)” · ⌘] ⌘[ 跳转 · ⌘J 列出 · ⎋ 关闭"
+            }
+        }
     }
 
     private func stepHit(_ delta: Int) -> Bool {

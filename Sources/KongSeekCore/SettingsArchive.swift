@@ -18,7 +18,7 @@ public struct SettingsArchive {
         "ocrEnabled", "ocrFolders", "ocrPageLimit", "ocrOnlyOnPower", "ocrDownloadFromICloud", "ocrUseLiveText",
         "clipboardEnabled", "clipboardShortcut", "clipboardShortcutCleared", "clipboardRetentionDays",
         "clipboardMaximumItems", "autoPaste", "clipboardOCR", "clipboardExcludedApps", "cleanupOperations",
-        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "quoteShortcut", "quoteShortcutCleared", "pdfReader", "quoteEquivalents", "searchAliases", "mergeCopies", "filterButtons", "showFilterButtons", "bookTextIndex", "resultOrder", "indexUncoveredFolders", "autocomplete", "showTips", "editionKeywords", "editionFormats", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",
+        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "quoteShortcut", "quoteShortcutCleared", "pdfReader", "quoteEquivalents", "searchAliases", "mergeCopies", "filterButtons", "showFilterButtons", "bookTextIndex", "resultOrder", "indexUncoveredFolders", "autocomplete", "showTips", "bookTextExcluded", "editionKeywords", "editionFormats", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",
     ]
 
     /// KongSeek's own records carried too (0.29): book page numbering, confirmed book
