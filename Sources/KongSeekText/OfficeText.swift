@@ -33,6 +33,17 @@ public enum OfficeText {
         return paragraphs(in: try ZipReader.data(strings, from: url, maximumSize: 100_000_000), textElement: "t", paragraphElement: "si")
     }
 
+    /// The footnotes and endnotes of a Word (.docx) document, one paragraph per line (0.26):
+    /// the system's Word reader leaves them out, and quotations are often there.
+    public static func wordNotes(of url: URL) throws -> (footnotes: String, endnotes: String) {
+        let entries = try ZipReader.entries(at: url)
+        func text(_ name: String) throws -> String {
+            guard let entry = entries.first(where: { $0.name == name }) else { return "" }
+            return paragraphs(in: try ZipReader.data(entry, from: url, maximumSize: 50_000_000), textElement: "w:t", paragraphElement: "w:p")
+        }
+        return (try text("word/footnotes.xml"), try text("word/endnotes.xml"))
+    }
+
     /// Text inside `textElement`s, with a line break after each `paragraphElement`.
     static func paragraphs(in xml: Data, textElement: String, paragraphElement: String) -> String {
         let collector = Collector(textElement: textElement, paragraphElement: paragraphElement)

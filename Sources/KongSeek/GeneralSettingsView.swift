@@ -1,8 +1,14 @@
 import AppKit
+import ServiceManagement
 import KongSeekCore
 
-/// Settings page "通用": version, updates, settings export/import and diagnostics.
+/// Settings pages "通用" (start at login, PDF reader, history, citation style, backup and
+/// diagnostics, other apps) and "更新" (KongSeek and KongFolio updates); one class, so
+/// they share their refresh code (0.26: split, the single page had grown too tall).
 final class GeneralSettingsView: NSView {
+    enum Page { case general, updates }
+
+    private let page: Page
     private let updater: Updater
     private let library: SnippetLibrary
     private let diagnosticReport: () -> String
@@ -32,7 +38,12 @@ final class GeneralSettingsView: NSView {
     private let historyCheckbox = NSButton(checkboxWithTitle: "记录搜索历史（在空搜索框中按 ↑ 查看）", target: nil, action: nil)
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
-    init(updater: Updater, library: SnippetLibrary, diagnosticReport: @escaping () -> String) {
+    private let loginCheckbox = NSButton(checkboxWithTitle: "开机登录后自动启动 KongSeek（在菜单栏待命）", target: nil, action: nil)
+    private let loginNote = NSTextField(wrappingLabelWithString: "")
+    private let loginSettingsButton = NSButton(title: "打开“登录项”设置…", target: nil, action: nil)
+
+    init(page: Page, updater: Updater, library: SnippetLibrary, diagnosticReport: @escaping () -> String) {
+        self.page = page
         self.updater = updater
         self.library = library
         self.diagnosticReport = diagnosticReport
@@ -142,30 +153,55 @@ final class GeneralSettingsView: NSView {
             label.font = .systemFont(ofSize: 12, weight: .semibold)
             return label
         }
-        let stack = NSStackView(views: [
-            versionLabel, sourceLabel,
-            heading("更新"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
-            heading("PDF 阅读（KongFolio）"), readerRow, kongFolioRow,
-            heading("设置与诊断"), historyRow, citationRow, transferRow, transferHelp, cliRow, claudeRow, contentCheckbox,
-        ])
+        loginCheckbox.target = self
+        loginCheckbox.action = #selector(loginChanged)
+        loginNote.font = .systemFont(ofSize: 11)
+        loginNote.textColor = .secondaryLabelColor
+        loginNote.preferredMaxLayoutWidth = 520
+        loginSettingsButton.target = self
+        loginSettingsButton.action = #selector(openLoginItems)
+        loginSettingsButton.controlSize = .small
+
+        let views: [NSView]
+        switch page {
+        case .general:
+            views = [heading("启动"), loginCheckbox, loginNote, loginSettingsButton,
+                     heading("PDF 阅读"), readerRow,
+                     heading("搜索与引文"), historyRow, citationRow,
+                     heading("备份与诊断"), transferRow, transferHelp,
+                     heading("其他应用"), cliRow, claudeRow, contentCheckbox]
+        case .updates:
+            views = [versionLabel, sourceLabel,
+                     heading("更新 KongSeek"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
+                     heading("KongFolio（PDF 阅读与批注）"), kongFolioRow]
+        }
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 6
-        stack.setCustomSpacing(14, after: sourceLabel)
-        stack.setCustomSpacing(14, after: updateRow)
-        stack.setCustomSpacing(14, after: kongFolioRow)
+        // More room before each heading.
+        let sectionEnds: [NSView] = [sourceLabel, updateRow, loginNote, loginSettingsButton, readerRow, citationRow, transferHelp]
+        for view in sectionEnds where views.contains(where: { $0 === view }) {
+            stack.setCustomSpacing(14, after: view)
+        }
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
-        NSLayoutConstraint.activate([
+        var constraints = [
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -12),
-            notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            notesScroll.heightAnchor.constraint(equalToConstant: 80),
-            transferHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-        ])
+        ]
+        switch page {
+        case .general:
+            constraints += [transferHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                            loginNote.widthAnchor.constraint(equalTo: stack.widthAnchor)]
+        case .updates:
+            constraints += [notesScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                            notesScroll.heightAnchor.constraint(equalToConstant: 110),
+                            statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor)]
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     func refresh() {
@@ -231,6 +267,45 @@ final class GeneralSettingsView: NSView {
         historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
         citationPopup.selectItem(at: Citation.Style.allCases.firstIndex(of: Preferences.citationStyle) ?? 0)
         refreshKongFolio()
+        refreshLogin()
+    }
+
+    /// Start at login (SMAppService; 0.26 moved here from 索引 and explains the states).
+    private func refreshLogin() {
+        let status = SMAppService.mainApp.status
+        loginCheckbox.state = status == .enabled || status == .requiresApproval ? .on : .off
+        loginSettingsButton.isHidden = status != .requiresApproval
+        switch status {
+        case .enabled:
+            loginNote.stringValue = "已开启：每次开机登录后，KongSeek 自动在菜单栏出现，⌥空格随时可用。也可在 系统设置 › 通用 › 登录项 中看到。"
+        case .requiresApproval:
+            loginNote.stringValue = "还差一步：macOS 要你在 系统设置 › 通用 › 登录项 中允许 KongSeek（打开“允许在后台”或把它加入“登录时打开”）。"
+        case .notFound:
+            loginNote.stringValue = "KongSeek 不在“应用程序”文件夹时无法设为开机启动。"
+        default:
+            loginNote.stringValue = "关闭：开机后需要自己打开 KongSeek。"
+        }
+    }
+
+    @objc private func loginChanged() {
+        do {
+            if loginCheckbox.state == .on {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "无法更改开机启动设置"
+            alert.informativeText = error.localizedDescription + (SMAppService.mainApp.status == .requiresApproval ? "\n\n请在 系统设置 › 通用 › 登录项 中允许 KongSeek。" : "")
+            if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+        }
+        refresh()
+        if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+    }
+
+    @objc private func openLoginItems() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 
     private func refreshKongFolio() {

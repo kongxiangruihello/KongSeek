@@ -166,7 +166,7 @@ final class CoursePackageWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         model.start(paths: paths, name: name, window: window)
         guard model.running else { return }
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
     }

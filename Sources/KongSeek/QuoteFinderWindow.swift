@@ -100,6 +100,20 @@ final class QuoteFinderModel: ObservableObject {
                             location: result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" }, note: reference(result))
     }
 
+    /// 逐字异文 of a near match (0.26); nil when only punctuation or character forms differ.
+    func differences(_ result: Result) -> [QuoteDiff.Segment]? {
+        guard !result.exact else { return nil }
+        let segments = QuoteDiff.compare(quote: quote, source: result.excerpt)
+        return QuoteDiff.differs(segments) ? segments : nil
+    }
+
+    func copyCorrected(_ result: Result) {
+        let corrected = QuoteDiff.corrected(quote: quote.trimmingCharacters(in: .whitespacesAndNewlines), source: result.excerpt)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(corrected, forType: .string)
+        status = "已拷贝按原文改正的引文：\(corrected)"
+    }
+
     /// Shows a message in the status line.
     func note(_ text: String) { status = text }
 
@@ -136,7 +150,7 @@ struct QuoteFinderView: View {
             List(model.results) { result in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(result.exact ? "完全一致" : "近似 \(Int((result.score * 100).rounded()))%")
+                        Text(QuoteVerdict.text(score: result.score))
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 5)
                             .background(RoundedRectangle(cornerRadius: 4).fill((result.exact ? Color.green : Color.orange).opacity(0.18)))
@@ -152,6 +166,13 @@ struct QuoteFinderView: View {
                         }
                     }
                     Text(result.excerpt).font(.callout).foregroundColor(.secondary).lineLimit(3)
+                    if let differences = model.differences(result) {
+                        HStack(alignment: .firstTextBaseline) {
+                            QuoteDiffText.line(differences).font(.caption).lineLimit(3)
+                            Spacer()
+                            Button("拷贝改正后的引文") { model.copyCorrected(result) }.controlSize(.small)
+                        }
+                    }
                     Text(SearchWindowController.displayLocation(of: result.path)).font(.caption2).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
                 }
                 .padding(.vertical, 3)
@@ -180,7 +201,7 @@ final class QuoteFinderWindowController: NSWindowController {
 
     /// Shows the window; `quote` (e.g. text selected in another app) is filled in and checked.
     func present(quote: String? = nil) {
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -209,6 +230,9 @@ final class QuoteLookup {
     /// Texts of documents read lately, so checking many quotations from one manuscript
     /// does not read the same books again and again.
     private let pages = NSCache<NSString, PagesBox>()
+    /// The same texts on disk (0.26), so a book is not read again after KongSeek restarts.
+    static let diskCache = TextCache(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("KongSeek/TextCache", isDirectory: true))
 
     final class PagesBox {
         let pages: DocumentText.Pages?
@@ -245,6 +269,28 @@ final class QuoteLookup {
         if !started { check([], text: text, probes: probes, limit: maximumCandidates, token: current, progress: progress, completion: completion) }
     }
 
+    /// A document's text from the disk cache while the file is unchanged, else read and kept.
+    static func readCached(_ url: URL, ocr: OCRStore) -> DocumentText.Pages? {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        guard let size = values?.fileSize, let modified = values?.contentModificationDate else {
+            return try? DocumentText.read(url, maximumPages: 5_000, ocr: ocr)
+        }
+        let recognized = ocr.record(for: url.path)?.pages.filter { !$0.isEmpty }.count ?? 0
+        let stamp = TextCache.Stamp(size: Int64(size), modified: modified, recognized: recognized)
+        if let entry = diskCache.load(path: url.path, stamp: stamp) {
+            var pages = DocumentText.Pages(pages: entry.pages, totalPages: entry.totalPages, firstPage: entry.firstPage, isPaged: entry.isPaged)
+            pages.unit = entry.unit
+            return pages
+        }
+        guard let read = try? DocumentText.read(url, maximumPages: 5_000, ocr: ocr) else { return nil }
+        // Worth keeping only when there is text (and the whole document was read).
+        if read.pages.contains(where: { !$0.isEmpty }), read.pages.count >= read.totalPages || !read.isPaged {
+            diskCache.store(TextCache.Entry(path: url.path, stamp: stamp, pages: read.pages, totalPages: read.totalPages,
+                                            firstPage: read.firstPage, isPaged: read.isPaged, unit: read.unit))
+        }
+        return read
+    }
+
     private func check(_ spotlightPaths: Set<String>, text: String, probes: [String], limit: Int, token current: Int,
                        progress: ((Int, Int) -> Void)?, completion: @escaping (Outcome) -> Void) {
         var paths = spotlightPaths
@@ -267,7 +313,7 @@ final class QuoteLookup {
                 if let box = cache.object(forKey: path as NSString) {
                     read = box.pages
                 } else {
-                    read = try? DocumentText.read(url, maximumPages: 5_000, ocr: store)
+                    read = QuoteLookup.readCached(url, ocr: store)
                     cache.setObject(PagesBox(read), forKey: path as NSString)
                 }
                 if let pages = read, let match = QuoteMatcher.best(in: pages.pages, quote: text) {

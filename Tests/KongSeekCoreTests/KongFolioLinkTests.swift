@@ -68,4 +68,14 @@ final class KongFolioLinkTests: XCTestCase {
         XCTAssertEqual(merged.entry(for: "/c.pdf")?.page, 5)
         XCTAssertEqual(merged.recent(5).map(\.path), ["/a.pdf", "/b.pdf"])
     }
+
+    /// 0.26: 联动自检 needs KongFolio 0.34 or later.
+    func testLinkedVersion() {
+        XCTAssertTrue(KongFolioLink.isLinked(version: "0.34.0"))
+        XCTAssertTrue(KongFolioLink.isLinked(version: "0.34"))
+        XCTAssertTrue(KongFolioLink.isLinked(version: "0.40.1"))
+        XCTAssertTrue(KongFolioLink.isLinked(version: "1.0"))
+        XCTAssertFalse(KongFolioLink.isLinked(version: "0.33.0"))
+        XCTAssertFalse(KongFolioLink.isLinked(version: "0.4"), "0.4 is older than 0.34")
+    }
 }

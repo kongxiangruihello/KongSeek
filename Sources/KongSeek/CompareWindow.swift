@@ -203,7 +203,7 @@ final class CompareWindowController: NSWindowController {
     func present(old: URL?, new: URL?) {
         model.oldURL = old
         model.newURL = new
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

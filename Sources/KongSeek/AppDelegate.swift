@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var updateWindow: UpdateProgressWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        StandardKeys.install()
         service = IndexService(roots: Preferences.roots, rules: Preferences.rules)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         ocr = OCRService(directory: support.appendingPathComponent("KongSeek/OCR"))
@@ -65,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         updater.onUpdateStarted = { [weak self] in self?.showUpdateProgress() }
         KongFolioInstaller.shared.updater = updater
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60) { QuoteLookup.diskCache.trim() }
         KongFolioInstaller.shared.onChange = { [weak self] in self?.settingsWindow?.refresh() }
         if Preferences.autoCheckUpdates { updater.startAutomaticChecks() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.reportFinishedUpdate() }
@@ -206,7 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The menu bar icon shows a ring while anything runs in the background; its tooltip says what.
     private func updateBusyIcon() {
         let tasks = runningTasks()
-        statusItem.button?.toolTip = tasks.isEmpty ? "KongSeek" : "KongSeek 后台任务：\n" + tasks.map { "\($0.title)：\($0.detail)" }.joined(separator: "\n")
+        statusItem.button?.toolTip = TaskSummary.tooltip(tasks.map { (title: $0.title, detail: $0.detail) })
         let busy = !tasks.isEmpty
         guard busy != shownBusy else { return }
         shownBusy = busy
@@ -444,7 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         if previous == Updater.version {
             alert.messageText = "更新没有完成"
-            alert.informativeText = "KongSeek 仍是 \(previous)。安装时出了问题，已恢复原来的版本。详情见 设置 › 通用 › 更新日志。"
+            alert.informativeText = "KongSeek 仍是 \(previous)。安装时出了问题，已恢复原来的版本。详情见 设置 › 更新 › 更新日志。"
             alert.alertStyle = .warning
         } else {
             alert.messageText = "KongSeek 已更新到 \(Updater.version)"
@@ -602,6 +604,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Preferences.archiveSearch {
             items.append(HealthItem("其他", "压缩包内搜索", archives.statusText, .ok))
         }
+        items += kongFolioHealth()
+        let cacheSize = QuoteLookup.diskCache.size
+        if cacheSize > 0 {
+            items.append(HealthItem("其他", "引文查证的文字缓存", ByteCountFormatter.string(fromByteCount: cacheSize, countStyle: .file)
+                                    + "（读过的书的文字，文件改动后自动重读；上限 300 MB）", .ok,
+                                    action: ("清除", { DispatchQueue.global(qos: .utility).async { QuoteLookup.diskCache.clear() } })))
+        }
+        return items
+    }
+
+    /// KongFolio 联动自检 (0.26): installed, new enough, its links registered, its reading progress readable.
+    private func kongFolioHealth() -> [HealthItem] {
+        let group = "KongFolio 联动"
+        let install: (title: String, run: () -> Void) = ("安装或更新…", { [weak self] in self?.openUpdates() })
+        guard let app = KongFolio.appURL else {
+            if Preferences.pdfReader == .builtIn { return [] }
+            return [HealthItem(group, "没有找到 KongFolio", "PDF 在 KongSeek 自己的阅读窗口中打开；装上 KongFolio 后自动改用它", .info, action: install)]
+        }
+        var items: [HealthItem] = []
+        let version = KongFolio.installedVersion ?? "?"
+        let place = (app.path as NSString).abbreviatingWithTildeInPath
+        if KongFolioLink.isLinked(version: version) {
+            items.append(HealthItem(group, "KongFolio \(version)", "位置：\(place)", .ok))
+        } else {
+            items.append(HealthItem(group, "KongFolio \(version) 较旧", "需要 \(KongFolioLink.linkedVersion) 起才能保留标记、接着上次读、显示阅读时间；位置：\(place)", .warning, action: install))
+        }
+        items.append(KongFolio.isReader
+            ? HealthItem(group, "PDF 在 KongFolio 中打开", "⌥↩、引文查证的“打开到此处”、最近阅读", .ok)
+            : HealthItem(group, "PDF 在 KongSeek 阅读窗口中打开", "设置 › 通用 › PDF 阅读 中可改为 KongFolio", .info, action: ("打开设置", { [weak self] in self?.openSettings() })))
+        let handler = URL(string: "kongfolio://source").flatMap { NSWorkspace.shared.urlForApplication(toOpen: $0) }
+        if let handler, handler.standardizedFileURL.path == app.standardizedFileURL.path {
+            items.append(HealthItem(group, "按页打开的链接", "kongfolio:// 由 \(place) 打开", .ok))
+        } else {
+            items.append(HealthItem(group, "按页打开的链接没有交给这个 KongFolio",
+                                    handler.map { "现在由 \(($0.path as NSString).abbreviatingWithTildeInPath) 打开；可能有多份 KongFolio，请删掉不用的那份" }
+                                        ?? "系统没有登记 kongfolio:// 链接；打开一次 KongFolio 通常就会登记",
+                                    .warning))
+        }
+        let progress = KongFolio.readingEntries()
+        items.append(progress.isEmpty
+            ? HealthItem(group, "还没有读到 KongFolio 的阅读进度", "在 KongFolio 中读书、每页停留一会儿后就会有", .info)
+            : HealthItem(group, "阅读进度", "读到 \(progress.count) 本书的进度" + (progress.contains { $0.date > .distantPast } ? "" : "（尚无阅读时间，需 KongFolio 0.34 起）"), .ok))
         return items
     }
 

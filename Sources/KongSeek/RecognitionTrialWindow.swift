@@ -120,7 +120,7 @@ final class RecognitionTrialWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func run(page: CGPDFPage, title: String) {
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

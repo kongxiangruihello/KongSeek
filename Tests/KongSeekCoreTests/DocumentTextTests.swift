@@ -174,4 +174,17 @@ final class DocumentTextTests: XCTestCase {
         XCTAssertEqual(try OfficeText.spreadsheet(of: url), "论语导读\n星期三")
         XCTAssertEqual(try DocumentText.read(url).pages, ["论语导读\n星期三"])
     }
+
+    /// 0.26: quotations in a manuscript's footnotes are checked too.
+    func testWordFootnotesAndEndnotes() throws {
+        let w = #"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#
+        let url = try makeOffice("稿件.docx", [
+            "word/document.xml": "<w:document \(w)><w:body><w:p><w:r><w:t>正文</w:t></w:r></w:p></w:body></w:document>",
+            "word/footnotes.xml": "<w:footnotes \(w)><w:footnote w:id=\"1\"><w:p><w:r><w:t>朱熹注：“学之为言</w:t></w:r><w:r><w:t>效也。”</w:t></w:r></w:p></w:footnote></w:footnotes>",
+        ])
+        let notes = try OfficeText.wordNotes(of: url)
+        XCTAssertEqual(notes.footnotes, "朱熹注：“学之为言效也。”")
+        XCTAssertEqual(notes.endnotes, "")
+        XCTAssertEqual(ManuscriptQuotes.extract(from: notes.footnotes).map(\.text), ["学之为言效也。"])
+    }
 }

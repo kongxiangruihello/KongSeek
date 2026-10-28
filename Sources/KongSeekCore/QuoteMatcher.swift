@@ -104,9 +104,9 @@ public enum PageHits {
     }
 }
 
-/// The quotations in a manuscript (稿件引文核对, 0.23): text inside “…” or 「…」
-/// (and ‘…’ / 『…』 nested in them), long enough to be a quotation rather than a
-/// term or a title, in order, without repeats.
+/// The quotations in a manuscript (稿件引文核对, 0.23): text inside “…”, 「…」, 『…』,
+/// ﹁…﹂, ‘…’ (‘…’ inside “…” stays part of it), long enough to be a quotation rather
+/// than a term or a title, in order, without repeats.
 public enum ManuscriptQuotes {
     public struct Quote: Equatable, Sendable {
         public var text: String
@@ -119,7 +119,8 @@ public enum ManuscriptQuotes {
 
     public static func extract(from text: String, minimumLength: Int = minimumLength, maximumLength: Int = 400) -> [Quote] {
         let characters = Array(text)
-        let pairs: [Character: Character] = ["“": "”", "「": "」", "『": "』", "\"": "\""]
+        // Vertical-text brackets ﹁﹂﹃﹄ and single quotation marks standing on their own (0.26).
+        let pairs: [Character: Character] = ["“": "”", "「": "」", "『": "』", "﹁": "﹂", "﹃": "﹄", "‘": "’", "\"": "\""]
         var quotes: [Quote] = []
         var seen = Set<String>()
         var index = 0

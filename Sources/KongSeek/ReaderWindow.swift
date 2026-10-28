@@ -217,7 +217,7 @@ final class ReaderWindowController: NSWindowController, NSWindowDelegate, NSOutl
         findResults = []
         pageLabel.stringValue = ""
         messageLabel.stringValue = "正在打开…"
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

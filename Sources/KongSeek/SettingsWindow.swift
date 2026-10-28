@@ -14,6 +14,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private let snippetPage: SnippetSettingsView
     private let quickLinkPage: QuickLinkSettingsView
     private let generalPage: GeneralSettingsView
+    /// Updates of KongSeek and KongFolio (0.26: their own page, out of 通用).
+    private let updatePage: GeneralSettingsView
     private let tabs = NSTabView()
 
     private let clipEnabledCheckbox = NSButton(checkboxWithTitle: "记录剪贴板历史（文字、图片、文件）", target: nil, action: nil)
@@ -42,7 +44,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
     private var folders: [String] = []
     private let hiddenCheckbox = NSButton(checkboxWithTitle: "包含隐藏文件和文件夹（名称以 . 开头）", target: nil, action: nil)
     private let pathCheckbox = NSButton(checkboxWithTitle: "关键词也匹配所在文件夹的路径", target: nil, action: nil)
-    private let loginCheckbox = NSButton(checkboxWithTitle: "登录时自动启动 KongSeek", target: nil, action: nil)
     private let indexStatusLabel = NSTextField(labelWithString: "")
     private let archives: ArchiveService
     private let onArchiveSettingsChange: () -> Void
@@ -66,7 +67,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
          snippetExpansion: SnippetExpansionService, onIndexSettingsChange: @escaping () -> Void, onRebuild: @escaping () -> Void, indexStatus: @escaping () -> String,
          archives: ArchiveService, onArchiveSettingsChange: @escaping () -> Void,
          updater: Updater, diagnosticReport: @escaping () -> String) {
-        generalPage = GeneralSettingsView(updater: updater, library: snippets, diagnosticReport: diagnosticReport)
+        generalPage = GeneralSettingsView(page: .general, updater: updater, library: snippets, diagnosticReport: diagnosticReport)
+        updatePage = GeneralSettingsView(page: .updates, updater: updater, library: snippets, diagnosticReport: diagnosticReport)
         self.archives = archives
         self.onArchiveSettingsChange = onArchiveSettingsChange
         self.hotKey = hotKey
@@ -80,7 +82,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         self.onIndexSettingsChange = onIndexSettingsChange
         self.onRebuild = onRebuild
         self.indexStatus = indexStatus
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 790), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 710), styleMask: [.titled, .closable], backing: .buffered, defer: true)
         super.init()
         window.title = "KongSeek 设置"
         window.isReleasedWhenClosed = false
@@ -88,11 +90,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         buildLayout()
     }
 
-    /// Shows the window, on the "通用" page when `general` is set (update notices).
+    /// Shows the window, on the "更新" page when `general` is set (update notices).
     func show(general: Bool = false) {
-        if general { tabs.selectTabViewItem(withIdentifier: "general") }
+        if general { tabs.selectTabViewItem(withIdentifier: "updates") }
         refresh()
-        window.center()
+        if !window.isVisible { window.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         refreshTimer?.invalidate()
@@ -136,6 +138,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         generalTab.label = "通用"
         generalTab.view = generalPage
         tabs.addTabViewItem(generalTab)
+        let updateTab = NSTabViewItem(identifier: "updates")
+        updateTab.label = "更新"
+        updateTab.view = updatePage
+        tabs.addTabViewItem(updateTab)
         let container = NSView()
         tabs.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(tabs)
@@ -232,7 +238,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         note.textColor = .secondaryLabelColor
         note.preferredMaxLayoutWidth = 440
 
-        for checkbox in [hiddenCheckbox, pathCheckbox, loginCheckbox, archiveCheckbox] {
+        for checkbox in [hiddenCheckbox, pathCheckbox, archiveCheckbox] {
             checkbox.target = self
             checkbox.action = #selector(checkboxChanged(_:))
         }
@@ -246,7 +252,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         archiveScanButton.action = #selector(scanArchives)
         archiveScanButton.controlSize = .small
 
-        for view in [title, scroll, add, remove, reset, note, hiddenCheckbox, pathCheckbox, loginCheckbox, archiveCheckbox, archiveScanButton, archiveStatusLabel,
+        for view in [title, scroll, add, remove, reset, note, hiddenCheckbox, pathCheckbox, archiveCheckbox, archiveScanButton, archiveStatusLabel,
                      indexStatusLabel, rebuild] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
@@ -271,9 +277,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
             hiddenCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             pathCheckbox.topAnchor.constraint(equalTo: hiddenCheckbox.bottomAnchor, constant: 8),
             pathCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            loginCheckbox.topAnchor.constraint(equalTo: pathCheckbox.bottomAnchor, constant: 8),
-            loginCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            archiveCheckbox.topAnchor.constraint(equalTo: loginCheckbox.bottomAnchor, constant: 8),
+            archiveCheckbox.topAnchor.constraint(equalTo: pathCheckbox.bottomAnchor, constant: 8),
             archiveCheckbox.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             archiveScanButton.topAnchor.constraint(equalTo: archiveCheckbox.bottomAnchor, constant: 4),
             archiveScanButton.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 18),
@@ -538,19 +542,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         case archiveCheckbox:
             Preferences.archiveSearch = sender.state == .on
             onArchiveSettingsChange()
-        case loginCheckbox:
-            do {
-                if sender.state == .on {
-                    try SMAppService.mainApp.register()
-                } else {
-                    try SMAppService.mainApp.unregister()
-                }
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "无法更改登录启动设置"
-                alert.informativeText = error.localizedDescription
-                alert.beginSheetModal(for: window)
-            }
         default:
             break
         }
@@ -727,6 +718,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
 
     func refresh() {
         generalPage.refresh()
+        updatePage.refresh()
         refreshClipboard()
         snippetPage.refreshStatus()
         refreshOCR()
@@ -736,7 +728,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate, NSTableViewDat
         }
         hiddenCheckbox.state = Preferences.includeHidden ? .on : .off
         pathCheckbox.state = Preferences.matchFolderPath ? .on : .off
-        loginCheckbox.state = SMAppService.mainApp.status == .enabled ? .on : .off
         indexStatusLabel.stringValue = indexStatus()
         archiveCheckbox.state = Preferences.archiveSearch ? .on : .off
         archiveScanButton.isHidden = !Preferences.archiveSearch

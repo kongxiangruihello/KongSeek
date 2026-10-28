@@ -213,7 +213,7 @@ final class SpaceWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func present() {
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

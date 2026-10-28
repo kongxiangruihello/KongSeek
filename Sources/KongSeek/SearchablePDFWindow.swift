@@ -144,7 +144,7 @@ final class SearchablePDFWindowController: NSWindowController {
     func start(_ url: URL) { start([url]) }
 
     func start(_ urls: [URL]) {
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

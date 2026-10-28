@@ -47,6 +47,15 @@ public enum KongFolioLink {
         return components.url
     }
 
+    /// The first KongFolio that keeps KongSeek's marks, reopens books where they were
+    /// read, and records reading time and page counts.
+    public static let linkedVersion = "0.34"
+
+    /// Whether `version` (e.g. "0.33.0", "0.34.1") is `linkedVersion` or later.
+    public static func isLinked(version: String) -> Bool {
+        version.compare(linkedVersion, options: .numeric) != .orderedAscending
+    }
+
     // MARK: Reading progress
 
     /// KongFolio keeps each file's progress in its preferences under this key.

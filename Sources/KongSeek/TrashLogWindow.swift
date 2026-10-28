@@ -153,7 +153,7 @@ final class TrashLogWindowController: NSWindowController {
 
     func present() {
         model.reload()
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

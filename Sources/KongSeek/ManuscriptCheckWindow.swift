@@ -22,10 +22,15 @@ final class ManuscriptCheckModel: ObservableObject {
             switch state {
             case .waiting: return "待核对"
             case .checking: return "核对中…"
-            case .done:
-                guard let best else { return "未找到" }
-                return best.exact ? "完全一致" : "近似 \(Int((best.score * 100).rounded()))%"
+            case .done: return QuoteVerdict.text(score: best?.score)
             }
+        }
+
+        /// 逐字异文 against the passage found (0.26), for near matches.
+        var differences: [QuoteDiff.Segment]? {
+            guard let best, !best.exact else { return nil }
+            let segments = QuoteDiff.compare(quote: quote.text, source: best.excerpt)
+            return QuoteDiff.differs(segments) ? segments : nil
         }
     }
 
@@ -42,12 +47,11 @@ final class ManuscriptCheckModel: ObservableObject {
     }
 
     var summary: String {
-        let done = rows.filter { $0.state == .done }
-        let exact = done.filter { $0.best?.exact == true }.count
-        let near = done.filter { $0.best != nil && $0.best?.exact == false }.count
-        let missing = done.filter { $0.best == nil }.count
-        return "共 \(rows.count) 条引文：完全一致 \(exact)，近似 \(near)，未找到 \(missing)" + (done.count < rows.count ? "，待核对 \(rows.count - done.count)" : "")
+        QuoteVerdict.summary(rows.map { row -> Double?? in row.state == .done ? .some(row.best?.score) : nil })
     }
+
+    /// Set while the manuscript is being read (0.26: in the background, so a long PDF does not freeze the window).
+    @Published private(set) var reading = false
 
     func choose() {
         let panel = NSOpenPanel()
@@ -63,20 +67,55 @@ final class ManuscriptCheckModel: ObservableObject {
         stop()
         manuscript = url
         rows = []
-        do {
-            let pages = try DocumentText.read(url, maximumPages: 5_000, downloadWait: 60)
-            let quotes = ManuscriptQuotes.extract(from: pages.pages.joined(separator: "\n"))
-            rows = quotes.enumerated().map { Row(number: $0.offset + 1, quote: $0.element) }
-            status = quotes.isEmpty ? "稿件中没有找到引号内的引文（至少 \(ManuscriptQuotes.minimumLength) 个字）。" : "找到 \(quotes.count) 条引文，点“开始核对”。"
-        } catch DocumentText.Failure.unsupported(let ext) {
-            status = "无法读取 .\(ext) 文件。请另存为 Word（.docx）、文本或 PDF 后再选。"
-        } catch DocumentText.Failure.noText(_) {
-            status = "这是没有文字层的扫描版 PDF，读不出引文。"
-        } catch DocumentText.Failure.notDownloaded, DocumentText.Failure.downloading {
-            status = "稿件只在 iCloud 中，尚未下载完成。请在访达中打开一次后再选。"
-        } catch {
-            status = "无法读取稿件。"
+        reading = true
+        status = "正在读取稿件…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = ManuscriptCheckModel.readQuotes(url)
+            DispatchQueue.main.async {
+                guard let self, self.manuscript == url else { return }
+                self.reading = false
+                switch outcome {
+                case .success(let quotes):
+                    self.rows = quotes.enumerated().map { Row(number: $0.offset + 1, quote: $0.element) }
+                    let inNotes = quotes.filter { $0.context.hasPrefix("〔注〕") }.count
+                    self.status = quotes.isEmpty
+                        ? "稿件中没有找到引号内的引文（至少 \(ManuscriptQuotes.minimumLength) 个字）。"
+                        : "找到 \(quotes.count) 条引文" + (inNotes > 0 ? "（其中脚注、尾注中 \(inNotes) 条）" : "") + "，点“开始核对”。"
+                case .failure(let message):
+                    self.status = message
+                }
+            }
         }
+    }
+
+    private enum ReadOutcome { case success([ManuscriptQuotes.Quote]), failure(String) }
+
+    /// The quotations of the body, then those of a Word document's footnotes and endnotes
+    /// (marked 〔注〕 in their context), each quotation once.
+    private static func readQuotes(_ url: URL) -> ReadOutcome {
+        let pages: DocumentText.Pages
+        do {
+            pages = try DocumentText.read(url, maximumPages: 5_000, downloadWait: 60)
+        } catch DocumentText.Failure.unsupported(let ext) {
+            return .failure("无法读取 .\(ext) 文件。请另存为 Word（.docx）、文本或 PDF 后再选。")
+        } catch DocumentText.Failure.noText(_) {
+            return .failure("这是没有文字层的扫描版 PDF，读不出引文。")
+        } catch DocumentText.Failure.notDownloaded, DocumentText.Failure.downloading {
+            return .failure("稿件只在 iCloud 中，尚未下载完成。请在访达中打开一次后再选。")
+        } catch {
+            return .failure("无法读取稿件。")
+        }
+        var quotes = ManuscriptQuotes.extract(from: pages.pages.joined(separator: "\n"))
+        if url.pathExtension.lowercased() == "docx", let notes = try? OfficeText.wordNotes(of: url) {
+            var seen = Set(quotes.map { String(QuoteMatcher.normalized($0.text)) })
+            for text in [notes.footnotes, notes.endnotes] where !text.isEmpty {
+                for var quote in ManuscriptQuotes.extract(from: text) where seen.insert(String(QuoteMatcher.normalized(quote.text))).inserted {
+                    quote.context = "〔注〕" + quote.context
+                    quotes.append(quote)
+                }
+            }
+        }
+        return .success(quotes)
     }
 
     func start() {
@@ -137,6 +176,15 @@ final class ManuscriptCheckModel: ObservableObject {
         return "《\(((best.path as NSString).lastPathComponent as NSString).deletingPathExtension)》" + (best.page.map { "第 \($0) \(best.unit)" } ?? "")
     }
 
+    /// The quotation as the source writes it (0.26).
+    func copyCorrected(_ row: Row) {
+        guard let best = row.best else { return }
+        let corrected = QuoteDiff.corrected(quote: row.quote.text, source: best.excerpt)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(corrected, forType: .string)
+        status = "已拷贝按原文改正的引文：\(corrected)"
+    }
+
     func copyReference(_ row: Row) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(reference(row), forType: .string)
@@ -149,17 +197,20 @@ final class ManuscriptCheckModel: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "xlsx") ?? .data]
         panel.nameFieldStringValue = (manuscript?.deletingPathExtension().lastPathComponent ?? "稿件") + " 引文核对.xlsx"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        var cells: [[XLSXWriter.Cell]] = [["序号", "引文", "稿中上文", "结果", "出处", "页码", "原文", "文件"].map { .text($0) }]
+        var cells: [[XLSXWriter.Cell]] = [["序号", "引文", "稿中上文", "结果", "异文", "按原文改正", "出处", "页码", "原文", "文件"].map { .text($0) }]
         for row in rows {
             let page: XLSXWriter.Cell
             if let number = row.best?.page { page = .number(Double(number)) } else { page = .text("") }
+            let differences = row.differences
+            let corrected = differences == nil ? "" : QuoteDiff.corrected(quote: row.quote.text, source: row.best?.excerpt ?? "")
             let line: [XLSXWriter.Cell] = [.number(Double(row.number)), .text(row.quote.text), .text(row.quote.context), .text(row.verdict),
+                                           .text(differences.map(QuoteDiff.summary) ?? ""), .text(corrected),
                                            .text(reference(row)), page, .text(row.best?.excerpt ?? ""), .text(row.best?.path ?? "")]
             cells.append(line)
         }
         do {
             try? FileManager.default.removeItem(at: url)
-            try XLSXWriter.write(rows: cells, columnWidths: [6, 50, 24, 12, 50, 8, 50, 50], sheetName: "引文核对", to: url)
+            try XLSXWriter.write(rows: cells, columnWidths: [6, 50, 24, 12, 30, 50, 50, 8, 50, 50], sheetName: "引文核对", to: url)
             status = "已导出到 \(url.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
@@ -176,7 +227,8 @@ struct ManuscriptCheckView: View {
             HStack {
                 Text(model.manuscript?.lastPathComponent ?? "未选择稿件").font(.headline).lineLimit(1).truncationMode(.middle)
                 Spacer()
-                Button("选择稿件…") { model.choose() }.disabled(model.running)
+                if model.reading { ProgressView().controlSize(.small) }
+                Button("选择稿件…") { model.choose() }.disabled(model.running || model.reading)
                 if model.running {
                     Button("停止") { model.stop() }
                 } else {
@@ -217,6 +269,15 @@ struct ManuscriptCheckView: View {
                 Text("出处：" + model.reference(row) + (row.others > 0 ? "（另有 \(row.others) 处）" : ""))
                     .font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle).padding(.leading, 98)
                 Text("原文：" + best.excerpt).font(.caption).foregroundColor(.secondary).lineLimit(2).padding(.leading, 98)
+                if let differences = row.differences {
+                    HStack(alignment: .firstTextBaseline) {
+                        QuoteDiffText.line(differences).font(.caption).lineLimit(3)
+                        Spacer()
+                        Button("拷贝改正后的引文") { model.copyCorrected(row) }.controlSize(.small)
+                            .help("按原文的用字改正这条引文（保留稿中的标点），拷贝下来贴回稿件")
+                    }
+                    .padding(.leading, 98)
+                }
             } else if row.state == .done {
                 Text("未在书库中找到。可能出自未建立内容索引的文件、未识别的扫描件、只在 iCloud 中的文件，或引文与原文出入较大。")
                     .font(.caption).foregroundColor(.secondary).padding(.leading, 98)
@@ -243,7 +304,7 @@ final class ManuscriptCheckWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func present(_ url: URL? = nil) {
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

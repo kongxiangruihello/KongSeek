@@ -91,7 +91,7 @@ final class UpdateProgressWindow: NSObject, NSWindowDelegate {
 
     func show() {
         refresh()
-        if !window.isVisible { window.center() }
+        if !window.isVisible { window.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         timer?.invalidate()

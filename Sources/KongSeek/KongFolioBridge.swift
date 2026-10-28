@@ -3,7 +3,7 @@ import PDFKit
 import KongSeekCore
 
 /// KongFolio, the PDF reading and annotation app (0.25). When it is installed (and chosen
-/// in 设置 › 通用), PDFs opened "at the hit" go there instead of KongSeek's reading window,
+/// in 设置 › 通用 › PDF 阅读), PDFs opened "at the hit" go there instead of KongSeek's reading window,
 /// and its reading progress shows in 最近阅读 and 文件清单.
 enum KongFolio {
     static var appURL: URL? {

@@ -352,7 +352,7 @@ final class BatchRenameWindowController: NSWindowController {
     /// Shows the window; `urls` are added to the list.
     func present(adding urls: [URL] = []) {
         model.add(urls)
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

@@ -50,6 +50,8 @@ enum FeatureGuide {
               how: "菜单栏图标 › 写作与引文 › 引文查证；任何应用中选中文字按 ⌃⌥Q 直接查证", action: .quoteFinder, keywords: "出处 引用 核对 页码"),
         Entry(category: "阅读与引文", title: "稿件引文核对", detail: "选一篇稿件（Word、文本、PDF），把其中引号内的引文逐条到书库查证，列成表，可导出 Excel。",
               how: "菜单栏图标 › 写作与引文 › 稿件引文核对", action: .manuscriptCheck, keywords: "论文 稿子 引号 批量 核对"),
+        Entry(category: "阅读与引文", title: "逐字异文", detail: "引文查证和稿件核对中“近似”的结果逐字对照原文：错字划掉标红、原文用字标绿，脱字用〔〕补出，衍字划掉；可一键拷贝按原文改正的引文。",
+              how: "引文查证、稿件引文核对的结果中", action: .quoteFinder, keywords: "异文 错字 脱字 衍字 校勘 改正 对照"),
         Entry(category: "阅读与引文", title: "拷贝引文", detail: "全文命中后拷贝命中的整句和出处（电子书带页码的 GB/T 7714 参考文献）。",
               how: "全文结果上 ⌘K › 拷贝引文", action: .openSearch, keywords: "引用 出处"),
         Entry(category: "阅读与引文", title: "拷贝为参考文献", detail: "按文件名和 EPUB 书目信息生成参考文献（GB/T 7714 或脚注格式，设置中选择）。",
@@ -61,7 +63,7 @@ enum FeatureGuide {
         Entry(category: "阅读与引文", title: "送到 KongReview", detail: "把摘录（原文、出处、页码）送到 KongReview。",
               how: "引文查证结果旁按钮；剪贴板中 ⌘R；搜索框输入“kr 内容”", action: .quoteFinder, keywords: "摘录 卡片"),
         Entry(category: "阅读与引文", title: "在 KongFolio 中阅读", detail: "装了 KongFolio 后，⌥↩、引文查证与稿件核对的“打开到此处”、最近阅读都在 KongFolio 中打开到那一页并标出命中的字；KongFolio 的阅读进度也显示在 KongSeek 中。可在设置中安装或更新 KongFolio。",
-              how: "设置 › 通用 › PDF 阅读（KongFolio）", action: .settings, keywords: "pdf 阅读器 批注 标注 kongfolio 联动"),
+              how: "设置 › 通用 › PDF 阅读；设置 › 更新 › KongFolio", action: .settings, keywords: "pdf 阅读器 批注 标注 kongfolio 联动"),
         Entry(category: "阅读与引文", title: "阅读进度与最近阅读", detail: "在 KongSeek 阅读窗口中读过的 PDF 记住读到第几页，再打开时接着读；文件清单中显示“读到第 N 页 / 共 M 页”。",
               how: "菜单栏图标 › 最近阅读；文件清单“阅读进度”列", keywords: "页码 书签 继续读"),
         Entry(category: "阅读与引文", title: "保存文件清单", detail: "把一份文件清单起名保存（如“本学期书单”“论文参考书”），以后再打开；被移动或删除的文件会提示。",
@@ -104,8 +106,12 @@ enum FeatureGuide {
         Entry(category: "剪贴板与片段", title: "识别图片中的文字", detail: "拷贝剪贴板图片中识别出的文字。", how: "剪贴板窗口中 ⌘T", action: .clipboard, keywords: "ocr 截图"),
 
         // 设置与诊断
+        Entry(category: "设置与诊断", title: "窗口中的快捷键", detail: "KongSeek 的各个窗口里：⌘C ⌘V ⌘X ⌘A 拷贝粘贴全选，⌘Z 撤销，⌘F 跳到筛选框，⌘W 关闭，⌘M 最小化；窗口记住上次的位置和大小。",
+              how: "任意 KongSeek 窗口", keywords: "拷贝 粘贴 复制 关闭 筛选 查找 窗口"),
+        Entry(category: "设置与诊断", title: "开机自动启动", detail: "开机登录后 KongSeek 自动在菜单栏待命，⌥空格随时可用。",
+              how: "设置 › 通用 › 启动", action: .settings, keywords: "开机 登录 自启动 启动项 login"),
         Entry(category: "设置与诊断", title: "检查更新", detail: "从 GitHub 获取新版本，在本机测试、编译后安装；可回退到上一版。",
-              how: "设置 › 通用 › 检查更新", action: .settings, keywords: "升级 版本"),
+              how: "设置 › 更新 › 检查更新", action: .settings, keywords: "升级 版本"),
         Entry(category: "设置与诊断", title: "后台任务", detail: "建立索引、文字识别、生成可搜索 PDF、打包、引文核对、书库体检等进行时，菜单栏图标变成带圈的放大镜，菜单顶部列出进度，可查看或停止。",
               how: "菜单栏图标 › 后台任务", action: .status, keywords: "进度 停止 暂停 正在"),
         Entry(category: "设置与诊断", title: "状态与诊断", detail: "索引、唤起、权限、文字识别、更新、Claude 工具一览，需要处理的项附有按钮。",
@@ -119,12 +125,8 @@ enum FeatureGuide {
     /// Entries whose text contains every word of `query` (繁简、大小写不分), or whose
     /// title's pinyin (full or initials) starts with it.
     static func filter(_ query: String) -> [Entry] {
-        let words = query.split(whereSeparator: \.isWhitespace).map { SearchText.fold(String($0)) }
-        guard !words.isEmpty else { return entries }
-        return entries.filter { entry in
-            let text = SearchText.fold([entry.title, entry.detail, entry.how, entry.keywords, entry.category].joined(separator: " "))
-            let pinyin = Pinyin.forms(entry.title).map { SearchText.fold($0.replacingOccurrences(of: " ", with: "")) }
-            return words.allSatisfy { word in text.contains(word) || pinyin.contains { $0.hasPrefix(word) } }
+        entries.filter { entry in
+            FeatureSearch.matches(query, title: entry.title, text: [entry.detail, entry.how, entry.keywords, entry.category].joined(separator: " "))
         }
     }
 }
@@ -212,7 +214,7 @@ final class FeatureGuideWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     func present() {
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

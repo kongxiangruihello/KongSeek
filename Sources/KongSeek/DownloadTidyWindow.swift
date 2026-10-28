@@ -171,7 +171,7 @@ final class DownloadTidyWindowController: NSWindowController {
 
     func present(_ paths: [String]) {
         model.load(paths)
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

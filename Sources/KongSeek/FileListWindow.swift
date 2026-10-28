@@ -232,7 +232,7 @@ final class FileListModel: ObservableObject {
     }
 
     private var suggestedName: String {
-        heading.replacingOccurrences(of: "搜索“", with: "").replacingOccurrences(of: "”的结果", with: "")
+        SavedFileLists.suggestedName(heading: heading)
     }
 
     // MARK: Actions
@@ -461,7 +461,7 @@ final class FileListWindowController: NSWindowController {
 
     func present(_ source: FileListSource) {
         model.load(source)
-        if window?.isVisible != true { window?.center() }
+        if window?.isVisible != true { window?.placeRemembered() }
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)

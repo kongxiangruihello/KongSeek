@@ -45,6 +45,15 @@ public enum DocumentText {
         public var recognizedPages: [Int] = []
         /// What a page is called in headers: 页, or 张幻灯片 for presentations.
         public var unit = "页"
+
+        public init(pages: [String], totalPages: Int, firstPage: Int, isPaged: Bool, recognizedPages: [Int] = [], unit: String = "页") {
+            self.pages = pages
+            self.totalPages = totalPages
+            self.firstPage = firstPage
+            self.isPaged = isPaged
+            self.recognizedPages = recognizedPages
+            self.unit = unit
+        }
     }
 
     static let pagedLimit = 2_000
