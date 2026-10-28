@@ -484,7 +484,7 @@ final class Updater {
         return git(proxyOptions + ["fetch", "--quiet", "origin", "main"], root, timeout: 45)
     }
 
-    private func git(_ arguments: [String], _ root: String, timeout: TimeInterval = 120, logOutput: Bool = true) -> (status: Int32, output: String) {
+    func git(_ arguments: [String], _ root: String, timeout: TimeInterval = 120, logOutput: Bool = true) -> (status: Int32, output: String) {
         // Give up on a transfer slower than 1 KB/s for 20 seconds.
         run("/usr/bin/git", ["-C", root, "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20"] + arguments, root,
             timeout: timeout, logOutput: logOutput)
@@ -492,7 +492,7 @@ final class Updater {
 
     /// Runs a command to completion, appending it (and its output) to the update log.
     /// A command that runs longer than `timeout` seconds is stopped.
-    private func run(_ executable: String, _ arguments: [String], _ directory: String,
+    func run(_ executable: String, _ arguments: [String], _ directory: String,
                      timeout: TimeInterval = 1200, logOutput: Bool = true,
                      onLine: ((String) -> Void)? = nil) -> (status: Int32, output: String) {
         let process = Process()
@@ -547,7 +547,7 @@ final class Updater {
         return (timedOut ? -2 : process.terminationStatus, output)
     }
 
-    private func log(_ text: String) {
+    func log(_ text: String) {
         let line = text.hasSuffix("\n") ? text : text + "\n"
         try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
         if let handle = try? FileHandle(forWritingTo: logURL) {

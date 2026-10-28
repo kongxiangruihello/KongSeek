@@ -1278,7 +1278,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         rememberSearch()
         if ext == "pdf" {
             hide()
-            ReaderWindowController.shared.open(URL(fileURLWithPath: item.path), page: page, words: outcome.highlightWords)
+            PDFOpener.open(URL(fileURLWithPath: item.path), page: page, words: outcome.highlightWords)
         } else if ext == "pptx", let page {
             hide()
             PowerPoint.open(item.path, slide: page) { message in
@@ -1403,7 +1403,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let ext = (item.path as NSString).pathExtension.lowercased()
         let hitPage = self.hitPage(for: item)
         if !item.isFolder && ext == "pdf" {
-            add(hitPage.map { "在阅读窗口中打开到第 \($0) 页" } ?? "在阅读窗口中打开（含目录）", "\r", [.option]) { [weak self] in self?.openAtHit(item) }
+            let reader = KongFolio.isReader ? "在 KongFolio 中" : "在阅读窗口中"
+            add(hitPage.map { "\(reader)打开到第 \($0) 页" } ?? (KongFolio.isReader ? "在 KongFolio 中打开（接着上次读）" : "在阅读窗口中打开（含目录）"), "\r", [.option]) { [weak self] in self?.openAtHit(item) }
         } else if !item.isFolder && ext == "pptx", let hitPage {
             add("在 PowerPoint 中打开到第 \(hitPage) 张", "\r", [.option]) { [weak self] in self?.openAtHit(item) }
         }

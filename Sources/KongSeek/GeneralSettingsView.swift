@@ -25,6 +25,10 @@ final class GeneralSettingsView: NSView {
     private let claudeButton = NSButton(title: "添加到 Claude 桌面版…", target: nil, action: nil)
     private let claudeLabel = NSTextField(labelWithString: "")
     private let citationPopup = NSPopUpButton()
+    /// PDF reading in KongFolio (0.25).
+    private let readerPopup = NSPopUpButton()
+    private let kongFolioButton = NSButton(title: "安装 KongFolio", target: nil, action: nil)
+    private let kongFolioLabel = NSTextField(wrappingLabelWithString: "")
     private let historyCheckbox = NSButton(checkboxWithTitle: "记录搜索历史（在空搜索框中按 ↑ 查看）", target: nil, action: nil)
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
@@ -112,6 +116,21 @@ final class GeneralSettingsView: NSView {
         citationPopup.action = #selector(citationChanged)
         let citationRow = NSStackView(views: [NSTextField(labelWithString: "参考文献与引文格式："), citationPopup])
         citationRow.spacing = 6
+        for reader in Preferences.PDFReader.allCases { readerPopup.addItem(withTitle: reader.title) }
+        readerPopup.target = self
+        readerPopup.action = #selector(readerChanged)
+        readerPopup.toolTip = "搜索窗口中 ⌥↩、引文查证与稿件核对的“打开到此处”、菜单栏“最近阅读”打开 PDF 的地方"
+        let readerRow = NSStackView(views: [NSTextField(labelWithString: "按页打开 PDF 用："), readerPopup])
+        readerRow.spacing = 6
+        kongFolioButton.target = self
+        kongFolioButton.action = #selector(installKongFolio)
+        kongFolioButton.bezelStyle = .rounded
+        kongFolioLabel.font = .systemFont(ofSize: 11)
+        kongFolioLabel.textColor = .secondaryLabelColor
+        kongFolioLabel.preferredMaxLayoutWidth = 380
+        let kongFolioRow = NSStackView(views: [kongFolioButton, kongFolioLabel])
+        kongFolioRow.spacing = 8
+        kongFolioRow.alignment = .centerY
         contentCheckbox.toolTip = "关闭后，Claude 只能按文件名搜索（search_files），不能搜索正文（search_content）或读取文件（read_file）。"
         let transferHelp = NSTextField(wrappingLabelWithString: "设置文件包含各页的设置和文本片段，不含剪贴板历史、最近打开和索引，可用于换机或备份；主目录下的路径会自动换成新电脑的主目录。诊断包含状态报告、更新与构建日志、最近的崩溃报告和设置（不含片段与剪贴板内容），出问题时发给开发者。")
         transferHelp.font = .systemFont(ofSize: 11)
@@ -126,6 +145,7 @@ final class GeneralSettingsView: NSView {
         let stack = NSStackView(views: [
             versionLabel, sourceLabel,
             heading("更新"), autoCheckbox, proxyRow, statusLabel, notesScroll, updateRow,
+            heading("PDF 阅读（KongFolio）"), readerRow, kongFolioRow,
             heading("设置与诊断"), historyRow, citationRow, transferRow, transferHelp, cliRow, claudeRow, contentCheckbox,
         ])
         stack.orientation = .vertical
@@ -133,6 +153,7 @@ final class GeneralSettingsView: NSView {
         stack.spacing = 6
         stack.setCustomSpacing(14, after: sourceLabel)
         stack.setCustomSpacing(14, after: updateRow)
+        stack.setCustomSpacing(14, after: kongFolioRow)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -209,6 +230,50 @@ final class GeneralSettingsView: NSView {
         contentCheckbox.state = Preferences.mcpReadContent ? .on : .off
         historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
         citationPopup.selectItem(at: Citation.Style.allCases.firstIndex(of: Preferences.citationStyle) ?? 0)
+        refreshKongFolio()
+    }
+
+    private func refreshKongFolio() {
+        readerPopup.selectItem(at: Preferences.PDFReader.allCases.firstIndex(of: Preferences.pdfReader) ?? 0)
+        let installer = KongFolioInstaller.shared
+        let installed = KongFolio.installedVersion
+        kongFolioButton.title = installed == nil ? "安装 KongFolio" : "更新 KongFolio"
+        kongFolioButton.isEnabled = !installer.isBusy && !updater.state.isBusy
+        var text: String
+        switch installer.phase {
+        case .working(let step): text = step
+        case .failed(let message): text = "⚠︎ " + message
+        case .done(let message): text = message + "。"
+        case .idle:
+            if let installed {
+                text = "已安装 KongFolio \(installed)。" + (KongFolio.isReader ? "PDF 在 KongFolio 中打开到命中页，标记保留在页面上。" : "")
+                if let source = KongFolioInstaller.sourceVersion, source != installed { text += "源码中的版本是 \(source)。" }
+                text += "点“更新”从 GitHub 获取最新版，在本机编译后替换（需 KongFolio 0.34 起才保留标记、接着上次读）。"
+            } else {
+                text = "没有找到 KongFolio。点“安装”从 GitHub 下载源码到 ~/Developer/kongfolio，在本机编译后放进“应用程序”（第一次约需 5–10 分钟）。"
+            }
+        }
+        if kongFolioLabel.stringValue != text { kongFolioLabel.stringValue = text }
+    }
+
+    @objc private func readerChanged() {
+        let all = Preferences.PDFReader.allCases
+        Preferences.pdfReader = all[max(0, min(readerPopup.indexOfSelectedItem, all.count - 1))]
+        refresh()
+    }
+
+    @objc private func installKongFolio() {
+        let installer = KongFolioInstaller.shared
+        if NSRunningApplication.runningApplications(withBundleIdentifier: KongFolioLink.bundleIdentifier).isEmpty == false {
+            let alert = NSAlert()
+            alert.messageText = "安装时需要退出 KongFolio"
+            alert.informativeText = "编译完成后会请 KongFolio 退出（有未保存的修改时它会询问），装好后自动重新打开。"
+            alert.addButton(withTitle: "继续")
+            alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        installer.install()
+        refresh()
     }
 
     // MARK: Actions

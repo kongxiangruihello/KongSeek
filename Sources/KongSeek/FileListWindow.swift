@@ -131,7 +131,7 @@ final class FileListModel: ObservableObject {
         }
         let missing = paths.count - files.count
         progress = (0, files.count)
-        let reading = Records.reading
+        let reading = PDFOpener.readingLog
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var built: [FileRow] = []
             for (index, path) in files.enumerated() {

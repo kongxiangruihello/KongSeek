@@ -125,7 +125,7 @@ final class ManuscriptCheckModel: ObservableObject {
         guard let best = row.best else { return }
         let url = URL(fileURLWithPath: best.path)
         if url.pathExtension.lowercased() == "pdf" {
-            ReaderWindowController.shared.open(url, page: best.page, words: QuoteMatcher.probes(row.quote.text, length: 4))
+            PDFOpener.open(url, page: best.page, words: QuoteMatcher.probes(row.quote.text, length: 4))
         } else {
             NSWorkspace.shared.open(url)
         }

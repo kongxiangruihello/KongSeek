@@ -69,6 +69,24 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "savedSearchNames") }
     }
 
+    /// Where PDFs opened at a page go (0.25): KongFolio when installed, or KongSeek's reading window.
+    enum PDFReader: String, CaseIterable {
+        case automatic, kongFolio, builtIn
+
+        var title: String {
+            switch self {
+            case .automatic: return "自动（装了 KongFolio 就用它）"
+            case .kongFolio: return "KongFolio"
+            case .builtIn: return "KongSeek 阅读窗口"
+            }
+        }
+    }
+
+    static var pdfReader: PDFReader {
+        get { PDFReader(rawValue: defaults.string(forKey: "pdfReader") ?? "") ?? .automatic }
+        set { defaults.set(newValue.rawValue, forKey: "pdfReader") }
+    }
+
     /// How references and quotations are written (0.19).
     static var citationStyle: Citation.Style {
         get { Citation.Style(rawValue: defaults.string(forKey: "citationStyle") ?? "") ?? .gbt7714 }

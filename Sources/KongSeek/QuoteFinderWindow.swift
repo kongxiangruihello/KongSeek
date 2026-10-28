@@ -70,7 +70,7 @@ final class QuoteFinderModel: ObservableObject {
         let url = URL(fileURLWithPath: result.path)
         switch url.pathExtension.lowercased() {
         case "pdf":
-            ReaderWindowController.shared.open(url, page: result.page, words: QuoteMatcher.probes(quote, length: 4))
+            PDFOpener.open(url, page: result.page, words: QuoteMatcher.probes(quote, length: 4))
         case "pptx":
             if let page = result.page { PowerPoint.open(result.path, slide: page) { _ in } } else { NSWorkspace.shared.open(url) }
         default:

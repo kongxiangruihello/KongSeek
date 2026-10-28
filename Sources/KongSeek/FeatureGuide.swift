@@ -60,6 +60,8 @@ enum FeatureGuide {
               how: "菜单栏图标 › 写作与引文 › 文件清单；或 ⌘K › 把全部结果放入文件清单", action: .fileList, keywords: "书单 列表 表格 导出 excel"),
         Entry(category: "阅读与引文", title: "送到 KongReview", detail: "把摘录（原文、出处、页码）送到 KongReview。",
               how: "引文查证结果旁按钮；剪贴板中 ⌘R；搜索框输入“kr 内容”", action: .quoteFinder, keywords: "摘录 卡片"),
+        Entry(category: "阅读与引文", title: "在 KongFolio 中阅读", detail: "装了 KongFolio 后，⌥↩、引文查证与稿件核对的“打开到此处”、最近阅读都在 KongFolio 中打开到那一页并标出命中的字；KongFolio 的阅读进度也显示在 KongSeek 中。可在设置中安装或更新 KongFolio。",
+              how: "设置 › 通用 › PDF 阅读（KongFolio）", action: .settings, keywords: "pdf 阅读器 批注 标注 kongfolio 联动"),
         Entry(category: "阅读与引文", title: "阅读进度与最近阅读", detail: "在 KongSeek 阅读窗口中读过的 PDF 记住读到第几页，再打开时接着读；文件清单中显示“读到第 N 页 / 共 M 页”。",
               how: "菜单栏图标 › 最近阅读；文件清单“阅读进度”列", keywords: "页码 书签 继续读"),
         Entry(category: "阅读与引文", title: "保存文件清单", detail: "把一份文件清单起名保存（如“本学期书单”“论文参考书”），以后再打开；被移动或删除的文件会提示。",

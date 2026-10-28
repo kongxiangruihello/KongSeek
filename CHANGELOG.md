@@ -1,5 +1,18 @@
 # 更新记录
 
+## 0.25.0 — 2026-10-28
+
+- 与 KongFolio 联动：装了 KongFolio 后，搜索窗口中 ⌥↩、引文查证与稿件引文核对的“打开到此处”、菜单栏“最近阅读”都在 KongFolio 中打开：
+  翻到命中的那一页，命中的字按行标黄并留在页面上（KongFolio 0.34 起；更早的版本约 2.5 秒后消失）。
+  原理是 KongFolio 笔记“返回原文”所用的 `kongfolio://source` 链接，KongSeek 按 PDF 文字层算出命中处的位置一并传过去；
+  扫描件没有文字层时，交给 KongFolio 按文字自己找。
+- 设置 › 通用 › PDF 阅读（KongFolio）：“按页打开 PDF 用”可选自动（装了 KongFolio 就用它）、KongFolio、KongSeek 阅读窗口。
+- 安装 / 更新 KongFolio：同一处按钮把 KongFolio 源码从 GitHub 下载到 ~/Developer/kongfolio，用它自带的 scripts/build.sh 在本机编译，
+  替换“应用程序”中的 KongFolio（旧版备份在 ~/Library/Application Support/KongSeek/Backups，保留两份）；KongFolio 开着时先请它退出
+  （有未保存的修改它会询问），装好后重新打开。进度显示在设置和菜单栏“后台任务”中，详细过程写入更新日志。
+- 阅读进度合并：KongFolio 记下的阅读进度（读到第几页；0.34 起还有时间和全书页数）与 KongSeek 阅读窗口的记录合并，
+  显示在“最近阅读”和文件清单“阅读进度”列中，同一本书以较新的记录为准。
+
 ## 0.24.0 — 2026-10-28
 
 - 后台任务统一显示：建立索引、文字识别、生成可搜索 PDF、课程材料打包、稿件引文核对、引文查证、书库体检、查找重复、

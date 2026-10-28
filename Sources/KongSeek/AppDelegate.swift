@@ -64,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.updateWindow?.refresh()
         }
         updater.onUpdateStarted = { [weak self] in self?.showUpdateProgress() }
+        KongFolioInstaller.shared.updater = updater
+        KongFolioInstaller.shared.onChange = { [weak self] in self?.settingsWindow?.refresh() }
         if Preferences.autoCheckUpdates { updater.startAutomaticChecks() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.reportFinishedUpdate() }
         service.archives = archives.index
@@ -156,6 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             tasks.append(RunningTask(title: "文字识别", detail: detail, stopTitle: "暂停文字识别",
                                      stop: { [weak self] in self?.ocr.setPaused(true) }, show: { [weak self] in self?.openSettings() }))
         }
+        if case .working(let step) = KongFolioInstaller.shared.phase {
+            tasks.append(RunningTask(title: "安装 KongFolio", detail: step, show: { [weak self] in self?.openSettings() }))
+        }
         let searchable = SearchablePDFWindowController.shared
         if searchable.model.running {
             let model = searchable.model
@@ -227,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Recent reading and saved lists (0.24)
 
     private func recentReadingItem() -> NSMenuItem? {
-        let recent = Records.reading.recent(12) { FileManager.default.fileExists(atPath: $0) }
+        let recent = PDFOpener.readingLog.recent(12) { FileManager.default.fileExists(atPath: $0) }
         guard !recent.isEmpty else { return nil }
         let menu = NSMenu()
         for entry in recent {
@@ -235,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let stem = url.deletingPathExtension().lastPathComponent
             let title = EbookName.parse(stem)?.title ?? stem
             let item = ClosureMenuItem(title: "\(title) — \(entry.progressText)", key: "") {
-                ReaderWindowController.shared.open(url, page: nil, words: [])
+                PDFOpener.resume(url, at: entry.page)
             }
             let icon = NSWorkspace.shared.icon(forFile: entry.path)
             icon.size = NSSize(width: 16, height: 16)
