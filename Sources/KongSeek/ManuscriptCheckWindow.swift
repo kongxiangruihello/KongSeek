@@ -208,8 +208,6 @@ final class ManuscriptCheckModel: ObservableObject {
 
     // MARK: Earlier sessions (0.31)
 
-    /// Results kept from the last time this manuscript was checked, for quotations it still
-    /// has (by their words); returns how many were restored.
     /// The session of the manuscript, or the one all pasted passages share (0.33).
     private var sessionName: String? {
         if let manuscript { return manuscript.path }
@@ -218,6 +216,8 @@ final class ManuscriptCheckModel: ObservableObject {
 
     private static let saveQueue = DispatchQueue(label: "KongSeek.manuscript-sessions", qos: .utility)
 
+    /// Results kept from the last time this manuscript was checked, for quotations it still
+    /// has (by their words); returns how many were restored.
     private func restoreSession() -> Int {
         restoredFrom = nil
         guard let name = sessionName, let session = ManuscriptSession.load(for: name, in: Self.sessionsFolder) else { return 0 }
