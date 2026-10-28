@@ -80,6 +80,18 @@ enum Preferences {
         CharacterEquivalents(lines: quoteEquivalentLines)
     }
 
+    /// 常用本的批量规则 (0.34): keywords in the file name, then formats, earlier first.
+    static var editionRules: EditionRules {
+        get {
+            EditionRules(keywords: defaults.stringArray(forKey: "editionKeywords") ?? EditionRules.standard.keywords,
+                         formats: defaults.stringArray(forKey: "editionFormats") ?? EditionRules.standard.formats)
+        }
+        set {
+            defaults.set(newValue.keywords, forKey: "editionKeywords")
+            defaults.set(newValue.formats, forKey: "editionFormats")
+        }
+    }
+
     /// Where PDFs opened at a page go (0.25): KongFolio when installed, or KongSeek's reading window.
     enum PDFReader: String, CaseIterable {
         case automatic, kongFolio, builtIn

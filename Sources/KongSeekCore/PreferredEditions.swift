@@ -69,3 +69,43 @@ public struct PreferredEditions: Codable, Equatable, Sendable {
         try encoder.encode(self).write(to: url, options: .atomic)
     }
 }
+
+/// 常用本的批量规则 (0.34): which of a book's files to make its 常用本 — the one whose
+/// name has the earliest of the reader's keywords (a publisher, "点校本"), then the
+/// earliest of the preferred formats. When the rules cannot tell two files apart, the
+/// book is left for the reader to choose.
+public struct EditionRules: Codable, Equatable, Sendable {
+    public var keywords: [String]
+    /// File extensions, lowercased, without the dot.
+    public var formats: [String]
+
+    public init(keywords: [String], formats: [String]) {
+        self.keywords = keywords.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        self.formats = formats.map { $0.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: ".", with: "") }.filter { !$0.isEmpty }
+    }
+
+    public static let standard = EditionRules(keywords: ["中华书局", "上海古籍"], formats: ["pdf", "epub", "azw3", "mobi", "djvu", "txt"])
+
+    /// "中华书局, 上海古籍" as a list: commas (either width), 、 or line breaks between.
+    public static func list(_ text: String) -> [String] {
+        text.components(separatedBy: CharacterSet(charactersIn: ",，、;；\n")).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    func rank(_ path: String) -> (keyword: Int, format: Int) {
+        let name = (path as NSString).lastPathComponent
+        let folded = SearchText.fold(name)
+        let keyword = keywords.firstIndex { name.contains($0) || folded.contains(SearchText.fold($0)) } ?? keywords.count
+        let format = formats.firstIndex(of: (path as NSString).pathExtension.lowercased()) ?? formats.count
+        return (keyword, format)
+    }
+
+    /// The file the rules choose from one book's files, or nil when the best two tie.
+    public func choose(_ paths: [String]) -> String? {
+        guard paths.count > 1 else { return paths.first }
+        let ranked = paths.map { (path: $0, rank: rank($0)) }.sorted { a, b in
+            a.rank.keyword != b.rank.keyword ? a.rank.keyword < b.rank.keyword : a.rank.format < b.rank.format
+        }
+        let first = ranked[0].rank, second = ranked[1].rank
+        return first.keyword == second.keyword && first.format == second.format ? nil : ranked[0].path
+    }
+}

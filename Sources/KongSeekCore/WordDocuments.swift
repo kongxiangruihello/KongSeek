@@ -93,12 +93,43 @@ public enum WordComments {
         }
     }
 
+    /// A quotation corrected as Word revisions (0.34): its slips struck out and the source's
+    /// characters put in as tracked changes, which the author accepts or rejects in Word.
+    public struct Correction: Equatable, Sendable {
+        public var edits: [QuoteDiff.Edit]
+
+        public init(edits: [QuoteDiff.Edit]) {
+            self.edits = edits
+        }
+
+        /// The quotation as the manuscript has it.
+        public var original: String {
+            String(edits.compactMap { edit -> Character? in
+                switch edit {
+                case .keep(let character), .delete(let character): return character
+                case .insert: return nil
+                }
+            })
+        }
+
+        /// Whether anything is to be changed.
+        public var changes: Bool {
+            edits.contains { edit in
+                if case .keep = edit { return false }
+                return true
+            }
+        }
+    }
+
     public struct Placement: Equatable, Sendable {
         /// Per comment: whether its paragraph was found.
         public var comments: [Bool]
         /// Per footnote: whether it was added (false when the quotation was not found as
         /// written, or already has a footnote right after it).
         public var footnotes: [Bool]
+        /// Per correction (0.34): whether it was made (false when the quotation was not
+        /// found as written in one paragraph, or several of its pieces share a run).
+        public var corrections: [Bool] = []
     }
 
     /// Writes `source` with the comments to `destination`; returns, per comment, whether
@@ -110,7 +141,7 @@ public enum WordComments {
 
     /// Writes `source` with comments and source footnotes (0.30) to `destination`.
     public static func write(source: URL, destination: URL, comments: [Comment], footnotes: [Footnote],
-                             author: String = "KongSeek", date: Date = Date()) throws -> Placement {
+                             corrections: [Correction] = [], author: String = "KongSeek", date: Date = Date()) throws -> Placement {
         let entries = try ZipReader.entries(at: source)
         var parts: [(name: String, data: Data)] = []
         for entry in entries where !entry.isDirectory {
@@ -126,9 +157,17 @@ public enum WordComments {
         let existing = existingIndex.flatMap { String(data: parts[$0].data, encoding: .utf8) }
         let firstID = (existing.map { maximumID(in: $0) } ?? -1) + 1
         let annotated = annotate(document: document, comments: comments, firstID: firstID)
-        parts[documentIndex].data = Data(annotated.document.utf8)
-
         let stamp = ISO8601DateFormatter().string(from: date)
+        var revised = annotated.document
+        var correctionsPlaced: [Bool] = []
+        if !corrections.isEmpty {
+            // Revision ids after every id the document and its comments use.
+            var nextID = max(maximumID(in: revised), firstID + comments.count) + 1
+            for correction in corrections {
+                correctionsPlaced.append(WordRevisions.apply(correction, nextID: &nextID, author: author, date: stamp, document: &revised))
+            }
+        }
+        parts[documentIndex].data = Data(revised.utf8)
         var added = ""
         for (offset, comment) in comments.enumerated() where annotated.placed[offset] {
             let paragraphs = comment.text.components(separatedBy: "\n").map {
@@ -159,7 +198,7 @@ public enum WordComments {
         let zip = try ZipWriter(url: destination)
         for part in parts { try zip.add(part.data, as: part.name) }
         try zip.finish()
-        return Placement(comments: annotated.placed, footnotes: footnotesPlaced)
+        return Placement(comments: annotated.placed, footnotes: footnotesPlaced, corrections: correctionsPlaced)
     }
 
     static func maximumID(in xml: String) -> Int {
@@ -399,6 +438,148 @@ enum WordFootnotes {
         }
         let start = open.range.location
         document = whole.replacingCharacters(in: NSRange(location: start, length: runEnd - start), with: replacement)
+        return true
+    }
+}
+
+/// Corrections as Word revisions (0.34, 以修订方式改正): in the paragraph where the
+/// quotation stands as written, the run holding each changed character is split, the
+/// wrong characters put in <w:del> and the source's in <w:ins>, keeping the run's
+/// formatting. Word then shows them as tracked changes to accept or reject.
+enum WordRevisions {
+    enum Kind { case same, delete, insert }
+
+    struct Piece: Equatable {
+        var kind: Kind
+        var text: String
+    }
+
+    static func apply(_ correction: WordComments.Correction, nextID: inout Int, author: String, date: String, document: inout String) -> Bool {
+        let original = Array(correction.original)
+        guard !original.isEmpty, correction.changes else { return false }
+        // What happens to each character of the quotation, and what goes in before it
+        // (at `original.count`: after the last).
+        var deleted = Set<Int>()
+        var insertedBefore: [Int: String] = [:]
+        var position = 0
+        for edit in correction.edits {
+            switch edit {
+            case .keep: position += 1
+            case .delete: deleted.insert(position); position += 1
+            case .insert(let character): insertedBefore[position, default: ""].append(character)
+            }
+        }
+        let whole = document as NSString
+        for paragraph in WordComments.paragraphs(in: document) {
+            let elements = WordFootnotes.textElements(in: paragraph.range, of: whole)
+            let text = Array(elements.map(\.text).joined())
+            guard let start = firstIndex(of: original, in: text) else { continue }
+            var plans: [(element: WordFootnotes.TextElement, pieces: [Piece])] = []
+            var offset = 0
+            for element in elements {
+                let characters = Array(element.text)
+                var pieces: [Piece] = []
+                var changed = false
+                for (index, character) in characters.enumerated() {
+                    let place = offset + index - start
+                    let inside = place >= 0 && place < original.count
+                    if inside, let added = insertedBefore[place] {
+                        add(Piece(kind: .insert, text: added), to: &pieces)
+                        changed = true
+                    }
+                    if inside && deleted.contains(place) {
+                        add(Piece(kind: .delete, text: String(character)), to: &pieces)
+                        changed = true
+                    } else {
+                        add(Piece(kind: .same, text: String(character)), to: &pieces)
+                    }
+                    if place == original.count - 1, let added = insertedBefore[original.count] {
+                        add(Piece(kind: .insert, text: added), to: &pieces)
+                        changed = true
+                    }
+                }
+                offset += characters.count
+                if changed { plans.append((element, pieces)) }
+            }
+            guard !plans.isEmpty else { return false }
+            // Each changed element must have a run of its own.
+            let runStarts = plans.map { runStart(before: $0.element, in: whole) }
+            guard !runStarts.contains(nil), Set(runStarts.compactMap { $0 }).count == plans.count else { return false }
+            // From the end, so the earlier elements' ranges stay valid.
+            var revised = document
+            for plan in plans.reversed() {
+                guard rebuild(plan.element, pieces: plan.pieces, nextID: &nextID, author: author, date: date, document: &revised) else { return false }
+            }
+            document = revised
+            return true
+        }
+        return false
+    }
+
+    static func add(_ piece: Piece, to pieces: inout [Piece]) {
+        if let last = pieces.last, last.kind == piece.kind {
+            pieces[pieces.count - 1].text += piece.text
+        } else {
+            pieces.append(piece)
+        }
+    }
+
+    static func firstIndex(of needle: [Character], in text: [Character]) -> Int? {
+        guard !needle.isEmpty, needle.count <= text.count else { return nil }
+        for start in 0...(text.count - needle.count) where text[start] == needle[0] {
+            if Array(text[start..<(start + needle.count)]) == needle { return start }
+        }
+        return nil
+    }
+
+    static func runStart(before element: WordFootnotes.TextElement, in whole: NSString) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: #"<w:r(?:\s[^>]*)?>"#) else { return nil }
+        let before = whole.substring(to: element.range.location)
+        return regex.matches(in: before, range: NSRange(location: 0, length: (before as NSString).length)).last?.range.location
+    }
+
+    /// Replaces the run holding `element` with runs for its pieces: the unchanged text in
+    /// the run's own formatting, deletions in <w:del>, insertions in <w:ins>.
+    static func rebuild(_ element: WordFootnotes.TextElement, pieces: [Piece], nextID: inout Int, author: String, date: String, document: inout String) -> Bool {
+        let whole = document as NSString
+        let before = whole.substring(to: element.range.location) as NSString
+        guard let openRegex = try? NSRegularExpression(pattern: #"<w:r(?:\s[^>]*)?>"#),
+              let open = openRegex.matches(in: before as String, range: NSRange(location: 0, length: before.length)).last else { return false }
+        let afterText = NSMaxRange(element.range)
+        let closeRange = whole.range(of: "</w:r>", options: [], range: NSRange(location: afterText, length: whole.length - afterText))
+        guard closeRange.location != NSNotFound else { return false }
+        let openTag = whole.substring(with: open.range)
+        let inside = whole.substring(with: NSRange(location: NSMaxRange(open.range), length: element.range.location - NSMaxRange(open.range)))
+        let properties: String = {
+            guard inside.hasPrefix("<w:rPr"), let close = inside.range(of: "</w:rPr>") else { return "" }
+            return String(inside[..<close.upperBound])
+        }()
+        let rest = whole.substring(with: NSRange(location: afterText, length: closeRange.location - afterText))
+        let stamp = " w:author=\"\(XLSXWriter.escape(author))\" w:date=\"\(date)\""
+
+        var output = openTag + inside
+        var remaining = pieces[...]
+        if let first = remaining.first, first.kind == .same {
+            output += "<w:t xml:space=\"preserve\">" + XLSXWriter.escape(first.text) + "</w:t>"
+            remaining = remaining.dropFirst()
+        }
+        output += "</w:r>"
+        for piece in remaining {
+            let escaped = XLSXWriter.escape(piece.text)
+            switch piece.kind {
+            case .same:
+                output += "<w:r>" + properties + "<w:t xml:space=\"preserve\">" + escaped + "</w:t></w:r>"
+            case .delete:
+                output += "<w:del w:id=\"\(nextID)\"" + stamp + "><w:r>" + properties + "<w:delText xml:space=\"preserve\">" + escaped + "</w:delText></w:r></w:del>"
+                nextID += 1
+            case .insert:
+                output += "<w:ins w:id=\"\(nextID)\"" + stamp + "><w:r>" + properties + "<w:t xml:space=\"preserve\">" + escaped + "</w:t></w:r></w:ins>"
+                nextID += 1
+            }
+        }
+        if !rest.isEmpty { output += "<w:r>" + properties + rest + "</w:r>" }
+        let start = open.range.location
+        document = whole.replacingCharacters(in: NSRange(location: start, length: NSMaxRange(closeRange) - start), with: output)
         return true
     }
 }

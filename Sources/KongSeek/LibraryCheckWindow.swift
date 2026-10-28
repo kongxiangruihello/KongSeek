@@ -116,6 +116,28 @@ final class LibraryCheckModel: ObservableObject {
         return editionGroups.filter { group in group.first.map { unset.contains($0.path) } ?? false }
     }
 
+    /// What the rules choose for each book without a 常用本 (0.34), and how many they cannot decide.
+    func choices(_ rules: EditionRules) -> (chosen: [String], undecided: Int) {
+        var chosen: [String] = []
+        var undecided = 0
+        for group in unsetEditions {
+            if let path = rules.choose(group.map(\.path)) { chosen.append(path) } else { undecided += 1 }
+        }
+        return (chosen, undecided)
+    }
+
+    /// Sets the 常用本 the rules choose (0.34); the rules are kept for next time.
+    func applyRules(_ rules: EditionRules) {
+        Preferences.editionRules = rules
+        let choice = choices(rules)
+        guard !choice.chosen.isEmpty else { return }
+        var editions = Records.editions
+        for path in choice.chosen { editions.prefer(path) }
+        Records.editions = editions
+        objectWillChange.send()
+        status = "已按规则为 \(choice.chosen.count) 本书设了常用本" + (choice.undecided > 0 ? "；\(choice.undecided) 本规则分不出先后，请逐本设定。" : "。")
+    }
+
     func prefer(_ path: String) {
         var editions = Records.editions
         editions.prefer(path)
@@ -148,6 +170,7 @@ final class LibraryCheckModel: ObservableObject {
 struct LibraryCheckView: View {
     @ObservedObject var model: LibraryCheckModel
     @State private var message: String?
+    @State private var showingRules = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -189,7 +212,12 @@ struct LibraryCheckView: View {
                 let editions = model.unsetEditions
                 if !editions.isEmpty {
                     Section(header: VStack(alignment: .leading, spacing: 1) {
-                        Text("有多个版本、尚未设常用本的书（\(editions.count)）").font(.callout.weight(.semibold))
+                        HStack {
+                            Text("有多个版本、尚未设常用本的书（\(editions.count)）").font(.callout.weight(.semibold))
+                            Spacer()
+                            Button("按规则批量设定…") { showingRules = true }.controlSize(.small)
+                                .help("按文件名中的出版社等关键词、文件格式的先后，一次为这些书设好常用本")
+                        }
                         Text("同一部书的几个文件（不同格式、繁简或版本）。设一个常用本，引文查证、稿件核对、出处汇编中它排在最前，拷贝出处也用它。")
                             .font(.caption).foregroundColor(.secondary)
                     }) {
@@ -203,6 +231,9 @@ struct LibraryCheckView: View {
         }
         .padding(16)
         .frame(minWidth: 760, minHeight: 520)
+        .sheet(isPresented: $showingRules) {
+            EditionRulesSheet(model: model, close: { showingRules = false })
+        }
     }
 
     private func bookTitle(_ group: [FileEntry]) -> String {
@@ -287,5 +318,60 @@ final class LibraryCheckWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// 常用本的批量规则 (0.34): keywords and formats, with what they would choose shown
+/// before anything is set.
+struct EditionRulesSheet: View {
+    @ObservedObject var model: LibraryCheckModel
+    let close: () -> Void
+    @State private var keywords = Preferences.editionRules.keywords.joined(separator: "，")
+    @State private var formats = Preferences.editionRules.formats.joined(separator: "，")
+
+    private var rules: EditionRules {
+        EditionRules(keywords: EditionRules.list(keywords), formats: EditionRules.list(formats))
+    }
+
+    var body: some View {
+        let choice = model.choices(rules)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("按规则批量设定常用本").font(.headline)
+            Text("同一部书的几个文件中，文件名含排在前面的关键词者优先；关键词相同时，按格式的先后。规则分不出先后的书留给您逐本设定。")
+                .font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("文件名关键词（优先的在前，用逗号或顿号分开）").font(.callout)
+                TextField("如：中华书局，上海古籍，点校本", text: $keywords)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("格式（优先的在前）").font(.callout)
+                TextField("如：pdf，epub，azw3", text: $formats)
+            }
+            Text("将为 \(choice.chosen.count) 本书设常用本" + (choice.undecided > 0 ? "，\(choice.undecided) 本分不出先后、不设。" : "。"))
+                .font(.callout.weight(.medium))
+            List(choice.chosen, id: \.self) { path in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                    Text(SearchWindowController.displayLocation(of: path)).font(.caption).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+            }
+            .frame(minHeight: 180)
+            HStack {
+                Button("恢复默认规则") {
+                    keywords = EditionRules.standard.keywords.joined(separator: "，")
+                    formats = EditionRules.standard.formats.joined(separator: "，")
+                }
+                Spacer()
+                Button("取消", action: close).keyboardShortcut(.cancelAction)
+                Button("设定 \(choice.chosen.count) 本") {
+                    model.applyRules(rules)
+                    close()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(choice.chosen.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 560, height: 520)
     }
 }

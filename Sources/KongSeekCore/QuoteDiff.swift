@@ -152,6 +152,69 @@ public enum QuoteDiff {
         return parts.isEmpty ? "文字相同（仅标点、字形不同）" : parts.joined(separator: "、")
     }
 
+    /// One character of a quotation kept, deleted, or inserted to correct it (0.34).
+    public enum Edit: Equatable, Sendable {
+        case keep(Character)
+        case delete(Character)
+        case insert(Character)
+    }
+
+    /// The edits that correct only a quotation's real slips — 异字, 脱字, 衍字 — leaving
+    /// its punctuation, its character forms (简/繁, 异体) and its 通假字 as they are
+    /// (0.34: "以修订方式改正"). Characters put in follow the quotation's script: a
+    /// quotation in simplified characters gets simplified ones.
+    public static func corrections(quote: String, source: String, equivalents: CharacterEquivalents = .none) -> [Edit] {
+        let characters = Array(quote)
+        let letterPositions = characters.indices.filter { characters[$0].isLetter || characters[$0].isNumber }
+        let simplified = !letterPositions.contains { SearchText.simplifiedChinese(String(characters[$0])) != String(characters[$0]) }
+        func written(_ character: Character) -> String {
+            simplified ? SearchText.simplifiedChinese(String(character)) : String(character)
+        }
+        var deleted = Set<Int>()                  // letter indices
+        var insertedAfter: [Int: String] = [:]    // after letter index; -1 = before the first
+        var letter = 0
+        var extras: [Int] = []
+        var missing = ""
+        func flush() {
+            defer { extras = []; missing = "" }
+            guard !extras.isEmpty || !missing.isEmpty else { return }
+            if !extras.isEmpty, !missing.isEmpty,
+               equivalents.allEquivalent(String(extras.map { characters[letterPositions[$0]] }), missing) { return }
+            deleted.formUnion(extras)
+            if !missing.isEmpty {
+                let after = extras.last ?? (letter - 1)
+                insertedAfter[after, default: ""] += missing.map(written).joined()
+            }
+        }
+        for step in steps(quote: quote, source: source) {
+            switch step {
+            case .same:
+                flush()
+                letter += 1
+            case .extra:
+                extras.append(letter)
+                letter += 1
+            case .missing(let character):
+                missing.append(character)
+            }
+        }
+        flush()
+
+        var edits: [Edit] = []
+        if let start = insertedAfter[-1] { edits += start.map { Edit.insert($0) } }
+        var letterIndex = 0
+        for (position, character) in characters.enumerated() {
+            guard letterIndex < letterPositions.count, letterPositions[letterIndex] == position else {
+                edits.append(.keep(character))
+                continue
+            }
+            edits.append(deleted.contains(letterIndex) ? .delete(character) : .keep(character))
+            if let added = insertedAfter[letterIndex] { edits += added.map { Edit.insert($0) } }
+            letterIndex += 1
+        }
+        return edits
+    }
+
     /// The quotation as the source writes it: its characters replaced, added or dropped
     /// to agree with the source, its own punctuation kept (for "按原文改正").
     public static func corrected(quote: String, source: String) -> String {
