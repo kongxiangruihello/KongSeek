@@ -12,9 +12,49 @@ enum FinderTags {
         return readingStates.first { current.contains($0) }
     }
 
+    // MARK: Reading states remembered for result rows (0.45)
+
+    private static let stateLock = NSLock()
+    private static var stateCache: [String: (state: String?, time: CFAbsoluteTime)] = [:]
+    /// A remembered state is read again after this long, in case a change was missed.
+    static let stateLifetime: CFAbsoluteTime = 600
+
+    /// As `readingState(of:)`, remembered: result rows ask on every keystroke, and reading
+    /// tags is a trip to the disk per file. Forgotten when the file changes (FSEvents report
+    /// tag changes) or KongSeek sets a tag. Safe from any thread.
+    static func cachedReadingState(of path: String) -> String? {
+        let now = CFAbsoluteTimeGetCurrent()
+        stateLock.lock()
+        if let hit = stateCache[path], now - hit.time < stateLifetime {
+            stateLock.unlock()
+            return hit.state
+        }
+        stateLock.unlock()
+        let state = readingState(of: path)
+        stateLock.lock()
+        if stateCache.count > 20_000 { stateCache.removeAll() }
+        stateCache[path] = (state, now)
+        stateLock.unlock()
+        return state
+    }
+
+    static func forgetStates(_ paths: [String]) {
+        guard !paths.isEmpty else { return }
+        stateLock.lock()
+        for path in paths { stateCache[path] = nil }
+        stateLock.unlock()
+    }
+
+    static func forgetAllStates() {
+        stateLock.lock()
+        stateCache.removeAll()
+        stateLock.unlock()
+    }
+
     /// Sets one reading state (nil clears it), keeping the file's other tags.
     @discardableResult
     static func setReadingState(_ state: String?, on path: String) -> Bool {
+        defer { forgetStates([path]) }
         var current = tags(of: path).filter { !readingStates.contains($0) }
         if let state { current.append(state) }
         do {
@@ -38,6 +78,7 @@ enum FinderTags {
     /// Adds (or with `adding: false` removes) a tag, keeping the file's other tags.
     @discardableResult
     static func set(_ tag: String, on path: String, adding: Bool) -> Bool {
+        defer { forgetStates([path]) }
         let url = URL(fileURLWithPath: path)
         var current = tags(of: path)
         if adding {

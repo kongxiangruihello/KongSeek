@@ -39,7 +39,7 @@ enum FeatureGuide {
               how: "菜单栏图标 › 状态与诊断… › 稳定性 › 记录备份 › 恢复…", action: .status, keywords: "备份 恢复 损坏 丢失 记录"),
         Entry(category: "设置与诊断", title: "卡顿与异常退出记录", detail: "界面停住半秒以上即记下时间和当时在做什么；系统记下的崩溃、无响应报告也列出，上次异常退出时会提示导出诊断包。",
               how: "菜单栏图标 › 状态与诊断… › 性能 / 稳定性", action: .status, keywords: "卡 卡顿 崩溃 闪退 无响应 彩球"),
-        Entry(category: "设置与诊断", title: "性能自检", detail: "列出最近几次载入索引、名称搜索、书目信息、全文搜索、正文索引搜索、保存索引等的用时，偏慢的标出提醒。",
+        Entry(category: "设置与诊断", title: "性能自检", detail: "列出最近几次载入索引、名称搜索、书目信息、全文搜索、正文索引搜索、保存与写入索引等的用时，偏慢的标出提醒。",
               how: "菜单栏图标 › 状态与诊断… › 性能", action: .status, keywords: "速度 慢 用时 性能"),
         Entry(category: "搜索", title: "输入时自动补全", detail: "打字时按搜索历史、收藏的搜索和最近打开的文件名补全，→ 接受，继续输入即替换。",
               how: "自动；设置 › 搜索 可关闭", action: .openSearch, keywords: "补全 联想 autocomplete"),

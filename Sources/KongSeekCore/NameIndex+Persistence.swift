@@ -16,6 +16,19 @@ extension NameIndex {
 
     /// Writes the index atomically (compacting it first).
     public func save(to url: URL) throws {
+        try Self.write(encoded(), to: url)
+    }
+
+    /// Writes what `encoded()` made, atomically. Safe on any queue (0.45: the index queue
+    /// only encodes, so searches do not wait for the disk).
+    public static func write(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// The index file's bytes (compacting the index first). Must run where the index is
+    /// changed (its queue).
+    public func encoded() throws -> Data {
         compact()
         var writer = BinaryWriter()
         writer.u32(Self.fileMagic)
@@ -39,8 +52,7 @@ extension NameIndex {
             writer.array(column.offsets)
             writer.array(column.bytes)
         }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try writer.data.write(to: url, options: .atomic)
+        return writer.data
     }
 
     /// With `acceptingOlderFormats`, a file written by an earlier version (same layout,

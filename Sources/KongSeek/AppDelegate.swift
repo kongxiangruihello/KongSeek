@@ -622,7 +622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 性能自检 (0.42): how long the last searches took.
         let timings = IndexService.timings
         let labels = ["载入索引", "名称搜索", "书目信息", "同义词扩展", "书目筛选", "全文搜索（Spotlight）", "正文索引搜索", "邻近核对", "命中统计",
-                      "正文索引读取", "保存索引"]
+                      "正文索引读取", "保存索引", "写入索引文件"]
         var anyTiming = false
         for label in labels {
             guard let summary = timings.summary(label) else { continue }
@@ -630,7 +630,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let slow: Double
             switch label {
             case "名称搜索", "书目信息": slow = 300
-            case "全文搜索（Spotlight）", "正文索引搜索", "保存索引": slow = 5_000
+            case "保存索引": slow = 1_000
+            case "全文搜索（Spotlight）", "正文索引搜索": slow = 5_000
             case "载入索引": slow = 10_000
             default: slow = 60_000
             }

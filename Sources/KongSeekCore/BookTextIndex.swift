@@ -143,15 +143,17 @@ public final class BookTextIndex {
 
     /// Books whose text holds every word, by any of its forms; most occurrences first.
     public func search(_ words: [[String]], limit: Int = 300, accept: (String) -> Bool = { _ in true }) -> [Hit] {
-        let needles: [[Data]] = words.map { forms in
+        let needles: [[ByteFinder]] = words.map { forms in
             var all: [String] = []
             for form in forms {
                 for variant in SearchText.scriptVariants(form) + [form.lowercased(), form.capitalized] where !variant.isEmpty && !all.contains(variant) {
                     all.append(variant)
                 }
             }
-            return all.map { Data($0.utf8) }
+            return all.map { ByteFinder(Array($0.utf8)) }
         }.filter { !$0.isEmpty }
+        // Longer words first (0.45): they are scanned faster and usually rule a book out sooner.
+        .sorted { ($0.map(\.needle.count).max() ?? 0) > ($1.map(\.needle.count).max() ?? 0) }
         guard !needles.isEmpty else { return [] }
         lock.lock()
         let candidates = entries.filter { !$0.value.file.isEmpty }.map { (path: $0.key, file: $0.value.file) }
@@ -166,14 +168,16 @@ public final class BookTextIndex {
                 var found: [Hit] = []
                 for item in accepted[(c * chunk)..<min(accepted.count, (c + 1) * chunk)] {
                     guard let data = try? Data(contentsOf: folder.appendingPathComponent(item.file), options: .alwaysMapped) else { continue }
-                    var total = 0
-                    var all = true
-                    for forms in needles {
-                        let count = forms.reduce(0) { $0 + BookTextIndex.occurrences(of: $1, in: data, upTo: 100) }
-                        if count == 0 { all = false; break }
-                        total += min(100, count)
+                    let total: Int? = data.withUnsafeBytes { bytes -> Int? in
+                        var total = 0
+                        for forms in needles {
+                            let count = forms.reduce(0) { $0 + $1.count(in: bytes, upTo: 100) }
+                            if count == 0 { return nil }
+                            total += min(100, count)
+                        }
+                        return total
                     }
-                    if all { found.append(Hit(path: item.path, count: total)) }
+                    if let total { found.append(Hit(path: item.path, count: total)) }
                 }
                 output[c] = found
             }
@@ -181,14 +185,9 @@ public final class BookTextIndex {
         return Array(parts.flatMap { $0 }.sorted { $0.count != $1.count ? $0.count > $1.count : $0.path < $1.path }.prefix(limit))
     }
 
+    /// Non-overlapping occurrences of `needle` in `data`, counting no further than `maximum`.
     static func occurrences(of needle: Data, in data: Data, upTo maximum: Int) -> Int {
-        var count = 0
-        var start = data.startIndex
-        while count < maximum, start < data.endIndex, let range = data.range(of: needle, in: start..<data.endIndex) {
-            count += 1
-            start = range.upperBound
-        }
-        return count
+        ByteFinder(Array(needle)).count(in: data, upTo: maximum)
     }
 
     // MARK: Which files
@@ -209,5 +208,54 @@ public final class BookTextIndex {
             if String(data: data.dropLast(cut), encoding: .utf8) != nil { return true }
         }
         return false
+    }
+}
+
+/// 正文索引搜索提速 (0.45): Boyer–Moore–Horspool over the bytes of a book's text. Each
+/// try compares the window's last byte and, on a mismatch, jumps ahead by up to the
+/// needle's length, so a two-character word (six bytes of UTF-8) is passed over in steps
+/// of about six bytes instead of one.
+public struct ByteFinder: Sendable {
+    public let needle: [UInt8]
+    private let skip: [Int]
+
+    public init(_ needle: [UInt8]) {
+        self.needle = needle
+        var table = [Int](repeating: max(1, needle.count), count: 256)
+        if needle.count > 1 {
+            for i in 0..<(needle.count - 1) { table[Int(needle[i])] = needle.count - 1 - i }
+        }
+        skip = table
+    }
+
+    /// Non-overlapping occurrences in `haystack`, counting no further than `maximum`.
+    public func count(in haystack: UnsafeRawBufferPointer, upTo maximum: Int) -> Int {
+        let n = needle.count
+        let h = haystack.count
+        guard n > 0, h >= n, maximum > 0, let raw = haystack.baseAddress else { return 0 }
+        let base = raw.assumingMemoryBound(to: UInt8.self)
+        return needle.withUnsafeBufferPointer { pattern -> Int in
+            skip.withUnsafeBufferPointer { table -> Int in
+                guard let first = pattern.baseAddress else { return 0 }
+                let last = pattern[n - 1]
+                var count = 0
+                var i = 0
+                while i <= h - n {
+                    let tail = base[i + n - 1]
+                    if tail == last && (n == 1 || memcmp(base + i, first, n - 1) == 0) {
+                        count += 1
+                        if count >= maximum { return count }
+                        i += n
+                    } else {
+                        i += table[Int(tail)]
+                    }
+                }
+                return count
+            }
+        }
+    }
+
+    public func count(in data: Data, upTo maximum: Int) -> Int {
+        data.withUnsafeBytes { count(in: $0, upTo: maximum) }
     }
 }

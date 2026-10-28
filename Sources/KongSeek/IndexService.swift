@@ -87,6 +87,8 @@ enum IndexState: Equatable {
 final class IndexService {
     private let queue = DispatchQueue(label: "KongSeek.index", qos: .userInitiated)
     private let buildQueue = DispatchQueue(label: "KongSeek.build", qos: .utility)
+    /// Writes the index file (0.45), in order, without holding up `queue`.
+    private let diskQueue = DispatchQueue(label: "KongSeek.index-disk", qos: .utility)
     let storeURL: URL
 
     // Only touched on `queue`.
@@ -156,6 +158,7 @@ final class IndexService {
     /// Writes the index now (used at quit).
     func saveNow() {
         queue.sync { save() }
+        diskQueue.sync {}
     }
 
     // MARK: - Index lifecycle (on queue)
@@ -207,6 +210,12 @@ final class IndexService {
 
     private func handle(_ batch: FileChangeWatcher.Batch) {
         guard let index else { return }
+        // Tags (在读…) shown in result rows are read again where files changed (0.45).
+        if batch.requiresFullRebuild || batch.changes.contains(where: \.rescanSubtree) {
+            FinderTags.forgetAllStates()
+        } else {
+            FinderTags.forgetStates(batch.changes.map(\.path))
+        }
         if batch.requiresFullRebuild {
             startBuild()
             return
@@ -231,9 +240,17 @@ final class IndexService {
         saveItem?.cancel()
         saveItem = nil
         guard let index else { return }
+        // Only the encoding holds up searches; the disk write runs on its own queue (0.45).
         let start = CFAbsoluteTimeGetCurrent()
-        try? index.save(to: storeURL)
-        Self.recordTiming("保存索引", since: start, detail: "\(index.entryCount) 项")
+        guard let data = try? index.encoded() else { return }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+        Self.recordTiming("保存索引", since: start, detail: "\(index.entryCount) 项，\(size)")
+        let url = storeURL
+        diskQueue.async {
+            let writeStart = CFAbsoluteTimeGetCurrent()
+            try? NameIndex.write(data, to: url)
+            IndexService.recordTiming("写入索引文件", since: writeStart, detail: size)
+        }
     }
 
     private func publishReady() {
@@ -818,7 +835,7 @@ extension IndexService {
             }
             if records.record(for: path) != nil { details = records.apply(to: details ?? EbookName(title: stem), path: path) }
             var parts = [details?.authors, details?.publisher, details?.year].compactMap { $0 }.filter { !$0.isEmpty }
-            if let state = FinderTags.readingState(of: path) { parts.append(state) }
+            if let state = FinderTags.cachedReadingState(of: path) { parts.append(state) }
             items[index].bookLine = parts.isEmpty ? nil : parts.joined(separator: " · ")
         }
         if !unread.isEmpty {
