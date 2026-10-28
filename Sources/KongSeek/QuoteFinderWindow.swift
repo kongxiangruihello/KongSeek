@@ -471,13 +471,17 @@ final class QuoteLookup {
 
     private func check(_ spotlightPaths: Set<String>, text: String, probes: [String], limit: Int, token current: Int,
                        progress: ((Int, Int) -> Void)?, completion: @escaping (Outcome) -> Void) {
-        var paths = spotlightPaths
-        for probe in probes { for hit in ocr.search([probe], limit: 100) { paths.insert(hit.path) } }
-        let candidates = Array(paths.prefix(limit))
-        progress?(0, candidates.count)
         let store = ocr
         let cache = pages
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var paths = spotlightPaths
+            for probe in probes { for hit in store.search([probe], limit: 100) { paths.insert(hit.path) } }
+            // E-books Spotlight does not read (0.37), from KongSeek's own text index.
+            for probe in probes { for hit in BookTextService.shared.search([[probe]], limit: 100) { paths.insert(hit.path) } }
+            let candidates = Array(paths.prefix(limit))
+            if let progress {
+                DispatchQueue.main.async { if let self, current == self.token { progress(0, candidates.count) } }
+            }
             var found: [Result] = []
             var inCloud = 0
             for (number, path) in candidates.enumerated() {

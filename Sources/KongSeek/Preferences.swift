@@ -80,6 +80,12 @@ enum Preferences {
         CharacterEquivalents(lines: quoteEquivalentLines)
     }
 
+    /// KongSeek's own text index of e-books Spotlight does not read (0.37); on unless turned off.
+    static var bookTextIndex: Bool {
+        get { defaults.object(forKey: "bookTextIndex") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "bookTextIndex") }
+    }
+
     /// 合并内容相同的副本 in the results (0.36); on unless turned off.
     static var mergeCopies: Bool {
         get { defaults.object(forKey: "mergeCopies") as? Bool ?? true }

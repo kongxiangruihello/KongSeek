@@ -57,6 +57,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(forName: .ocrSettingsChanged, object: nil, queue: .main) { [weak self] _ in
             self?.ocr.configure(Preferences.ocrSettings)
         }
+        NotificationCenter.default.addObserver(forName: BookTextService.settingChanged, object: nil, queue: .main) { [weak self] _ in
+            guard let self, Preferences.bookTextIndex else { return }
+            BookTextService.shared.refresh(service: self.service)
+        }
         searchWindow = SearchWindowController(service: service, ocr: ocr)
         searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
         searchWindow.onFileList = { [weak self] source in self?.openFileList(source) }
@@ -98,6 +102,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if case .ready = state, !self.archivesStarted {
                 self.archivesStarted = true
                 self.configureArchives()
+                // E-books Spotlight does not read (0.37), a little after the start.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                    guard let self else { return }
+                    BookTextService.shared.start(service: self.service)
+                }
             }
         }
         hotKey = HotKey { [weak self] in self?.searchWindow.toggle() }
@@ -162,6 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if recognition.pending > 1 { detail += " · 还有 \(recognition.pending - 1) 个文件" }
             tasks.append(RunningTask(title: "文字识别", detail: detail, stopTitle: "暂停文字识别",
                                      stop: { [weak self] in self?.ocr.setPaused(true) }, show: { [weak self] in self?.openSettings() }))
+        }
+        let books = BookTextService.shared
+        if books.running, books.progress.total > 0 {
+            let name = books.current.map { ($0 as NSString).lastPathComponent + " · " } ?? ""
+            tasks.append(RunningTask(title: "建立正文索引（EPUB 等）", detail: name + "\(books.progress.done) / \(books.progress.total) 本",
+                                     stopTitle: "停止", stop: { books.stop() }, show: { [weak self] in self?.openStatus() }))
         }
         if case .working(let step) = KongFolioInstaller.shared.phase {
             tasks.append(RunningTask(title: "安装 KongFolio", detail: step, show: { [weak self] in self?.openSettings() }))
@@ -584,6 +599,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             items.append(HealthItem("文字识别", "未设置识别文件夹", "扫描版 PDF 的正文搜不到；可用“查找扫描版 PDF…”一键加入", .info,
                                     action: ("查找扫描版 PDF…", { [weak self] in self?.openScannedPDFs() })))
+        }
+
+        // KongSeek's own text index (0.37).
+        let books = BookTextService.shared
+        if Preferences.bookTextIndex {
+            let summary = books.index.summary
+            var detail = "已收录 \(summary.books) 本（约 \(max(1, summary.characters / 10_000)) 万字），全文搜索、引文查证、出处汇编都会用到"
+            if books.running { detail += "；正在读取 \(books.progress.done) / \(books.progress.total)" }
+            items.append(HealthItem("正文索引", "EPUB、Kindle 与 GB18030 文本", detail, .ok))
+            if summary.problems > 0 {
+                items.append(HealthItem("正文索引", "\(summary.problems) 本读不出文字", "有 DRM 保护、用了不支持的压缩方式（如 HUFF/CDIC），或文件已损坏", .info))
+            }
+        } else {
+            items.append(HealthItem("正文索引", "已关闭", "EPUB、Kindle 等电子书的正文搜不到；可在 设置 › 通用 中打开", .info, action: settings))
         }
 
         let update = updater.state

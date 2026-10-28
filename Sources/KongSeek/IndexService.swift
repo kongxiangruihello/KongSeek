@@ -21,6 +21,8 @@ struct ResultItem: Equatable {
     var isHeader = false
     /// Other files with the same content, merged into this row (0.36).
     var copies: [String] = []
+    /// Found in KongSeek's own text index of e-books (0.37), not by Spotlight.
+    var ownText = false
 
     var isFile: Bool { link == nil && definition == nil && fill == nil && !isHeader }
     var isInArchive: Bool { innerPath != nil }

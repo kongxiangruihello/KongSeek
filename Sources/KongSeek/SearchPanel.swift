@@ -581,6 +581,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         // The words as typed, then with other names of a person or book (0.35).
         let needleSets = [query.highlightWords] + aliases.expansions(of: query.words).map { $0 + query.phrases }
         contentAliasWords = Array(Set(needleSets.flatMap { $0 }).subtracting(query.highlightWords))
+        // KongSeek's own text index (0.37): each word by any of its other names too.
+        let bookWords = query.words.map { [$0] + aliases.alternatives(for: $0) } + query.phrases.map { [$0] }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var seenPaths = Set<String>()
             var hits: [OCRHit] = []
@@ -590,13 +592,25 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                     hits.append(hit)
                 }
             }
-            let items = hits.compactMap { hit -> ResultItem? in
-                let name = (hit.path as NSString).lastPathComponent
+            func item(_ path: String) -> ResultItem? {
+                let name = (path as NSString).lastPathComponent
                 let folded = SearchText.fold(name)
-                guard !excluded.contains(where: { folded.contains($0) }), Self.accepts(name: folded, query: query),
-                      query.acceptsExternal(path: hit.path, isFolder: false) else { return nil }
-                if query.needsMetadata && !query.acceptsMetadata(EntryMetadata.read(path: hit.path)) { return nil }
-                return ResultItem(path: hit.path, name: name, isFolder: false, score: 0, recognized: true)
+                guard !excluded.contains(where: { folded.contains($0) }), SearchWindowController.accepts(name: folded, query: query),
+                      query.acceptsExternal(path: path, isFolder: false) else { return nil }
+                if query.needsMetadata && !query.acceptsMetadata(EntryMetadata.read(path: path)) { return nil }
+                return ResultItem(path: path, name: name, isFolder: false, score: 0)
+            }
+            var items = hits.compactMap { hit -> ResultItem? in
+                guard var found = item(hit.path) else { return nil }
+                found.recognized = true
+                return found
+            }
+            for hit in BookTextService.shared.search(bookWords, limit: 300, accept: { !rules.excludes(path: $0, roots: roots) })
+            where seenPaths.insert(hit.path).inserted {
+                if var found = item(hit.path) {
+                    found.ownText = true
+                    items.append(found)
+                }
             }
             DispatchQueue.main.async {
                 guard let self, token == self.contentToken else { return }
@@ -1783,7 +1797,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             location = Self.displayLocation(of: item.path) + " › 压缩包 " + (item.path as NSString).lastPathComponent + (folder.isEmpty ? "" : " › " + folder)
             image = icon(forExtension: (item.name as NSString).pathExtension)
         } else {
-            location = Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "")
+            location = Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "") + (item.ownText ? " · KongSeek 正文索引" : "")
                 + (item.copies.isEmpty ? "" : " · 另有 \(item.copies.count) 个副本（⌘K 查看）")
             image = icon(for: item.path)
         }
@@ -2037,7 +2051,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case .notDownloaded:
             return NSAttributedString(string: "此文件在 iCloud 中尚未下载到本机，不读取正文。", attributes: note)
         case .unsupported:
-            return NSAttributedString(string: "此类文件不显示命中原文（支持 PDF、Word、RTF 与纯文本）。", attributes: note)
+            return NSAttributedString(string: "此类文件不显示命中原文（支持 PDF、Word、RTF、EPUB、Kindle 与纯文本）。", attributes: note)
         }
     }
 

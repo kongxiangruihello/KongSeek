@@ -87,8 +87,20 @@ final class ConcordanceModel: ObservableObject {
         return query.advanced.acceptsPath(path, isFolder: false)
     }
 
+    /// Adds the e-books Spotlight does not read (0.37), looked up off the main thread.
     private func collect(_ spotlightPaths: Set<String>, query: SearchQuery, token current: Int) {
-        var paths = spotlightPaths
+        let words = self.words
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let books = Set(BookTextService.shared.search(words.map { [$0] }, limit: 200).map(\.path))
+            DispatchQueue.main.async {
+                guard let self, current == self.token else { return }
+                self.gather(spotlightPaths.union(books), query: query, token: current)
+            }
+        }
+    }
+
+    private func gather(_ found: Set<String>, query: SearchQuery, token current: Int) {
+        var paths = found
         for hit in ocr.search(words, limit: 200) { paths.insert(hit.path) }
         let candidates = Array(paths.filter { accepts($0, query) }.sorted().prefix(Self.maximumFiles))
         let skipped = paths.count - candidates.count

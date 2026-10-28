@@ -33,6 +33,8 @@ enum FeatureGuide {
               how: "全文结果上 ⌥↩", action: .openSearch, keywords: "页码 阅读 定位"),
         Entry(category: "搜索", title: "搜索语法", detail: "path:、in:、parent:、size:、dm:、dc:、ext:、regex:、file:、folder:、dupe:、打开过:、near:、同页:、标签:、最近一周、大于100MB 等。",
               how: "搜索窗口底部“?”按钮", action: .openSearch, keywords: "高级 筛选 日期 大小 扩展名 正则"),
+        Entry(category: "搜索", title: "KongSeek 正文索引", detail: "Spotlight 读不到的 EPUB、Kindle 电子书和 GB18030 文本，KongSeek 在后台读出文字，全文搜索、引文查证、出处汇编都能找到。",
+              how: "自动；状态与诊断 中看收录情况；设置 › 通用 可关闭", action: .status, keywords: "epub mobi azw3 kindle 电子书 正文 gbk"),
         Entry(category: "搜索", title: "全部命中处", detail: "全文结果中，一个文件里每一处命中逐一查看：⌘] 下一处、⌘[ 上一处，⌘J 列出全部（页码和上下文）。",
               how: "全文模式中选中结果后按 ⌘] ⌘[ ⌘J", action: .openSearch, keywords: "摘录 页码 多处 snippets"),
         Entry(category: "搜索", title: "邻近搜索", detail: "全文搜索中，near:30 要求几个词相距 30 字以内，同页: 要求在同一页，如 格物 致知 near:30。",

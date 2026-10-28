@@ -37,6 +37,7 @@ final class GeneralSettingsView: NSView {
     private let kongFolioLabel = NSTextField(wrappingLabelWithString: "")
     private let historyCheckbox = NSButton(checkboxWithTitle: "记录搜索历史（在空搜索框中按 ↑ 查看）", target: nil, action: nil)
     private let copiesCheckbox = NSButton(checkboxWithTitle: "搜索结果中合并内容相同的副本", target: nil, action: nil)
+    private let bookTextCheckbox = NSButton(checkboxWithTitle: "为 EPUB、Kindle 电子书和 GB18030 文本建立正文索引", target: nil, action: nil)
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
 
     private let loginCheckbox = NSButton(checkboxWithTitle: "开机登录后自动启动 KongSeek（在菜单栏待命）", target: nil, action: nil)
@@ -134,6 +135,9 @@ final class GeneralSettingsView: NSView {
         filterButton.toolTip = "搜索框下的按钮，如 PDF = ext:pdf；点一下加入搜索，再点去掉"
         let copiesRow = NSStackView(views: [copiesCheckbox, filterButton])
         copiesRow.spacing = 10
+        bookTextCheckbox.target = self
+        bookTextCheckbox.action = #selector(bookTextChanged)
+        bookTextCheckbox.toolTip = "Spotlight 读不到这些文件的正文；KongSeek 在后台读取（只读本机已下载的文件），全文搜索、引文查证、出处汇编就能找到它们"
         for style in Citation.Style.allCases { citationPopup.addItem(withTitle: style.title) }
         citationPopup.target = self
         citationPopup.action = #selector(citationChanged)
@@ -182,7 +186,7 @@ final class GeneralSettingsView: NSView {
         case .general:
             views = [heading("启动"), loginCheckbox, loginNote, loginSettingsButton,
                      heading("PDF 阅读"), readerRow,
-                     heading("搜索与引文"), historyRow, copiesRow, citationRow,
+                     heading("搜索与引文"), historyRow, copiesRow, bookTextCheckbox, citationRow,
                      heading("备份与诊断"), transferRow, transferHelp,
                      heading("其他应用"), cliRow, claudeRow, contentCheckbox]
         case .updates:
@@ -281,6 +285,7 @@ final class GeneralSettingsView: NSView {
         contentCheckbox.state = Preferences.mcpReadContent ? .on : .off
         historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
         copiesCheckbox.state = Preferences.mergeCopies ? .on : .off
+        bookTextCheckbox.state = Preferences.bookTextIndex ? .on : .off
         citationPopup.selectItem(at: Citation.Style.allCases.firstIndex(of: Preferences.citationStyle) ?? 0)
         refreshKongFolio()
         refreshLogin()
@@ -345,6 +350,11 @@ final class GeneralSettingsView: NSView {
             }
         }
         if kongFolioLabel.stringValue != text { kongFolioLabel.stringValue = text }
+    }
+
+    @objc private func bookTextChanged() {
+        Preferences.bookTextIndex = bookTextCheckbox.state == .on
+        NotificationCenter.default.post(name: BookTextService.settingChanged, object: nil)
     }
 
     @objc private func copiesChanged() {

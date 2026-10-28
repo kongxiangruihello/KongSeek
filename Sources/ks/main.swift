@@ -208,7 +208,7 @@ func runMCP(indexURL: URL) -> Never {
     let contentTool = MCPServer.Tool(
         name: "search_content",
         description: """
-        Full-text search inside the user's documents (PDF, Word, Pages, Keynote, text …) with macOS Spotlight, plus text KongSeek recognized from scanned PDFs and images. Every word must occur in the document. Supports "phrases", ext:pdf, in:~/Documents or in:FolderName, path:, size:, dm: (e.g. "克己复礼 ext:pdf,docx in:讲义"). Returns paths with the matching passage and its PDF page. Use read_file to read a result.
+        Full-text search inside the user's documents (PDF, Word, Pages, Keynote, text …) with macOS Spotlight, plus text KongSeek recognized from scanned PDFs and images, and KongSeek's own text index of e-books Spotlight does not read (EPUB, Kindle/Mobipocket, GB18030 text). Every word must occur in the document. Supports "phrases", ext:pdf, in:~/Documents or in:FolderName, path:, size:, dm: (e.g. "克己复礼 ext:pdf,docx in:讲义"). Returns paths with the matching passage and its PDF page. Use read_file to read a result.
         """,
         inputSchema: [
             "type": "object",
@@ -245,6 +245,12 @@ func runMCP(indexURL: URL) -> Never {
             throw MCPServer.ToolError("Spotlight could not run this search.")
         }
         var seen = Set(recognized.map(\.path))
+        // E-books Spotlight does not read, from KongSeek's own text index (0.37).
+        let books = BookTextIndex(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("KongSeek/BookText", isDirectory: true))
+        books.load()
+        let bookPaths = books.search((query.words + query.phrases).map { [$0] }, limit: 100) { keep($0, isFolder: false) }
+            .map(\.path).filter { seen.insert($0).inserted }
         // Documents (PDF, Word, slides, text) before code and data files such as .json or .swift,
         // which Spotlight ranks just as high; then Spotlight's relevance, then newest.
         let documentTypes: Set<String> = ["pdf", "doc", "docx", "pages", "ppt", "pptx", "key", "xls", "xlsx", "numbers",
@@ -257,14 +263,14 @@ func runMCP(indexURL: URL) -> Never {
                 return a.relevance != b.relevance ? a.relevance > b.relevance : (a.modified ?? .distantPast) > (b.modified ?? .distantPast)
             }
             .map(\.path).filter { seen.insert($0).inserted }
-        let total = recognized.count + spotlightPaths.count
+        let total = recognized.count + bookPaths.count + spotlightPaths.count
         guard total > 0 else { return "No documents contain “\(text)”. (Spotlight must have indexed the files; scanned PDFs need KongSeek's text recognition.)" }
         var lines = ["\(min(total, limit)) of \(total) document(s) containing “\(text)”:"]
         for hit in recognized.prefix(limit) {
             lines.append("\(hit.path)  [" + (hit.page.map { "第 \($0) 页 · " } ?? "") + "识别文字]")
             lines.append("    " + hit.snippet.text)
         }
-        for path in spotlightPaths.prefix(max(0, limit - recognized.count)) {
+        for path in (bookPaths + spotlightPaths).prefix(max(0, limit - recognized.count)) {
             switch ContentPreview.find(in: URL(fileURLWithPath: path), needles: needles, ocr: ocr) {
             case .found(let place):
                 let unit = (path as NSString).pathExtension.lowercased() == "pptx" ? "张幻灯片" : "页"
@@ -283,7 +289,7 @@ func runMCP(indexURL: URL) -> Never {
     let readTool = MCPServer.Tool(
         name: "read_file",
         description: """
-        Read the text of a document in the folders KongSeek indexes: PDF (by page; scanned pages use KongSeek's recognized text), PowerPoint .pptx (by slide, with speaker notes), Word, Excel .xlsx, RTF, OpenDocument, plain text and Markdown (UTF-8 or GB18030), and recognized images. Files kept only in iCloud are downloaded first. Long documents come in parts: the reply ends with the start_page (PDF) or offset (other files) to continue from.
+        Read the text of a document in the folders KongSeek indexes: PDF (by page; scanned pages use KongSeek's recognized text), PowerPoint .pptx (by slide, with speaker notes), Word, Excel .xlsx, RTF, OpenDocument, plain text and Markdown (UTF-8 or GB18030), EPUB and DRM-free Kindle/Mobipocket e-books, and recognized images. Files kept only in iCloud are downloaded first. Long documents come in parts: the reply ends with the start_page (PDF) or offset (other files) to continue from.
         """,
         inputSchema: [
             "type": "object",

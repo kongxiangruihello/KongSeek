@@ -31,6 +31,7 @@ public enum ContentPreview {
     public static func canRead(_ path: String) -> Bool {
         let ext = (path as NSString).pathExtension.lowercased()
         return ext == "pdf" || ext == "pptx" || ext == "xlsx" || plainTextExtensions.contains(ext) || richTextExtensions.contains(ext)
+            || EbookText.supports(ext)
     }
 
     /// Slow for big files: call off the main thread.
@@ -39,7 +40,7 @@ public enum ContentPreview {
             return .found(Found(snippet: hit.snippet, page: hit.page, recognized: true))
         }
         let ext = url.pathExtension.lowercased()
-        guard ext == "pdf" || ext == "pptx" || ext == "xlsx" || plainTextExtensions.contains(ext) || richTextExtensions.contains(ext) else { return .unsupported }
+        guard canRead(url.path) else { return .unsupported }
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .ubiquitousItemDownloadingStatusKey])
         if values?.ubiquitousItemDownloadingStatus == .notDownloaded { return .notDownloaded }
         let size = values?.fileSize ?? 0
@@ -54,6 +55,12 @@ public enum ContentPreview {
                 }
             }
             return .notFound
+        }
+
+        if EbookText.supports(ext) {
+            // E-books (0.37), which Spotlight does not read: KongSeek's own text index finds them.
+            guard let parts = try? EbookText.read(url), let snippet = Snippet.find(in: parts.joined(separator: "\n\n"), needles: needles) else { return .notFound }
+            return .found(Found(snippet: snippet, page: nil))
         }
 
         if ext == "pptx" {
@@ -78,7 +85,7 @@ public enum ContentPreview {
     }
 
     /// Older Chinese text files are often GB18030 / GBK rather than UTF-8.
-    static func decodeGB18030(_ data: Data) -> String? {
+    public static func decodeGB18030(_ data: Data) -> String? {
         let encoding = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
         return String(data: data, encoding: String.Encoding(rawValue: encoding))
     }

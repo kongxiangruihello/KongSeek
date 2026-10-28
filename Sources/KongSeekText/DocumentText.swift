@@ -25,7 +25,7 @@ public enum DocumentText {
             case .isFolder: return "This is a folder; use search_files with in:\"<folder>\" to list it."
             case .notDownloaded: return "The file is only in iCloud and not downloaded to this Mac (or is larger than 200 MB). Open it once in Finder to download it."
             case .downloading: return "The file is being downloaded from iCloud; try read_file again in a minute."
-            case .unsupported(let ext): return "Reading .\(ext) files is not supported (PDF, Word, PowerPoint .pptx, Excel .xlsx, RTF, OpenDocument, plain text and recognized scans are; Pages and Keynote files are not)."
+            case .unsupported(let ext): return "Reading .\(ext) files is not supported (PDF, Word, PowerPoint .pptx, Excel .xlsx, RTF, OpenDocument, EPUB, DRM-free Mobipocket/Kindle files, plain text and recognized scans are; Pages and Keynote files are not)."
             case .tooLarge: return "The file is too large to read (over 300 MB)."
             case .unreadable: return "The file could not be read (damaged or protected?)."
             case .noText(let pages): return "This is a scanned PDF (\(pages) pages) without a text layer, and KongSeek has not recognized its text. In KongSeek › 设置 › 文字识别, add its folder to recognize it."
@@ -130,6 +130,19 @@ public enum DocumentText {
         }
         if ext == "xlsx" {
             do { return Pages(pages: [try OfficeText.spreadsheet(of: url)], totalPages: 1, firstPage: 1, isPaged: false) } catch { throw Failure.unreadable }
+        }
+        if EbookText.supports(ext) {
+            // E-books (0.37): one text, as they have no fixed pages.
+            let parts: [String]
+            do {
+                parts = try EbookText.read(url)
+            } catch EbookText.Failure.unsupported(let why) {
+                throw Failure.unsupported(ext + "（" + why + "）")
+            } catch {
+                throw Failure.unreadable
+            }
+            guard !parts.isEmpty else { throw Failure.unreadable }
+            return Pages(pages: [parts.joined(separator: "\n\n")], totalPages: 1, firstPage: 1, isPaged: false)
         }
         if let record, OCRStoreImage.isImage(ext) {
             return Pages(pages: [record.pages.joined(separator: "\n")], totalPages: 1, firstPage: 1, isPaged: false, recognizedPages: [1])
