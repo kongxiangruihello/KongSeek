@@ -15,12 +15,20 @@ public enum QuoteDiff {
         case missing(String)
         /// 衍字: in the quotation, not in the source.
         case extra(String)
+        /// 通假字、古今字 (0.29): different characters the reader's table counts as the same
+        /// word (说/悦, 莫/暮) — shown, but not an error.
+        case equivalent(quote: String, source: String)
     }
 
     private enum Step { case same(Character), extra(Character), missing(Character) }
 
-    public static func compare(quote: String, source: String) -> [Segment] {
-        segments(steps(quote: quote, source: source))
+    public static func compare(quote: String, source: String, equivalents: CharacterEquivalents = .none) -> [Segment] {
+        segments(steps(quote: quote, source: source)).map { segment in
+            if case .changed(let quote, let source) = segment, equivalents.allEquivalent(quote, source) {
+                return .equivalent(quote: quote, source: source)
+            }
+            return segment
+        }
     }
 
     private static func steps(quote: String, source: String) -> [Step] {
@@ -94,18 +102,30 @@ public enum QuoteDiff {
         return result
     }
 
-    /// Whether the segments show any difference.
+    /// Whether the segments show any difference (通假 included).
     public static func differs(_ segments: [Segment]) -> Bool {
         segments.contains { if case .same = $0 { return false } else { return true } }
+    }
+
+    /// Whether any difference is an error: 异字, 脱字 or 衍字, not 通假.
+    public static func hasErrors(_ segments: [Segment]) -> Bool {
+        segments.contains {
+            switch $0 {
+            case .same, .equivalent: return false
+            case .changed, .missing, .extra: return true
+            }
+        }
     }
 
     /// "异文 2 处（悦/說、弟/悌）、脱 1 字、衍 1 字", or "文字相同（仅标点、字形不同）".
     public static func summary(_ segments: [Segment]) -> String {
         var changed: [String] = []
+        var equivalent: [String] = []
         var missing = 0, extra = 0
         for segment in segments {
             switch segment {
             case .changed(let quote, let source): changed.append("\(quote)/\(source)")
+            case .equivalent(let quote, let source): equivalent.append("\(quote)/\(source)")
             case .missing(let text): missing += text.count
             case .extra(let text): extra += text.count
             case .same: break
@@ -115,6 +135,9 @@ public enum QuoteDiff {
         if !changed.isEmpty { parts.append("异文 \(changed.count) 处（\(changed.prefix(5).joined(separator: "、"))\(changed.count > 5 ? "…" : "")）") }
         if missing > 0 { parts.append("脱 \(missing) 字") }
         if extra > 0 { parts.append("衍 \(extra) 字") }
+        if !equivalent.isEmpty {
+            parts.append((parts.isEmpty ? "仅" : "另有") + "通假或古今字 \(equivalent.count) 处（\(equivalent.prefix(5).joined(separator: "、"))），不算错")
+        }
         return parts.isEmpty ? "文字相同（仅标点、字形不同）" : parts.joined(separator: "、")
     }
 
@@ -147,5 +170,62 @@ public enum QuoteDiff {
         }
         emitMissing()
         return output
+    }
+}
+
+/// 通假字、古今字 (0.29): pairs of characters that write the same word in classical texts
+/// (说—悦, 莫—暮), so a quotation using one where the edition has the other is not marked
+/// as an error. Starts with common examples; the reader adds or removes pairs.
+public struct CharacterEquivalents: Equatable, Sendable {
+    /// Folded (simplified) character → those counted as the same.
+    private var pairs: [String: Set<String>] = [:]
+
+    public static let none = CharacterEquivalents()
+
+    /// Common examples from the Analects and other classics, as "通假/本字" lines.
+    public static let standardLines = [
+        "说=悦", "知=智", "女=汝", "弟=悌", "有=又", "共=拱", "归=馈", "亡=无",
+        "被=披", "莫=暮", "内=纳", "反=返", "与=欤", "罔=惘", "辟=避",
+    ]
+
+    public static var standard: CharacterEquivalents { CharacterEquivalents(lines: standardLines) }
+
+    public init() {}
+
+    /// Lines such as "说=悦", "说 悦", "说悦" or "说＝悦"; other lines are ignored.
+    public init(lines: [String]) {
+        for line in lines {
+            let characters = line.filter { $0.isLetter }.map { SearchText.fold(String($0)) }
+            guard characters.count == 2, characters[0] != characters[1] else { continue }
+            pairs[characters[0], default: []].insert(characters[1])
+            pairs[characters[1], default: []].insert(characters[0])
+        }
+    }
+
+    /// The pairs as lines, "说=悦", sorted.
+    public var lines: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for (first, others) in pairs.sorted(by: { $0.key < $1.key }) {
+            for second in others.sorted() where !seen.contains(second + "=" + first) {
+                seen.insert(first + "=" + second)
+                result.append(first + "=" + second)
+            }
+        }
+        return result
+    }
+
+    public var isEmpty: Bool { pairs.isEmpty }
+
+    public func areEquivalent(_ a: String, _ b: String) -> Bool {
+        let x = SearchText.fold(a), y = SearchText.fold(b)
+        return x == y || pairs[x]?.contains(y) == true
+    }
+
+    /// Whether two strings of the same length agree character by character, allowing the pairs.
+    public func allEquivalent(_ a: String, _ b: String) -> Bool {
+        let x = Array(a), y = Array(b)
+        guard !pairs.isEmpty, x.count == y.count, !x.isEmpty else { return false }
+        return zip(x, y).allSatisfy { areEquivalent(String($0), String($1)) }
     }
 }

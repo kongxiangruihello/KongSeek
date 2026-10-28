@@ -12,6 +12,8 @@ final class ManuscriptCheckModel: ObservableObject {
         let id = UUID()
         var number: Int
         var quote: ManuscriptQuotes.Quote
+        /// Where in the manuscript: "第 3 张幻灯片" for slides (0.29).
+        var place: String? = nil
         var state: State = .waiting
         var best: QuoteLookup.Result?
         var others = 0
@@ -29,15 +31,23 @@ final class ManuscriptCheckModel: ObservableObject {
         /// 逐字异文 against the passage found (0.26), for near matches.
         var differences: [QuoteDiff.Segment]? {
             guard let best, !best.exact else { return nil }
-            let segments = QuoteDiff.compare(quote: quote.text, source: best.excerpt)
+            let segments = QuoteDiff.compare(quote: quote.text, source: best.excerpt, equivalents: Preferences.quoteEquivalents)
             return QuoteDiff.differs(segments) ? segments : nil
+        }
+
+        /// A real slip — 异字, 脱字, 衍字 — or no source at all; 通假 alone is not one (0.29).
+        var needsAttention: Bool {
+            guard state == .done else { return false }
+            guard let best else { return true }
+            if best.exact { return false }
+            return differences.map(QuoteDiff.hasErrors) ?? false
         }
     }
 
     @Published private(set) var manuscript: URL?
     @Published private(set) var rows: [Row] = []
     @Published private(set) var running = false
-    @Published private(set) var status = "选择一篇稿件（Word、文本、Markdown 或 PDF），找出其中引号内的引文，逐条到书库中查证。"
+    @Published private(set) var status = "选择一篇稿件或讲义（Word、PowerPoint、文本、Markdown 或 PDF），找出其中引号内的引文，逐条到书库中查证。"
     @Published var selection: Row.ID?
     private let lookup: QuoteLookup
     private var stopped = false
@@ -57,7 +67,7 @@ final class ManuscriptCheckModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = ["docx", "doc", "odt", "rtf", "txt", "md", "pdf"].compactMap { UTType(filenameExtension: $0) }
+        panel.allowedContentTypes = ["docx", "doc", "odt", "rtf", "txt", "md", "markdown", "pdf", "pptx"].compactMap { UTType(filenameExtension: $0) }
         panel.message = "选择要核对引文的稿件"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         load(url)
@@ -75,8 +85,9 @@ final class ManuscriptCheckModel: ObservableObject {
                 guard let self, self.manuscript == url else { return }
                 self.reading = false
                 switch outcome {
-                case .success(let quotes):
-                    self.rows = quotes.enumerated().map { Row(number: $0.offset + 1, quote: $0.element) }
+                case .success(let found):
+                    let quotes = found.map { $0.quote }
+                    self.rows = found.enumerated().map { Row(number: $0.offset + 1, quote: $0.element.quote, place: $0.element.place) }
                     let inNotes = quotes.filter { $0.context.hasPrefix("〔注〕") }.count
                     self.status = quotes.isEmpty
                         ? "稿件中没有找到引号内的引文（至少 \(ManuscriptQuotes.minimumLength) 个字）。"
@@ -88,7 +99,7 @@ final class ManuscriptCheckModel: ObservableObject {
         }
     }
 
-    private enum ReadOutcome { case success([ManuscriptQuotes.Quote]), failure(String) }
+    private enum ReadOutcome { case success([(quote: ManuscriptQuotes.Quote, place: String?)]), failure(String) }
 
     /// The quotations of the body, then those of a Word document's footnotes and endnotes
     /// (marked 〔注〕 in their context), each quotation once.
@@ -105,17 +116,29 @@ final class ManuscriptCheckModel: ObservableObject {
         } catch {
             return .failure("无法读取稿件。")
         }
-        var quotes = ManuscriptQuotes.extract(from: pages.pages.joined(separator: "\n"))
+        var found: [(quote: ManuscriptQuotes.Quote, place: String?)] = []
+        var seen = Set<String>()
+        if url.pathExtension.lowercased() == "pptx" {
+            // Lecture slides (0.29): slide by slide, so each quotation says where it is.
+            for (index, slide) in pages.pages.enumerated() {
+                for quote in ManuscriptQuotes.extract(from: slide) where seen.insert(String(QuoteMatcher.normalized(quote.text))).inserted {
+                    found.append((quote, "第 \(pages.firstPage + index) 张幻灯片"))
+                }
+            }
+        } else {
+            for quote in ManuscriptQuotes.extract(from: pages.pages.joined(separator: "\n")) where seen.insert(String(QuoteMatcher.normalized(quote.text))).inserted {
+                found.append((quote, nil))
+            }
+        }
         if url.pathExtension.lowercased() == "docx", let notes = try? OfficeText.wordNotes(of: url) {
-            var seen = Set(quotes.map { String(QuoteMatcher.normalized($0.text)) })
             for text in [notes.footnotes, notes.endnotes] where !text.isEmpty {
                 for var quote in ManuscriptQuotes.extract(from: text) where seen.insert(String(QuoteMatcher.normalized(quote.text))).inserted {
                     quote.context = "〔注〕" + quote.context
-                    quotes.append(quote)
+                    found.append((quote, nil))
                 }
             }
         }
-        return .success(quotes)
+        return .success(found)
     }
 
     func start() {
@@ -179,6 +202,53 @@ final class ManuscriptCheckModel: ObservableObject {
         return "《\(((best.path as NSString).lastPathComponent as NSString).deletingPathExtension)》" + (place ?? "")
     }
 
+    /// The books the manuscript quotes, each once, numbered in pinyin order (0.29).
+    func referenceList(_ style: Citation.Style) -> [String] {
+        var items: [ReferenceList.Item] = []
+        for row in rows where row.state == .done {
+            guard let best = row.best else { continue }
+            if let book = best.book {
+                items.append(.init(authors: book.authors, title: book.title, text: Citation.make(style, name: book, fallbackTitle: book.title).text))
+            } else {
+                let title = ((best.path as NSString).lastPathComponent as NSString).deletingPathExtension
+                items.append(.init(authors: nil, title: title, text: "《\(title)》"))
+            }
+        }
+        return ReferenceList.numbered(items)
+    }
+
+    func copyReferenceList(_ style: Citation.Style) {
+        let list = referenceList(style)
+        guard !list.isEmpty else {
+            status = "还没有核对到出处，无法生成参考文献表。"
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(list.joined(separator: "\n"), forType: .string)
+        status = "已拷贝参考文献表（\(list.count) 种，按作者拼音排序）。缺项的书目可在“更多 › 补全书目信息”中补全后再拷贝。"
+    }
+
+    func exportReferenceList() {
+        let list = referenceList(Preferences.citationStyle)
+        guard !list.isEmpty else {
+            status = "还没有核对到出处，无法生成参考文献表。"
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "docx") ?? .data]
+        panel.nameFieldStringValue = (manuscript?.deletingPathExtension().lastPathComponent ?? "稿件") + " 参考文献.docx"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            var blocks: [DocxWriter.Block] = [.heading("参考文献", level: 1)]
+            for line in list { blocks.append(.paragraph([DocxWriter.Run(line)])) }
+            try DocxWriter.write(blocks, to: url)
+            status = "已导出参考文献表到 \(url.lastPathComponent)"
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            status = "导出失败：\(error.localizedDescription)"
+        }
+    }
+
     /// The quotation as the source writes it (0.26).
     /// Makes the source the 常用本 of its book, or stops it being one (0.28). Rows already
     /// checked keep their result; 重查 picks the preferred edition first.
@@ -201,7 +271,7 @@ final class ManuscriptCheckModel: ObservableObject {
     /// source or was not found (0.27). The manuscript itself is not changed.
     func writeComments() {
         guard let manuscript, manuscript.pathExtension.lowercased() == "docx" else { return }
-        let flagged = rows.filter { $0.state == .done && ($0.best == nil || $0.best?.exact == false) && !$0.quote.context.hasPrefix("〔注〕") }
+        let flagged = rows.filter { $0.needsAttention && !$0.quote.context.hasPrefix("〔注〕") }
         guard !flagged.isEmpty else {
             status = "已核对的引文都与原文一致，不需要批注。"
             return
@@ -222,7 +292,7 @@ final class ManuscriptCheckModel: ObservableObject {
                 var head = "引文核对：\(row.verdict)"
                 if let differences = row.differences { head += "，" + QuoteDiff.summary(differences) }
                 lines.append(head)
-                if row.differences != nil { lines.append("按原文改正：" + QuoteDiff.corrected(quote: row.quote.text, source: best.excerpt)) }
+                if row.differences.map(QuoteDiff.hasErrors) == true { lines.append("按原文改正：" + QuoteDiff.corrected(quote: row.quote.text, source: best.excerpt)) }
                 lines.append("原文：" + best.excerpt)
                 lines.append("出处：" + reference(row))
             } else {
@@ -261,7 +331,7 @@ final class ManuscriptCheckModel: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "xlsx") ?? .data]
         panel.nameFieldStringValue = (manuscript?.deletingPathExtension().lastPathComponent ?? "稿件") + " 引文核对.xlsx"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        var cells: [[XLSXWriter.Cell]] = [["序号", "引文", "稿中上文", "结果", "异文", "按原文改正", "出处", "页码", "原文", "文件"].map { .text($0) }]
+        var cells: [[XLSXWriter.Cell]] = [["序号", "位置", "引文", "稿中上文", "结果", "异文", "按原文改正", "出处", "页码", "原文", "文件"].map { .text($0) }]
         for row in rows {
             // The page printed in the book when known (0.27), else the PDF page.
             let page: XLSXWriter.Cell
@@ -269,15 +339,16 @@ final class ManuscriptCheckModel: ObservableObject {
                 if let number = Int(printed.text) { page = .number(Double(number)) } else { page = .text(printed.text) }
             } else if let number = row.best?.page { page = .number(Double(number)) } else { page = .text("") }
             let differences = row.differences
-            let corrected = differences == nil ? "" : QuoteDiff.corrected(quote: row.quote.text, source: row.best?.excerpt ?? "")
-            let line: [XLSXWriter.Cell] = [.number(Double(row.number)), .text(row.quote.text), .text(row.quote.context), .text(row.verdict),
+            let corrected = differences.map(QuoteDiff.hasErrors) == true ? QuoteDiff.corrected(quote: row.quote.text, source: row.best?.excerpt ?? "") : ""
+            let line: [XLSXWriter.Cell] = [.number(Double(row.number)), .text(row.place ?? (row.quote.context.hasPrefix("〔注〕") ? "注" : "")),
+                                           .text(row.quote.text), .text(row.quote.context), .text(row.verdict),
                                            .text(differences.map(QuoteDiff.summary) ?? ""), .text(corrected),
                                            .text(reference(row)), page, .text(row.best?.excerpt ?? ""), .text(row.best?.path ?? "")]
             cells.append(line)
         }
         do {
             try? FileManager.default.removeItem(at: url)
-            try XLSXWriter.write(rows: cells, columnWidths: [6, 50, 24, 12, 30, 50, 50, 8, 50, 50], sheetName: "引文核对", to: url)
+            try XLSXWriter.write(rows: cells, columnWidths: [6, 14, 50, 24, 12, 30, 50, 50, 8, 50, 50], sheetName: "引文核对", to: url)
             status = "已导出到 \(url.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
@@ -302,6 +373,15 @@ struct ManuscriptCheckView: View {
                     Button("开始核对") { model.start() }.keyboardShortcut(.defaultAction).disabled(model.rows.isEmpty)
                 }
                 Button("导出 Excel…") { model.export() }.disabled(model.rows.isEmpty || model.running)
+                Menu("参考文献表") {
+                    ForEach(Citation.Style.allCases, id: \.self) { style in
+                        Button("拷贝（\(style.title)）") { model.copyReferenceList(style) }
+                    }
+                    Divider()
+                    Button("导出 Word…") { model.exportReferenceList() }
+                }
+                .fixedSize()
+                .disabled(model.running || !model.rows.contains { $0.best != nil })
                 if model.manuscript?.pathExtension.lowercased() == "docx" {
                     Button("生成带批注的 Word…") { model.writeComments() }
                         .disabled(model.running || !model.rows.contains { $0.state == .done })
@@ -329,6 +409,7 @@ struct ManuscriptCheckView: View {
             HStack(alignment: .top, spacing: 8) {
                 Text("\(row.number)").font(.caption.monospacedDigit()).foregroundColor(.secondary).frame(width: 26, alignment: .trailing)
                 Text(row.verdict).font(.caption2.weight(.semibold)).foregroundColor(color(row)).frame(width: 64, alignment: .leading)
+                if let place = row.place { Text(place).font(.caption).foregroundColor(.secondary) }
                 Text("“\(row.quote.text)”").lineLimit(2)
                 Spacer()
                 if row.best != nil {
@@ -360,8 +441,10 @@ struct ManuscriptCheckView: View {
                     HStack(alignment: .firstTextBaseline) {
                         QuoteDiffText.line(differences).font(.caption).lineLimit(3)
                         Spacer()
-                        Button("拷贝改正后的引文") { model.copyCorrected(row) }.controlSize(.small)
-                            .help("按原文的用字改正这条引文（保留稿中的标点），拷贝下来贴回稿件")
+                        if QuoteDiff.hasErrors(differences) {
+                            Button("拷贝改正后的引文") { model.copyCorrected(row) }.controlSize(.small)
+                                .help("按原文的用字改正这条引文（保留稿中的标点），拷贝下来贴回稿件")
+                        }
                     }
                     .padding(.leading, 98)
                 }

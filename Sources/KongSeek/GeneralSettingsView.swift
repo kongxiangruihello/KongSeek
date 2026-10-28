@@ -125,7 +125,10 @@ final class GeneralSettingsView: NSView {
         for style in Citation.Style.allCases { citationPopup.addItem(withTitle: style.title) }
         citationPopup.target = self
         citationPopup.action = #selector(citationChanged)
-        let citationRow = NSStackView(views: [NSTextField(labelWithString: "参考文献与引文格式："), citationPopup])
+        let equivalentsButton = NSButton(title: "通假与古今字表…", target: self, action: #selector(editEquivalents))
+        equivalentsButton.controlSize = .small
+        equivalentsButton.toolTip = "逐字异文中，表里的字对（如 说=悦）标为“通假”，不算错字"
+        let citationRow = NSStackView(views: [NSTextField(labelWithString: "参考文献与引文格式："), citationPopup, equivalentsButton])
         citationRow.spacing = 6
         for reader in Preferences.PDFReader.allCases { readerPopup.addItem(withTitle: reader.title) }
         readerPopup.target = self
@@ -143,7 +146,7 @@ final class GeneralSettingsView: NSView {
         kongFolioRow.spacing = 8
         kongFolioRow.alignment = .centerY
         contentCheckbox.toolTip = "关闭后，Claude 只能按文件名搜索（search_files），不能搜索正文（search_content）或读取文件（read_file）。"
-        let transferHelp = NSTextField(wrappingLabelWithString: "设置文件包含各页的设置和文本片段，不含剪贴板历史、最近打开和索引，可用于换机或备份；主目录下的路径会自动换成新电脑的主目录。诊断包含状态报告、更新与构建日志、最近的崩溃报告和设置（不含片段与剪贴板内容），出问题时发给开发者。")
+        let transferHelp = NSTextField(wrappingLabelWithString: "设置文件包含各页的设置、文本片段，以及书上页码、补全的书目、常用本、文件清单、阅读进度（0.29 起），不含剪贴板历史、最近打开和索引，可用于换机或备份；主目录下的路径会自动换成新电脑的主目录。诊断包含状态报告、更新与构建日志、最近的崩溃报告和设置（不含片段与剪贴板内容），出问题时发给开发者。")
         transferHelp.font = .systemFont(ofSize: 11)
         transferHelp.textColor = .secondaryLabelColor
         transferHelp.preferredMaxLayoutWidth = 520
@@ -329,6 +332,33 @@ final class GeneralSettingsView: NSView {
             }
         }
         if kongFolioLabel.stringValue != text { kongFolioLabel.stringValue = text }
+    }
+
+    /// 通假与古今字表 (0.29): one pair per line, "说=悦".
+    @objc private func editEquivalents() {
+        let alert = NSAlert()
+        alert.messageText = "通假与古今字表"
+        alert.informativeText = "每行一对，如“说=悦”“莫=暮”。引文与原文只差在这些字上时，逐字异文标为“通假”，不算错字，也不加批注。繁简不必分写。"
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 300, height: 220)
+        scroll.borderType = .bezelBorder
+        let text = scroll.documentView as! NSTextView
+        text.font = .systemFont(ofSize: 13)
+        text.isRichText = false
+        text.string = Preferences.quoteEquivalentLines.joined(separator: "\n")
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "恢复常见字例")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let lines = text.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            Preferences.quoteEquivalentLines = CharacterEquivalents(lines: lines).lines
+        case .alertThirdButtonReturn:
+            Preferences.quoteEquivalentLines = CharacterEquivalents.standardLines
+        default:
+            break
+        }
     }
 
     @objc private func readerChanged() {

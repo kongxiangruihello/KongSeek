@@ -16,6 +16,9 @@ enum QuoteDiffText {
                 return text + Text("〔" + missing + "〕").foregroundColor(.green).bold()
             case .extra(let extra):
                 return text + Text(extra).foregroundColor(.red).strikethrough()
+            case .equivalent(let quote, let source):
+                // 通假、古今字: the quotation's character, then the edition's, in blue; not an error.
+                return text + Text(quote).foregroundColor(.blue) + Text("（\(source)）").foregroundColor(.blue).font(.caption2)
             }
         }
     }

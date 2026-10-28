@@ -125,7 +125,7 @@ final class QuoteFinderModel: ObservableObject {
     /// 逐字异文 of a near match (0.26); nil when only punctuation or character forms differ.
     func differences(_ result: Result) -> [QuoteDiff.Segment]? {
         guard !result.exact else { return nil }
-        let segments = QuoteDiff.compare(quote: quote, source: result.excerpt)
+        let segments = QuoteDiff.compare(quote: quote, source: result.excerpt, equivalents: Preferences.quoteEquivalents)
         return QuoteDiff.differs(segments) ? segments : nil
     }
 
@@ -217,7 +217,9 @@ struct QuoteFinderView: View {
                         HStack(alignment: .firstTextBaseline) {
                             QuoteDiffText.line(differences).font(.caption).lineLimit(3)
                             Spacer()
-                            Button("拷贝改正后的引文") { model.copyCorrected(result) }.controlSize(.small)
+                            if QuoteDiff.hasErrors(differences) {
+                                Button("拷贝改正后的引文") { model.copyCorrected(result) }.controlSize(.small)
+                            }
                         }
                     }
                     Text(SearchWindowController.displayLocation(of: result.path)).font(.caption2).foregroundColor(.secondary).lineLimit(1).truncationMode(.middle)

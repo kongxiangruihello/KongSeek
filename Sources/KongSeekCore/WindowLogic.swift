@@ -60,3 +60,38 @@ extension SavedFileLists {
         return last.isEmpty ? heading : last
     }
 }
+
+/// 稿件参考文献表 (0.29): the books a manuscript quotes, each once, sorted by the first
+/// author's pinyin (or the title's), numbered.
+public enum ReferenceList {
+    public struct Item: Equatable, Sendable {
+        public var authors: String?
+        public var title: String
+        public var text: String
+
+        public init(authors: String?, title: String, text: String) {
+            self.authors = authors
+            self.title = title
+            self.text = text
+        }
+    }
+
+    /// The first author's (or the title's) pinyin, for sorting.
+    public static func sortKey(authors: String?, title: String) -> String {
+        let lead = (authors?.isEmpty == false ? authors! : title)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "《》〈〉“”\"' "))
+        let latin = lead.applyingTransform(.mandarinToLatin, reverse: false)?.applyingTransform(.stripDiacritics, reverse: false) ?? lead
+        return latin.lowercased()
+    }
+
+    /// "[1] …", "[2] …": each reference once, in pinyin order.
+    public static func numbered(_ items: [Item]) -> [String] {
+        var seen = Set<String>()
+        let unique = items.filter { seen.insert($0.text).inserted }
+        let sorted = unique.sorted {
+            let a = sortKey(authors: $0.authors, title: $0.title), b = sortKey(authors: $1.authors, title: $1.title)
+            return a != b ? a < b : $0.text < $1.text
+        }
+        return sorted.enumerated().map { "[\($0.offset + 1)] \($0.element.text)" }
+    }
+}

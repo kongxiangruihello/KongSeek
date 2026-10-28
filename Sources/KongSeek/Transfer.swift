@@ -12,6 +12,32 @@ enum SettingsTransfer {
         UserDefaults.standard.persistentDomain(forName: bundleID) ?? [:]
     }
 
+    private static var recordsFolder: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("KongSeek", isDirectory: true)
+    }
+
+    /// KongSeek's records to carry (0.29): files in Application Support, and the reading
+    /// progress, which lives in the settings as data.
+    static var currentRecords: [String: Data] {
+        var records: [String: Data] = [:]
+        for name in SettingsArchive.recordNames where name != "reading-log.json" {
+            if let data = try? Data(contentsOf: recordsFolder.appendingPathComponent(name)) { records[name] = data }
+        }
+        if let data = UserDefaults.standard.data(forKey: "readingLog") { records["reading-log.json"] = data }
+        return records
+    }
+
+    private static func restore(_ records: [String: Data]) {
+        try? FileManager.default.createDirectory(at: recordsFolder, withIntermediateDirectories: true)
+        for (name, data) in records {
+            if name == "reading-log.json" {
+                UserDefaults.standard.set(data, forKey: "readingLog")
+            } else {
+                try? data.write(to: recordsFolder.appendingPathComponent(name), options: .atomic)
+            }
+        }
+    }
+
     static func exportSettings(library: SnippetLibrary) {
         let panel = NSSavePanel()
         panel.title = "导出 KongSeek 设置"
@@ -21,7 +47,7 @@ enum SettingsTransfer {
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let archive = SettingsArchive(defaults: currentDefaults, snippets: library.snippets,
+            let archive = SettingsArchive(defaults: currentDefaults, snippets: library.snippets, records: currentRecords,
                                           appVersion: Updater.version, home: NSHomeDirectory())
             try archive.encoded().write(to: url, options: .atomic)
             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -48,7 +74,8 @@ enum SettingsTransfer {
         let alert = NSAlert()
         alert.messageText = "导入这些设置？"
         alert.informativeText = "来自 KongSeek \(archive.appVersion)，导出于 \(archive.created.formatted(date: .abbreviated, time: .shortened))："
-            + "\(archive.defaults.count) 项设置、\(archive.snippets.count) 个片段。\n\n"
+            + "\(archive.defaults.count) 项设置、\(archive.snippets.count) 个片段"
+            + (archive.records.isEmpty ? "" : "，以及书上页码、补全的书目、常用本、文件清单、阅读进度等 \(archive.records.count) 份记录") + "。\n\n"
             + "当前的设置和片段会被替换（剪贴板历史、最近打开和索引不受影响），之后 KongSeek 会重新打开；索引的文件夹若有变化，会重建索引。"
         alert.addButton(withTitle: "导入")
         alert.addButton(withTitle: "取消")
@@ -62,6 +89,7 @@ enum SettingsTransfer {
         for (key, value) in incoming { defaults.set(value, forKey: key) }
         defaults.synchronize()
         library.replaceAll(archive.snippets)
+        restore(archive.restoredRecords(home: NSHomeDirectory()))
         relaunch()
     }
 

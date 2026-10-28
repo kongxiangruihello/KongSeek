@@ -69,6 +69,17 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "savedSearchNames") }
     }
 
+    /// 通假字、古今字 counted as the same in 逐字异文 (0.29), as "说=悦" lines; the
+    /// common examples until the reader edits them.
+    static var quoteEquivalentLines: [String] {
+        get { defaults.stringArray(forKey: "quoteEquivalents") ?? CharacterEquivalents.standardLines }
+        set { defaults.set(newValue, forKey: "quoteEquivalents") }
+    }
+
+    static var quoteEquivalents: CharacterEquivalents {
+        CharacterEquivalents(lines: quoteEquivalentLines)
+    }
+
     /// Where PDFs opened at a page go (0.25): KongFolio when installed, or KongSeek's reading window.
     enum PDFReader: String, CaseIterable {
         case automatic, kongFolio, builtIn

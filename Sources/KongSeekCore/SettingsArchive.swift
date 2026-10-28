@@ -18,25 +18,59 @@ public struct SettingsArchive {
         "ocrEnabled", "ocrFolders", "ocrPageLimit", "ocrOnlyOnPower", "ocrDownloadFromICloud", "ocrUseLiveText",
         "clipboardEnabled", "clipboardShortcut", "clipboardShortcutCleared", "clipboardRetentionDays",
         "clipboardMaximumItems", "autoPaste", "clipboardOCR", "clipboardExcludedApps", "cleanupOperations",
-        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "quoteShortcut", "quoteShortcutCleared", "pdfReader", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",
+        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "quoteShortcut", "quoteShortcutCleared", "pdfReader", "quoteEquivalents", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",
     ]
+
+    /// KongSeek's own records carried too (0.29): book page numbering, confirmed book
+    /// details, 常用本, saved file lists and reading progress — by file name.
+    public static let recordNames: Set<String> = ["page-numbers.json", "book-records.json", "preferred-editions.json", "file-lists.json", "reading-log.json"]
 
     public var defaults: [String: Any]
     public var snippets: [TextSnippet]
     public var created: Date
     public var appVersion: String
+    /// Record file name → its contents, with the home folder written "{HOME}".
+    public var records: [String: Data]
 
     /// `defaults` as read from this Mac; `home` is abbreviated to "~".
-    public init(defaults: [String: Any], snippets: [TextSnippet], created: Date = Date(), appVersion: String, home: String) {
+    public init(defaults: [String: Any], snippets: [TextSnippet], records: [String: Data] = [:], created: Date = Date(), appVersion: String, home: String) {
         self.init(stored: Self.portable(defaults.filter { Self.transferableKeys.contains($0.key) }, home: home),
-                  snippets: snippets, created: created, appVersion: appVersion)
+                  snippets: snippets, records: Self.portableRecords(records.filter { Self.recordNames.contains($0.key) }, home: home),
+                  created: created, appVersion: appVersion)
     }
 
-    private init(stored: [String: Any], snippets: [TextSnippet], created: Date, appVersion: String) {
+    private init(stored: [String: Any], snippets: [TextSnippet], records: [String: Data], created: Date, appVersion: String) {
         defaults = stored
         self.snippets = snippets
+        self.records = records
         self.created = created
         self.appVersion = appVersion
+    }
+
+    static let homeToken = "{HOME}"
+
+    /// Records hold absolute paths, in JSON (where "/" may be written "\/").
+    static func portableRecords(_ records: [String: Data], home: String) -> [String: Data] {
+        let base = home.hasSuffix("/") ? String(home.dropLast()) : home
+        let escaped = base.replacingOccurrences(of: "/", with: "\\/")
+        return records.mapValues { data in
+            guard let text = String(data: data, encoding: .utf8) else { return data }
+            let portable = text.replacingOccurrences(of: "\"" + escaped + "\\/", with: "\"" + homeToken + "\\/")
+                .replacingOccurrences(of: "\"" + base + "/", with: "\"" + homeToken + "/")
+            return Data(portable.utf8)
+        }
+    }
+
+    /// The records to write on this Mac, with "{HOME}" put back as `home`.
+    public func restoredRecords(home: String) -> [String: Data] {
+        let base = home.hasSuffix("/") ? String(home.dropLast()) : home
+        let escaped = base.replacingOccurrences(of: "/", with: "\\/")
+        return records.mapValues { data in
+            guard let text = String(data: data, encoding: .utf8) else { return data }
+            let restored = text.replacingOccurrences(of: "\"" + Self.homeToken + "\\/", with: "\"" + escaped + "\\/")
+                .replacingOccurrences(of: "\"" + Self.homeToken + "/", with: "\"" + base + "/")
+            return Data(restored.utf8)
+        }
     }
 
     /// The settings to write on this Mac, with "~" expanded to `home`.
@@ -78,6 +112,7 @@ public struct SettingsArchive {
             "created": created,
             "defaults": defaults,
             "snippets": try encoder.encode(snippets),
+            "records": records,
         ]
         return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     }
@@ -95,7 +130,8 @@ public struct SettingsArchive {
             decoder.dateDecodingStrategy = .iso8601
             snippets = (try? decoder.decode([TextSnippet].self, from: data)) ?? []
         }
-        return SettingsArchive(stored: defaults.filter { transferableKeys.contains($0.key) }, snippets: snippets,
+        let records = (plist["records"] as? [String: Data] ?? [:]).filter { recordNames.contains($0.key) }
+        return SettingsArchive(stored: defaults.filter { transferableKeys.contains($0.key) }, snippets: snippets, records: records,
                                created: plist["created"] as? Date ?? Date(), appVersion: plist["appVersion"] as? String ?? "?")
     }
 }
