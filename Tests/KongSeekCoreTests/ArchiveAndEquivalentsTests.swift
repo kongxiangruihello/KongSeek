@@ -68,3 +68,27 @@ final class ArchiveAndEquivalentsTests: XCTestCase {
         ])
     }
 }
+
+/// 0.29: the 更新内容 window reads CHANGELOG items.
+final class ReleaseNoteItemsTests: XCTestCase {
+    func testItemsJoinWrappedLinesAndKeepSubItems() {
+        let body = """
+        - 书上页码：引文查证、稿件引文核对中的页码改用书上印的页码。
+          - PDF 自带页码时直接用；
+          - 扫描书设一次“PDF 第 29 页 = 书上第 15 页”，
+            每一页都按此换算。
+        - 换机与备份带上记录：设置 › 通用 › 导出设置，此后连同书上页
+          码的设定一起导出；KongSeek 使用 Google Books
+          and Open Library。
+        - 新增 3 项测试。
+        """
+        let items = ReleaseNotes.items(body)
+        XCTAssertEqual(items.count, 3)
+        XCTAssertEqual(items[0].lead, "书上页码")
+        XCTAssertEqual(items[0].text, "引文查证、稿件引文核对中的页码改用书上印的页码。")
+        XCTAssertEqual(items[0].children, ["PDF 自带页码时直接用；", "扫描书设一次“PDF 第 29 页 = 书上第 15 页”，每一页都按此换算。"])
+        XCTAssertEqual(items[1].text, "设置 › 通用 › 导出设置，此后连同书上页码的设定一起导出；KongSeek 使用 Google Books and Open Library。")
+        XCTAssertNil(items[2].lead)
+        XCTAssertEqual(items[2].text, "新增 3 项测试。")
+    }
+}

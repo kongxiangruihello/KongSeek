@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var featureGuide: FeatureGuideWindowController?
     private var trashLog: TrashLogWindowController?
     private var concordance: ConcordanceWindowController?
+    private var whatsNew: WhatsNewWindowController?
     /// Checks every few seconds whether background work is running, for the menu bar icon (0.24).
     private var busyTimer: Timer?
     private var shownBusy = false
@@ -458,25 +459,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func reportFinishedUpdate() {
         guard let previous = UserDefaults.standard.string(forKey: "updatedFrom") else { return }
         UserDefaults.standard.removeObject(forKey: "updatedFrom")
-        let alert = NSAlert()
-        if previous == Updater.version {
+        guard previous != Updater.version else {
+            let alert = NSAlert()
             alert.messageText = "更新没有完成"
             alert.informativeText = "KongSeek 仍是 \(previous)。安装时出了问题，已恢复原来的版本。详情见 设置 › 更新 › 更新日志。"
             alert.alertStyle = .warning
-        } else {
-            alert.messageText = "KongSeek 已更新到 \(Updater.version)"
-            var notes = ""
-            if let root = updater.state.sourceRoot,
-               let changelog = try? String(contentsOfFile: root + "/CHANGELOG.md", encoding: .utf8) {
-                notes = ReleaseNotes.sections(in: changelog, newerThan: previous)
-                    .filter { !ReleaseNotes.isNewer($0.version, than: Updater.version) }
-                    .map { "\($0.version)\n\($0.body)" }.joined(separator: "\n\n")
-            }
-            alert.informativeText = "原来的版本：\(previous)" + (notes.isEmpty ? "" : "\n\n" + notes)
+            alert.addButton(withTitle: "好")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+            return
         }
-        alert.addButton(withTitle: "好")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        // What changed, in a window that scrolls (0.29) rather than a long alert.
+        var sections: [ReleaseNotes.Section] = []
+        if let root = updater.state.sourceRoot,
+           let changelog = try? String(contentsOfFile: root + "/CHANGELOG.md", encoding: .utf8) {
+            sections = ReleaseNotes.sections(in: changelog, newerThan: previous)
+                .filter { !ReleaseNotes.isNewer($0.version, than: Updater.version) }
+        }
+        whatsNew = WhatsNewWindowController(version: Updater.version, previous: previous, sections: sections,
+                                            openGuide: { [weak self] in self?.openFeatureGuide() },
+                                            onClose: { [weak self] in DispatchQueue.main.async { self?.whatsNew = nil } })
+        whatsNew?.present()
     }
 
     @objc private func openUpdates() {

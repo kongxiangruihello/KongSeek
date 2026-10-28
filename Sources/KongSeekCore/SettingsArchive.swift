@@ -158,6 +158,50 @@ public enum ReleaseNotes {
         public var body: String
     }
 
+    /// One "- " item of a section, for the 更新内容 window (0.29): a short lead (the words
+    /// before the first "：" when they are short), the rest, and its "  - " sub-items.
+    public struct Item: Equatable, Sendable {
+        public var lead: String?
+        public var text: String
+        public var children: [String]
+    }
+
+    /// The items of a section body. Lines indented two spaces continue the line before
+    /// (CHANGELOG lines are wrapped by hand); "  - " lines are sub-items.
+    public static func items(_ body: String) -> [Item] {
+        var raw: [(text: String, children: [String])] = []
+        func join(_ a: String, _ b: String) -> String {
+            guard let last = a.last, let first = b.first else { return a + b }
+            // Chinese runs straight on; Latin words get a space.
+            return (last.isASCII && first.isASCII) ? a + " " + b : a + b
+        }
+        for line in body.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            if line.hasPrefix("- ") {
+                raw.append((String(trimmed.dropFirst(2)), []))
+            } else if trimmed.hasPrefix("- "), !raw.isEmpty {
+                raw[raw.count - 1].children.append(String(trimmed.dropFirst(2)))
+            } else if !raw.isEmpty {
+                if raw[raw.count - 1].children.isEmpty {
+                    raw[raw.count - 1].text = join(raw[raw.count - 1].text, trimmed)
+                } else {
+                    let index = raw[raw.count - 1].children.count - 1
+                    raw[raw.count - 1].children[index] = join(raw[raw.count - 1].children[index], trimmed)
+                }
+            } else {
+                raw.append((trimmed, []))
+            }
+        }
+        return raw.map { entry in
+            if let colon = entry.text.firstIndex(of: "："), entry.text.distance(from: entry.text.startIndex, to: colon) <= 24 {
+                let rest = entry.text[entry.text.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                return Item(lead: String(entry.text[..<colon]), text: rest, children: entry.children)
+            }
+            return Item(lead: nil, text: entry.text, children: entry.children)
+        }
+    }
+
     /// "## 0.9.0 — 2026-10-27" sections whose version is newer than `installed`, newest first.
     public static func sections(in changelog: String, newerThan installed: String) -> [Section] {
         var result: [Section] = []
