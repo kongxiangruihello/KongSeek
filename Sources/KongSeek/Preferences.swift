@@ -80,6 +80,26 @@ enum Preferences {
         CharacterEquivalents(lines: quoteEquivalentLines)
     }
 
+    /// 同义词与别名 (0.35): "王守仁=王阳明=阳明" lines; the common names until edited.
+    static var searchAliasLines: [String] {
+        get { defaults.stringArray(forKey: "searchAliases") ?? SearchAliases.standardLines }
+        set {
+            defaults.set(newValue, forKey: "searchAliases")
+            cachedAliases = nil
+        }
+    }
+
+    private static var cachedAliases: (lines: [String], aliases: SearchAliases)?
+
+    /// Parsed once per change of the lines (the pinyin of each name is worked out then).
+    static var searchAliases: SearchAliases {
+        let lines = searchAliasLines
+        if let cachedAliases, cachedAliases.lines == lines { return cachedAliases.aliases }
+        let aliases = SearchAliases(lines: lines)
+        cachedAliases = (lines, aliases)
+        return aliases
+    }
+
     /// 常用本的批量规则 (0.34): keywords in the file name, then formats, earlier first.
     static var editionRules: EditionRules {
         get {

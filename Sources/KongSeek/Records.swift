@@ -67,10 +67,41 @@ enum Records {
         let preferredBefore = preferred
         for move in moves { preferred.move(from: move.from, to: move.to) }
         if preferred != preferredBefore { editions = preferred }
+        var choices = queryChoices
+        let choicesBefore = choices
+        for move in moves { choices.move(from: move.from, to: move.to) }
+        if choices != choicesBefore { queryChoices = choices }
         var books = BookRecords.current()
         let booksBefore = books
         for move in moves { books.move(from: move.from, to: move.to) }
         if books != booksBefore { try? books.save() }
+    }
+
+    // MARK: 按查询记住选择 (0.35)
+
+    private static var choicesURL: URL { folder.appendingPathComponent("query-choices.json") }
+    private static var cachedChoices: QueryChoices?
+    private static let choicesQueue = DispatchQueue(label: "KongSeek.query-choices", qos: .utility)
+
+    static var queryChoices: QueryChoices {
+        get {
+            if let cachedChoices { return cachedChoices }
+            let loaded = QueryChoices.load(from: choicesURL)
+            cachedChoices = loaded
+            return loaded
+        }
+        set {
+            cachedChoices = newValue
+            let url = choicesURL
+            choicesQueue.async { try? newValue.save(to: url) }
+        }
+    }
+
+    /// Remembers that `path` was opened after searching `query`.
+    static func recordChoice(query: String, path: String) {
+        var choices = queryChoices
+        choices.record(query: query, path: path)
+        queryChoices = choices
     }
 
     // MARK: 常用本 (0.28)
@@ -158,6 +189,9 @@ enum Records {
             trash = log
         }
         Preferences.forget(url.path)
+        var choices = queryChoices
+        choices.remove(url.path)
+        queryChoices = choices
         return place
     }
 

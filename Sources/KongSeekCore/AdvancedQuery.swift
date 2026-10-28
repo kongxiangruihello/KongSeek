@@ -11,6 +11,8 @@ import Foundation
 ///     regex:^第.+讲   the name (or, when the pattern has "/", the path) matches (-regex: excludes)
 ///     file:  folder:   only files / only folders
 ///     dupe:            only files whose name occurs more than once among the results
+///     打开过:7d  opened:7d  opened from KongSeek in that range (same values as dm:);
+///                      打开过: alone = ever (0.35, after Everything's daterun:)
 ///
 /// Operators combine with AND. Values with spaces go in quotes: in:"~/My Folder".
 public struct AdvancedFilters: Sendable {
@@ -22,6 +24,11 @@ public struct AdvancedFilters: Sendable {
     public var kind: KindOnly = .any
     public var dupe = false
     public var attributes = AttributeFilters()
+    /// 打开过: (0.35): only items opened from KongSeek, when given since `openedFrom`
+    /// and before `openedBefore`. Applied by the app, which keeps the open history.
+    public var opened = false
+    public var openedFrom: Date?
+    public var openedBefore: Date?
     /// Shown under the results ("在 ~/Documents 中", "大小 ≥ 10 MB").
     public var descriptions: [String] = []
     /// Problems with operator values; any makes the query invalid.
@@ -31,11 +38,20 @@ public struct AdvancedFilters: Sendable {
 
     public var isEmpty: Bool {
         pathTerms.isEmpty && excludedPathTerms.isEmpty && scopes.isEmpty && regexes.isEmpty && excludedRegexes.isEmpty
-            && kind == .any && !dupe && !attributes.isActive
+            && kind == .any && !dupe && !attributes.isActive && !opened
+    }
+
+    /// Whether an item last opened at `date` passes 打开过:.
+    public func acceptsOpened(at date: Date?) -> Bool {
+        guard opened else { return true }
+        guard let date else { return false }
+        if let openedFrom, date < openedFrom { return false }
+        if let openedBefore, date >= openedBefore { return false }
+        return true
     }
 
     /// Operator names the lexer recognizes (besides ext:, which 3.2 already had).
-    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "dc", "datecreated", "regex", "dupe", "file", "folder"]
+    static let operatorNames = ["path", "in", "infolder", "parent", "size", "dm", "datemodified", "dc", "datecreated", "regex", "dupe", "file", "folder", "opened", "打开过"]
 
     /// Applies one operator token. Returns a value to treat as an ordinary word
     /// (file:合同 = files whose name matches 合同), if any.
@@ -112,6 +128,20 @@ public struct AdvancedFilters: Sendable {
             if kind == .any { descriptions.append(name == "file" ? "只看文件" : "只看文件夹") }
             kind = wanted
             return value.isEmpty ? nil : value
+        case "opened", "打开过":
+            guard noExclusion() else { return nil }
+            opened = true
+            if value.isEmpty {
+                descriptions.append("打开过的")
+                return nil
+            }
+            guard let range = Self.dateRange(value, now: now, calendar: calendar) else {
+                errors.append("无法识别 打开过:\(value)（例：打开过:7d、打开过:thisweek、打开过:2024-10）")
+                return nil
+            }
+            if let start = range.start { openedFrom = max(openedFrom ?? start, start) }
+            if let end = range.end { openedBefore = min(openedBefore ?? end, end) }
+            descriptions.append("打开过：\(value)")
         case "dupe":
             guard noExclusion() else { return nil }
             if !dupe { descriptions.append("同名文件") }

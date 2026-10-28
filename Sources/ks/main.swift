@@ -78,7 +78,16 @@ struct Row {
 /// items that no longer exist. `limit` 0 means all. `more` is true when matches
 /// were left out by the limit.
 func search(_ query: SearchQuery, in index: NameIndex, precision: MatchPrecision, limit: Int) -> (rows: [Row], more: Bool) {
-    var hits = index.refined(index.search(query, precision: precision), query: query)
+    // 打开过: (0.35) — the app's record of what was opened from it.
+    var within: [Int32]?
+    if query.advanced.opened {
+        let opened = UserDefaults(suiteName: "com.kongxiangrui.KongSeek")?.dictionary(forKey: "lastOpened") as? [String: Double] ?? [:]
+        within = opened.compactMap { path, time -> Int32? in
+            query.advanced.acceptsOpened(at: Date(timeIntervalSince1970: time)) ? index.id(forPath: path) : nil
+        }.sorted()
+        if within?.isEmpty ?? true { return ([], false) }
+    }
+    var hits = index.refined(index.search(query, precision: precision, within: within), query: query)
     if !query.advanced.dupe {
         hits.sort { a, b in
             if a.score != b.score { return a.score > b.score }

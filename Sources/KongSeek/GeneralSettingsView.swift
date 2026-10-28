@@ -120,7 +120,10 @@ final class GeneralSettingsView: NSView {
         historyCheckbox.action = #selector(historyChanged)
         let clearHistory = NSButton(title: "清除搜索历史", target: self, action: #selector(clearHistory))
         clearHistory.controlSize = .small
-        let historyRow = NSStackView(views: [historyCheckbox, clearHistory])
+        let aliasesButton = NSButton(title: "同义词与别名…", target: self, action: #selector(editAliases))
+        aliasesButton.controlSize = .small
+        aliasesButton.toolTip = "搜“阳明”也找到“王守仁”，搜“四书”也找到《论语》《孟子》等；文件名搜索和全文搜索都用"
+        let historyRow = NSStackView(views: [historyCheckbox, clearHistory, aliasesButton])
         historyRow.spacing = 10
         for style in Citation.Style.allCases { citationPopup.addItem(withTitle: style.title) }
         citationPopup.target = self
@@ -332,6 +335,35 @@ final class GeneralSettingsView: NSView {
             }
         }
         if kongFolioLabel.stringValue != text { kongFolioLabel.stringValue = text }
+    }
+
+    /// 同义词与别名 (0.35): one group per line, "王守仁=王阳明=阳明", or "四书>论语,孟子,大学,中庸".
+    @objc private func editAliases() {
+        let alert = NSAlert()
+        alert.messageText = "同义词与别名"
+        alert.informativeText = "每行一组。“王守仁=王阳明=阳明”：搜其中任一个，文件名或正文中有其他几个的也找到。"
+            + "“四书>论语,孟子,大学,中庸”：搜“四书”也找到后面几种，反过来不算。繁简不必分写；全拼也可（yangming 即 阳明）。"
+            + "这些名称排在按原词找到的文件之后。"
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 420, height: 280)
+        scroll.borderType = .bezelBorder
+        let text = scroll.documentView as! NSTextView
+        text.font = .systemFont(ofSize: 13)
+        text.isRichText = false
+        text.string = Preferences.searchAliasLines.joined(separator: "\n")
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "恢复常用表")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let lines = text.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            Preferences.searchAliasLines = SearchAliases(lines: lines).lines
+        case .alertThirdButtonReturn:
+            Preferences.searchAliasLines = SearchAliases.standardLines
+        default:
+            break
+        }
     }
 
     /// 通假与古今字表 (0.29): one pair per line, "说=悦".

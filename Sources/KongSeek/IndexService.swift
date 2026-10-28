@@ -39,6 +39,8 @@ struct QueryFill: Equatable {
     var explanation: String
     var isSaved = false
     var isHistory = false
+    /// "添加常用收藏搜索…" (0.35): opens the list of preset searches.
+    var isPresetPicker = false
 }
 
 struct SearchOutcome {
@@ -55,6 +57,8 @@ struct SearchOutcome {
     var matchCount = 0
     var highlightWords: [String] = []
     var notes: [String] = []
+    /// Not matches but suggestions (0.35): names that sound alike or differ in one character.
+    var isSuggestion = false
 }
 
 enum IndexState: Equatable {
@@ -228,12 +232,14 @@ final class IndexService {
         let counts = Preferences.openCounts
         let opened = Preferences.lastOpened
         let archives = Preferences.archiveSearch ? self.archives : nil
+        let aliases = Preferences.searchAliases
+        let chosen = Records.queryChoices.preferred(for: text)
         queue.async { [weak self] in
             guard let self else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             var outcome = trimmed.isEmpty
                 ? Self.recentItems(counts: counts, opened: opened)
-                : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts)
+                : self.runSearch(trimmed, precision: precision, limit: limit, counts: counts, opened: opened, aliases: aliases, chosen: chosen)
             if !trimmed.isEmpty, let archives {
                 Self.mergeArchiveHits(into: &outcome, query: SearchQuery(trimmed), archives: archives, limit: limit)
             }
@@ -362,14 +368,103 @@ final class IndexService {
         outcome.matchCount += hits.count
     }
 
-    private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int]) -> SearchOutcome {
+    private func runSearch(_ trimmed: String, precision: MatchPrecision, limit: Int, counts: [String: Int],
+                           opened: [String: Double] = [:], aliases: SearchAliases = .none, chosen: [String] = []) -> SearchOutcome {
         guard let index, let session else { return SearchOutcome() }
         let query = SearchQuery(trimmed)
-        return rank(index.refined(session.search(query, precision: precision), query: query), query: query, index: index, limit: limit, counts: counts)
+        // 打开过: (0.35) searches only what was opened from KongSeek, in that time.
+        var within: [Int32]?
+        if query.advanced.opened {
+            within = opened.compactMap { path, time -> Int32? in
+                query.advanced.acceptsOpened(at: Date(timeIntervalSince1970: time)) ? index.id(forPath: path) : nil
+            }.sorted()
+            if within?.isEmpty ?? true {
+                var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions)
+                outcome.notes.append("没有符合条件的打开记录（只记从 KongSeek 打开的文件）")
+                return outcome
+            }
+        }
+        var hits = within == nil
+            ? index.refined(session.search(query, precision: precision), query: query)
+            : index.refined(index.search(query, precision: precision, within: within), query: query)
+        var extraWords: [String] = []
+        var extraNotes: [String] = []
+
+        // 同义词与别名 (0.35): files named with another name of the person or book,
+        // one relevance level below those named as typed.
+        if query.valid, !query.words.isEmpty {
+            let expansions = aliases.expansions(of: query.words)
+            if !expansions.isEmpty {
+                var best = Dictionary(hits.map { ($0.id, $0.score) }, uniquingKeysWith: { max($0, $1) })
+                for words in expansions {
+                    let alternative = query.replacingWords(words)
+                    for hit in index.refined(index.search(alternative, precision: precision, within: within), query: alternative) {
+                        let score = hit.score >= 100_000 ? hit.score - 100_000 : hit.score - 50
+                        if score > (best[hit.id] ?? Int.min) { best[hit.id] = score }
+                    }
+                }
+                hits = best.map { SearchHit(id: $0.key, score: $0.value) }
+                for (position, word) in query.words.enumerated() {
+                    let others = Set(expansions.map { $0[position] }).subtracting([word])
+                    guard !others.isEmpty else { continue }
+                    let ordered = aliases.alternatives(for: word).filter { others.contains($0) }
+                    extraWords += ordered
+                    extraNotes.append("同义词：\(word) = " + ordered.joined(separator: "、"))
+                }
+            }
+        }
+
+        // 搜不到时的建议 (0.35): names that sound the same or differ in one character.
+        if hits.isEmpty, query.valid, !query.words.isEmpty, within == nil {
+            let suggested = suggestions(for: query, index: index)
+            if !suggested.hits.isEmpty {
+                var outcome = rank(suggested.hits, query: query, index: index, limit: limit, counts: counts)
+                outcome.highlightWords += suggested.words
+                outcome.notes.insert("没有名称含“\(query.words.joined(separator: " "))”的文件；以下是读音相同或只差一个字的名称，您是不是要找它们", at: 0)
+                outcome.isSuggestion = true
+                return outcome
+            }
+        }
+        var outcome = rank(hits, query: query, index: index, limit: limit, counts: counts, chosen: chosen)
+        outcome.highlightWords += extraWords
+        outcome.notes += extraNotes
+        return outcome
+    }
+
+    /// Names that sound like the words (同音字), or hold a word with one character
+    /// different, missing or added; for when nothing matches as typed.
+    private func suggestions(for query: SearchQuery, index: NameIndex) -> (hits: [SearchHit], words: [String]) {
+        var best: [Int32: Int] = [:]
+        var words: [String] = []
+        func add(_ found: [SearchHit], _ alternative: SearchQuery, keep: (Int32) -> Bool) {
+            for hit in index.refined(found, query: alternative) where keep(hit.id) {
+                best[hit.id] = max(best[hit.id] ?? Int.min, hit.score)
+            }
+        }
+        if let spelled = SpellingVariants.pinyinWords(query.words) {
+            let alternative = query.replacingWords(spelled)
+            add(index.search(alternative, precision: .fuzzyName), alternative) { _ in true }
+            words += spelled
+        }
+        var tries = 0
+        for (position, word) in query.words.enumerated() {
+            for parts in SpellingVariants.gaps(word) where tries < 12 {
+                tries += 1
+                var replaced = query.words
+                replaced.replaceSubrange(position...position, with: parts)
+                let alternative = query.replacingWords(replaced)
+                add(index.search(alternative, precision: .fuzzyName), alternative) { id in
+                    SpellingVariants.withinOneEdit(index.name(of: id), of: word)
+                }
+                words += parts
+            }
+        }
+        return (best.map { SearchHit(id: $0.key, score: $0.value) }, words)
     }
 
     /// Orders hits for display and applies the attribute filters (type, date, size, tag).
-    private func rank(_ hits: [SearchHit], query: SearchQuery, index: NameIndex, limit: Int, counts: [String: Int]) -> SearchOutcome {
+    /// `chosen` (0.35): files opened after this very query before, put first.
+    private func rank(_ hits: [SearchHit], query: SearchQuery, index: NameIndex, limit: Int, counts: [String: Int], chosen: [String] = []) -> SearchOutcome {
         var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions)
         outcome.matchCount = hits.count
         // Highest score first. Among matches that are equally good (the same relevance
@@ -441,6 +536,19 @@ final class IndexService {
             }
             if examined > 3_000 { break }
             position = end
+        }
+        if !chosen.isEmpty {
+            let found = Set(hits.map(\.id))
+            for path in chosen.reversed() {
+                if let current = items.firstIndex(where: { $0.path == path && !$0.isInArchive }) {
+                    items.insert(items.remove(at: current), at: 0)
+                } else if let id = index.id(forPath: path), found.contains(id),
+                          !query.needsMetadata || query.acceptsMetadata(EntryMetadata.read(path: path)) {
+                    let flags = index.flags(of: id)
+                    items.insert(ResultItem(path: path, name: index.name(of: id), isFolder: flags.contains(.directory) && !flags.contains(.package), score: Int.max / 2), at: 0)
+                }
+            }
+            items = Array(items.prefix(limit))
         }
         outcome.items = items
         return outcome

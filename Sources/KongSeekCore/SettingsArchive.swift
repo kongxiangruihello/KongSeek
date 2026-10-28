@@ -18,12 +18,12 @@ public struct SettingsArchive {
         "ocrEnabled", "ocrFolders", "ocrPageLimit", "ocrOnlyOnPower", "ocrDownloadFromICloud", "ocrUseLiveText",
         "clipboardEnabled", "clipboardShortcut", "clipboardShortcutCleared", "clipboardRetentionDays",
         "clipboardMaximumItems", "autoPaste", "clipboardOCR", "clipboardExcludedApps", "cleanupOperations",
-        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "quoteShortcut", "quoteShortcutCleared", "pdfReader", "quoteEquivalents", "editionKeywords", "editionFormats", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",
+        "quickLinks", "lookupShortcut", "lookupShortcutCleared", "quoteShortcut", "quoteShortcutCleared", "pdfReader", "quoteEquivalents", "searchAliases", "editionKeywords", "editionFormats", "snippetExpansion", "autoCheckUpdates", "updateProxy", "mcpReadContent", "savedSearches", "keepSearchHistory", "savedSearchNames", "groupByFolder", "citationStyle",
     ]
 
     /// KongSeek's own records carried too (0.29): book page numbering, confirmed book
     /// details, 常用本, saved file lists and reading progress — by file name.
-    public static let recordNames: Set<String> = ["page-numbers.json", "book-records.json", "preferred-editions.json", "file-lists.json", "reading-log.json"]
+    public static let recordNames: Set<String> = ["page-numbers.json", "book-records.json", "preferred-editions.json", "file-lists.json", "reading-log.json", "query-choices.json"]
 
     public var defaults: [String: Any]
     public var snippets: [TextSnippet]

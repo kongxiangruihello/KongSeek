@@ -73,6 +73,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private var spotlightFinished = false
     private var ocrItems: [ResultItem] = []
     private var contentQuery = SearchQuery("")
+    /// Other names of the words searched in full text (0.35), highlighted too.
+    private var contentAliasWords: [String] = []
     /// Web search rows shown above the results ("hd 仁").
     private var webRows: [ResultItem] = []
     private let definitionScroll = NSTextView.scrollableTextView()
@@ -483,7 +485,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func runContentSearch() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let query = SearchQuery(text)
-        guard let queryString = SpotlightQuery.content(for: query) else {
+        let aliases = Preferences.searchAliases
+        guard let queryString = SpotlightQuery.content(for: query, aliases: aliases) else {
             contentToken += 1
             contentSearch.stop()
             var empty = SearchOutcome()
@@ -505,10 +508,17 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
         // Recognized text of scans, searched in memory off the main thread.
         let store = ocr.store
-        let needles = query.highlightWords
+        // The words as typed, then with other names of a person or book (0.35).
+        let needleSets = [query.highlightWords] + aliases.expansions(of: query.words).map { $0 + query.phrases }
+        contentAliasWords = Array(Set(needleSets.flatMap { $0 }).subtracting(query.highlightWords))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let hits = store.search(needles, limit: 300) { path in
-                !rules.excludes(path: path, roots: ocrRoots)
+            var seenPaths = Set<String>()
+            var hits: [OCRHit] = []
+            for needles in needleSets {
+                for hit in store.search(needles, limit: 300, accept: { path in !rules.excludes(path: path, roots: ocrRoots) })
+                where seenPaths.insert(hit.path).inserted {
+                    hits.append(hit)
+                }
             }
             let items = hits.compactMap { hit -> ResultItem? in
                 let name = (hit.path as NSString).lastPathComponent
@@ -552,7 +562,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let query = contentQuery
         var seen = Set(ocrItems.map(\.path))
         let merged = ocrItems + spotlightItems.filter { seen.insert($0.path).inserted }
-        var outcome = SearchOutcome(highlightWords: query.highlightWords, notes: query.descriptions + query.natural.descriptions + (note.map { [$0] } ?? []))
+        var outcome = SearchOutcome(highlightWords: query.highlightWords + contentAliasWords, notes: query.descriptions + query.natural.descriptions + (note.map { [$0] } ?? []))
+        if !contentAliasWords.isEmpty { outcome.notes.append("同义词：" + contentAliasWords.joined(separator: "、")) }
         outcome.isContent = true
         outcome.gathering = !spotlightFinished
         outcome.matchCount = merged.count
@@ -906,10 +917,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         guard row >= 0 && row < results.count, !results[row].isHeader else { return }
         let item = results[row]
         if let fill = item.fill {
+            if fill.isPresetPicker { showPresetMenu(); return }
             apply(fill)
             return
         }
         rememberSearch()
+        rememberChoice(item)
         if let link = item.link {
             hide()
             NSWorkspace.shared.open(link)
@@ -931,6 +944,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private func revealSelected() {
         guard let item = selectedItem, item.isFile else { return }
         rememberSearch()
+        rememberChoice(item)
         hide()
         actions.reveal(archiveOrSelf(item))
     }
@@ -1108,6 +1122,57 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         runSearch()
     }
 
+    /// Which file was opened after this name search (0.35), so the same query puts it first.
+    private func rememberChoice(_ item: ResultItem) {
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !contentMode, browsedFolder == nil, item.isFile, !item.isInArchive, !text.isEmpty, text != "?", text != "？",
+              DictionaryLookup.word(in: text) == nil else { return }
+        Records.recordChoice(query: text, path: item.path)
+    }
+
+    /// 添加常用收藏搜索 (0.35): the preset searches, each added to 收藏 or taken out again.
+    private func showPresetMenu() {
+        let menu = NSMenu()
+        let header = NSMenuItem(title: "常用搜索：选一项加入收藏，再选一次移除", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        for preset in SavedSearchPresets.all {
+            let saved = Preferences.savedSearches.contains(preset.query)
+            let item = ClosureMenuItem(title: preset.name + "　" + preset.query, key: "") { [weak self] in
+                var searches = Preferences.savedSearches
+                var names = Preferences.savedSearchNames
+                if searches.contains(preset.query) {
+                    searches.removeAll { $0 == preset.query }
+                    names[preset.query] = nil
+                } else {
+                    searches.append(preset.query)
+                    names[preset.query] = preset.name
+                }
+                Preferences.savedSearches = searches
+                Preferences.savedSearchNames = names
+                self?.runSearch()
+            }
+            item.state = saved ? .on : .off
+            item.toolTip = preset.detail
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "全部加入收藏", key: "") { [weak self] in
+            var searches = Preferences.savedSearches
+            var names = Preferences.savedSearchNames
+            for preset in SavedSearchPresets.all where !searches.contains(preset.query) {
+                searches.append(preset.query)
+                names[preset.query] = preset.name
+            }
+            Preferences.savedSearches = searches
+            Preferences.savedSearchNames = names
+            self?.runSearch()
+        })
+        let row = max(0, table.selectedRow)
+        let rect = table.rect(ofRow: row)
+        menu.popUp(positioning: nil, at: NSPoint(x: rect.minX + 40, y: rect.maxY), in: table)
+    }
+
     /// Searches that led somewhere: remembered when a result is opened or revealed.
     private func rememberSearch() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1132,10 +1197,20 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     private var savedSearchRows: [ResultItem] {
         let names = Preferences.savedSearchNames
-        return Preferences.savedSearches.map { text in
+        let saved = Preferences.savedSearches
+        var rows = saved.map { text in
             ResultItem(path: "saved:" + text, name: names[text] ?? text, isFolder: false, score: 0,
                        fill: QueryFill(text: text, replace: true, select: nil, explanation: names[text] == nil ? "收藏的搜索" : "收藏的搜索：\(text)", isSaved: true))
         }
+        // Preset searches not yet added (0.35).
+        let missing = SavedSearchPresets.all.filter { !saved.contains($0.query) }
+        if !missing.isEmpty {
+            rows.append(ResultItem(path: "presets:", name: "添加常用收藏搜索…", isFolder: false, score: 0,
+                                   fill: QueryFill(text: "", replace: true, select: nil,
+                                                   explanation: missing.prefix(4).map(\.name).joined(separator: "、") + "等，选一项即加入收藏",
+                                                   isPresetPicker: true)))
+        }
+        return rows
     }
 
     /// ⌘K on a saved search: name it (a course, a project), or remove it (0.19).
@@ -1543,7 +1618,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             location = fill.isSaved
                 ? (item.name == fill.text ? "" : fill.text + " · ") + "收藏的搜索 · ↩ 搜索 · ⌘K 命名"
                 : (fill.isHistory ? "搜索历史 · ↩ 再次搜索 · ⌘⌫ 删除" : fill.explanation)
-            let symbol = fill.isSaved ? "star" : (fill.isHistory ? "clock.arrow.circlepath" : "text.magnifyingglass")
+            let symbol = fill.isPresetPicker ? "plus.circle" : (fill.isSaved ? "star" : (fill.isHistory ? "clock.arrow.circlepath" : "text.magnifyingglass"))
             image = NSImage(systemSymbolName: symbol, accessibilityDescription: fill.explanation) ?? NSImage()
         } else if let link = item.link {
             location = link.host ?? link.scheme ?? ""
@@ -1599,7 +1674,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let selected = selectedItem
         if hitPreview.document?.documentURL?.path != selected?.path { hideHitPreview() }
         definitionScroll.isHidden = selected?.isFile ?? true
-        if let item = selected, let fill = item.fill {
+        if let item = selected, let fill = item.fill, fill.isPresetPicker {
+            definitionView.string = "↩ 或双击：列出常用搜索，选一项加入收藏（再选一次移除）。\n\n" + SavedSearchPresets.all.map { "\($0.name)：\($0.query)\n  \($0.detail)" }.joined(separator: "\n")
+            definitionView.scrollToBeginningOfDocument(nil)
+        } else if let item = selected, let fill = item.fill {
             definitionView.string = fill.isSaved || fill.isHistory
                 ? "↩ 搜索：\(fill.text)\n\n⌘⌫ " + (fill.isSaved ? "从收藏中移除。在任意搜索时按 ⌘S 可收藏当前搜索。" : "从搜索历史中删除。在 设置 › 通用 可关闭或清除搜索历史。")
                 : "\(fill.text)\n\n\(fill.explanation)\n\n↩ 或单击：加入搜索框" + (fill.select.map { "，并选中“\($0)”方便直接改写" } ?? "") + "。"

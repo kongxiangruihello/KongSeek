@@ -248,6 +248,26 @@ public struct SearchQuery: Sendable {
         self.valid = valid
     }
 
+    /// The same query with other words (0.35: a synonym, a pinyin spelling, a
+    /// word split around a doubtful character); filters, phrases and exclusions kept.
+    public func replacingWords(_ newWords: [String]) -> SearchQuery {
+        SearchQuery(copying: self, words: newWords)
+    }
+
+    private init(copying other: SearchQuery, words: [String]) {
+        advanced = other.advanced
+        natural = other.natural
+        filter = other.filter
+        self.words = words
+        phrases = other.phrases
+        excluded = other.excluded
+        excludedPhrases = other.excludedPhrases
+        extensions = other.extensions
+        excludedExtensions = other.excludedExtensions
+        notes = other.notes
+        valid = other.valid
+    }
+
     /// Type, natural-language, size: and dm: filters, which need file attributes.
     public func acceptsMetadata(_ metadata: EntryMetadata, now: Date = Date()) -> Bool {
         filter.accepts(metadata) && natural.accepts(metadata, now: now) && advanced.attributes.accepts(metadata)

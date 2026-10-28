@@ -6,7 +6,8 @@ public enum SpotlightQuery {
     /// Query matching files whose text (or display name) contains every word and
     /// phrase, with ext:, type, date, size and tag filters. Nil without words.
     /// Excluded words (-草稿) are not expressible here; filter names afterwards.
-    public static func content(for query: SearchQuery) -> String? {
+    /// With `aliases` (0.35), a word also matches its other names (阳明 → 王守仁).
+    public static func content(for query: SearchQuery, aliases: SearchAliases = .none) -> String? {
         guard query.valid else { return nil }
         let terms = query.words + query.phrases
         guard !terms.isEmpty else { return nil }
@@ -14,7 +15,11 @@ public enum SpotlightQuery {
         // Chinese words are looked for in simplified and traditional form (繁简通搜).
         for word in query.words {
             // Word-prefix match in the text, as Finder's "contents" search does.
-            let alternatives = SearchText.scriptVariants(word).map(escape).map {
+            var forms: [String] = []
+            for name in [word] + aliases.alternatives(for: word) {
+                for variant in SearchText.scriptVariants(name) where !forms.contains(variant) { forms.append(variant) }
+            }
+            let alternatives = forms.map(escape).map {
                 "kMDItemTextContent == \"\($0)*\"cdw || kMDItemDisplayName == \"*\($0)*\"cd"
             }
             parts.append("(" + alternatives.joined(separator: " || ") + ")")

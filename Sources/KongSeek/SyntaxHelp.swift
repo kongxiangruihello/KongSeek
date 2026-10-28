@@ -29,6 +29,7 @@ enum SyntaxHelp {
         Entry(example: "dm:7d", explanation: "最近 7 天内修改的（也可 30d、2w、6m）", section: "时间与大小", select: "7d"),
         Entry(example: "dm:2024-10", explanation: "某年、某月或某天修改的；dm:>=2024-01-01、dm:2024-01..2024-03", section: "时间与大小", select: "2024-10"),
         Entry(example: "dc:7d", explanation: "最近 7 天内创建的；下载的文件即下载时间，如 dc:7d ext:pdf 找最近下载的 PDF", section: "时间与大小", select: "7d"),
+        Entry(example: "打开过:7d", explanation: "最近 7 天从 KongSeek 打开过的；只写 打开过: 为所有打开过的（0.35）", section: "时间与大小", select: "7d"),
         Entry(example: "最近一周", explanation: "也可：今天、昨天、近 3 天", section: "时间与大小"),
         Entry(example: "size:>10mb", explanation: "按大小；size:1mb..20mb、size:<500kb、size:empty", section: "时间与大小", select: ">10mb"),
         Entry(example: "标签:工作", explanation: "带某个访达标签（也可写 #工作）", section: "时间与大小", select: "工作"),
