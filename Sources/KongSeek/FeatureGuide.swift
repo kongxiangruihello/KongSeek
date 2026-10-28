@@ -46,9 +46,9 @@ enum FeatureGuide {
               how: "直接搜索；设置 › 索引 中开关", action: .openSearch, keywords: "zip 解压"),
 
         // 阅读与引文
-        Entry(category: "阅读与引文", title: "引文查证", detail: "粘贴一句引文，找出它在哪本书、哪一页，标出“完全一致”或“近似”，可拷贝出处。粘贴含多处引号的一段文字，会拆开逐条查证。",
-              how: "菜单栏图标 › 写作与引文 › 引文查证；任何应用中选中文字按 ⌃⌥Q 直接查证", action: .quoteFinder, keywords: "出处 引用 核对 页码 一段 段落 多条"),
-        Entry(category: "阅读与引文", title: "稿件引文核对", detail: "选一篇稿件（Word、PowerPoint、文本、PDF），或粘贴一段文字，把其中引号内的引文逐条到书库查证，列成表，可导出 Excel。",
+        Entry(category: "阅读与引文", title: "引文查证", detail: "粘贴一句引文，找出它在哪本书、哪一页，标出“完全一致”或“近似”，可拷贝出处。粘贴含多处引号的一段文字，会拆开逐条查证。“历史”菜单可重看最近查过的引文和出处。",
+              how: "菜单栏图标 › 写作与引文 › 引文查证；任何应用中选中文字按 ⌃⌥Q 直接查证", action: .quoteFinder, keywords: "出处 引用 核对 页码 一段 段落 多条 历史 记录"),
+        Entry(category: "阅读与引文", title: "稿件引文核对", detail: "选一篇稿件（Word、PowerPoint、文本、PDF），或粘贴一段文字，把其中引号内的引文逐条到书库查证，列成表，可按书分组、导出 Excel。",
               how: "菜单栏图标 › 写作与引文 › 稿件引文核对", action: .manuscriptCheck, keywords: "论文 稿子 引号 批量 核对"),
         Entry(category: "阅读与引文", title: "出处汇编", detail: "输入一个词（如 天理、格物），把书库中每一处出现逐条列出：书名、书上页码、前后文；可导出 Word 或 Excel，作资料长编用。",
               how: "菜单栏图标 › 写作与引文 › 出处汇编；全文搜索时 ⌘K › 出处汇编", action: .concordance, keywords: "汇编 长编 资料 索引 关键词 出现 语料"),

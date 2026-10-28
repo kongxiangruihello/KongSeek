@@ -84,12 +84,13 @@ final class QuoteFinderModel: ObservableObject {
             guard let self else { return }
             self.running = false
             self.results = outcome.results
+            self.remember(text, results: outcome.results, inCloud: outcome.inCloud)
             self.guessPages()
             let exact = outcome.results.filter(\.exact).count
-            var text = lead + (outcome.results.isEmpty ? "没有找到出处。" : "找到 \(outcome.results.count) 处：完全一致 \(exact) 处，近似 \(outcome.results.count - exact) 处。")
-            if outcome.inCloud > 0 { text += "另有 \(outcome.inCloud) 个只在 iCloud 中的文件未核对。" }
-            if outcome.results.isEmpty { text += "只能查到 Spotlight 已建立内容索引的文件和已识别的扫描件。" }
-            self.status = text
+            var message = lead + (outcome.results.isEmpty ? "没有找到出处。" : "找到 \(outcome.results.count) 处：完全一致 \(exact) 处，近似 \(outcome.results.count - exact) 处。")
+            if outcome.inCloud > 0 { message += "另有 \(outcome.inCloud) 个只在 iCloud 中的文件未核对。" }
+            if outcome.results.isEmpty { message += "只能查到 Spotlight 已建立内容索引的文件和已识别的扫描件。" }
+            self.status = message
         }
     }
 
@@ -191,6 +192,60 @@ final class QuoteFinderModel: ObservableObject {
     func pasteFromClipboard() {
         if let text = NSPasteboard.general.string(forType: .string), !text.isEmpty { quote = text }
     }
+
+    // MARK: History (0.33)
+
+    @Published private(set) var history = QuoteHistory.load(from: QuoteFinderModel.historyURL)
+
+    private static var historyURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("KongSeek/quote-history.json")
+    }
+
+    private func remember(_ quote: String, results: [Result], inCloud: Int) {
+        history.add(QuoteHistory.Entry(quote: quote, results: results.map(\.source), inCloud: inCloud))
+        saveHistory()
+    }
+
+    private func saveHistory() {
+        let snapshot = history
+        DispatchQueue.global(qos: .utility).async { try? snapshot.save(to: QuoteFinderModel.historyURL) }
+    }
+
+    /// Shows an earlier lookup as it was found, without looking it up again.
+    func show(_ entry: QuoteHistory.Entry) {
+        if running { stop() }
+        quote = entry.quote
+        checkedText = entry.quote
+        results = entry.results.map { Result($0) }
+        checked = (0, 0)
+        guessPages()
+        var text = "\(entry.date.formatted(date: .abbreviated, time: .shortened)) 查证的结果（\(entry.summary)），未重新查找；点“查证”可重查。"
+        if entry.inCloud > 0 { text += "当时另有 \(entry.inCloud) 个只在 iCloud 中的文件未核对。" }
+        status = text
+    }
+
+    func forget(_ entry: QuoteHistory.Entry) {
+        history.remove(entry.quote)
+        saveHistory()
+    }
+
+    func clearHistory() {
+        history.removeAll()
+        saveHistory()
+        status = "已清除查证历史。"
+    }
+}
+
+extension QuoteFinderModel.Result {
+    /// A result kept in a session or the history (0.31, 0.33).
+    init(_ source: ManuscriptSession.Source) {
+        self.init(path: source.path, title: source.title, page: source.page, unit: source.unit, score: source.score,
+                  excerpt: source.excerpt, book: source.book, label: source.label)
+    }
+
+    var source: ManuscriptSession.Source {
+        ManuscriptSession.Source(path: path, title: title, page: page, unit: unit, score: score, excerpt: excerpt, book: book, label: label)
+    }
 }
 
 struct QuoteFinderView: View {
@@ -208,6 +263,21 @@ struct QuoteFinderView: View {
                 if let open = model.openManuscriptCheck {
                     Button("核对整篇稿件…") { open() }.help("把一篇稿件中引号内的引文逐条查证")
                 }
+                Menu("历史") {
+                    if model.history.entries.isEmpty {
+                        Text("还没有查证过的引文")
+                    }
+                    ForEach(Array(model.history.entries.prefix(40).enumerated()), id: \.offset) { _, entry in
+                        Button(entry.title + "　" + entry.summary) { model.show(entry) }
+                    }
+                    if !model.history.entries.isEmpty {
+                        Divider()
+                        Button("清除历史") { model.clearHistory() }
+                    }
+                }
+                .fixedSize()
+                .disabled(model.running)
+                .help("最近查证过的引文：选一条即显示当时找到的出处，不必重查")
                 Spacer()
                 if model.running {
                     if model.checked.total > 0 { Text("已核对 \(model.checked.done) / \(model.checked.total)").font(.caption).foregroundColor(.secondary) }

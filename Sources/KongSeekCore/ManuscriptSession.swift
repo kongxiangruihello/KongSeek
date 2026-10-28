@@ -60,6 +60,21 @@ public struct ManuscriptSession: Codable, Equatable, Sendable {
         return checked.first { Self.key($0.quote) == wanted }
     }
 
+    /// Passages pasted rather than read from a file (0.32) share one session under this name.
+    public static let pasted = "〔粘贴的文字〕"
+
+    /// This session with `newer` results added (0.33): those replace earlier results for the
+    /// same quotation; the rest are kept, the most recent first, up to `limit`.
+    public func merging(_ newer: [Checked], limit: Int = 1_000, saved date: Date = Date()) -> ManuscriptSession {
+        var seen = Set<String>()
+        var merged: [Checked] = []
+        for item in newer + checked where seen.insert(Self.key(item.quote)).inserted {
+            merged.append(item)
+            if merged.count >= limit { break }
+        }
+        return ManuscriptSession(manuscript: manuscript, saved: date, checked: merged)
+    }
+
     // MARK: Storage
 
     public static func url(for manuscript: String, in folder: URL) -> URL {

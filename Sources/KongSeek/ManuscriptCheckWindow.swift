@@ -59,6 +59,13 @@ final class ManuscriptCheckModel: ObservableObject {
     @Published private(set) var restoredFrom: Date?
     /// 推测书上页码 for sources without page numbering (0.31), by file.
     @Published private(set) var pageGuesses: [String: PageNumberGuess.Guess] = [:]
+    /// The results under the book each was found in, rather than in the manuscript's order (0.33).
+    @Published var byBook = false
+
+    /// The checked quotations by book (0.33); those without a source last.
+    var bookGroups: [BookGroups.Group<Row>] {
+        BookGroups.make(rows.filter { $0.state == .done }) { $0.best?.path }
+    }
 
     static let workers = 3
     private static var sessionsFolder: URL {
@@ -122,7 +129,8 @@ final class ManuscriptCheckModel: ObservableObject {
     }
 
     /// The quotations of a passage pasted into 引文查证 or here (0.32), checked like a
-    /// manuscript's but without a file: no Word copy, and the results are not kept.
+    /// manuscript's but without a file, so no Word copy. Since 0.33 the results are kept in
+    /// one session for all pasted passages: a quotation pasted again is not looked up again.
     func loadText(_ text: String, start startNow: Bool = false) {
         stop()
         manuscript = nil
@@ -133,10 +141,19 @@ final class ManuscriptCheckModel: ObservableObject {
         rows = quotes.enumerated().map { Row(number: $0.offset + 1, quote: $0.element) }
         if quotes.isEmpty {
             status = "粘贴的文字中没有引号内的引文（至少 \(ManuscriptQuotes.minimumLength) 个字）。单独一句引文请在“引文查证”中查。"
+            return
+        }
+        // Quotations pasted before keep their results (0.33).
+        let restored = restoreSession()
+        let waiting = rows.count - restored
+        if restored > 0 {
+            status = "粘贴的文字中有 \(quotes.count) 条引文，\(restored) 条以前查过，沿用当时的结果"
+                + (waiting > 0 ? "；\(waiting) 条待核对。" : "。要重新查找，点“全部重查”。")
+            guessPages()
         } else {
             status = "粘贴的文字中有 \(quotes.count) 条引文，点“开始核对”。"
-            if startNow { start() }
         }
+        if startNow && waiting > 0 { start() }
     }
 
     func pasteText() {
@@ -193,14 +210,22 @@ final class ManuscriptCheckModel: ObservableObject {
 
     /// Results kept from the last time this manuscript was checked, for quotations it still
     /// has (by their words); returns how many were restored.
+    /// The session of the manuscript, or the one all pasted passages share (0.33).
+    private var sessionName: String? {
+        if let manuscript { return manuscript.path }
+        return pastedTitle == nil ? nil : ManuscriptSession.pasted
+    }
+
+    private static let saveQueue = DispatchQueue(label: "KongSeek.manuscript-sessions", qos: .utility)
+
     private func restoreSession() -> Int {
         restoredFrom = nil
-        guard let manuscript, let session = ManuscriptSession.load(for: manuscript.path, in: Self.sessionsFolder) else { return 0 }
+        guard let name = sessionName, let session = ManuscriptSession.load(for: name, in: Self.sessionsFolder) else { return 0 }
         var restored = 0
         for index in rows.indices {
             guard let checked = session.result(for: rows[index].quote.text) else { continue }
             rows[index].state = .done
-            rows[index].best = checked.source.map(Self.result)
+            rows[index].best = checked.source.map { QuoteLookup.Result($0) }
             rows[index].others = checked.others
             restored += 1
         }
@@ -208,21 +233,20 @@ final class ManuscriptCheckModel: ObservableObject {
         return restored
     }
 
-    private static func result(_ source: ManuscriptSession.Source) -> QuoteLookup.Result {
-        QuoteLookup.Result(path: source.path, title: source.title, page: source.page, unit: source.unit, score: source.score,
-                           excerpt: source.excerpt, book: source.book, label: source.label)
-    }
-
     private func saveSession() {
-        guard let manuscript else { return }
+        guard let name = sessionName else { return }
         let checked = rows.filter { $0.state == .done }.map { row in
-            ManuscriptSession.Checked(quote: row.quote.text, source: row.best.map {
-                ManuscriptSession.Source(path: $0.path, title: $0.title, page: $0.page, unit: $0.unit, score: $0.score,
-                                         excerpt: $0.excerpt, book: $0.book, label: $0.label)
-            }, others: row.others)
+            ManuscriptSession.Checked(quote: row.quote.text, source: row.best.map(\.source), others: row.others)
         }
-        let session = ManuscriptSession(manuscript: manuscript.path, checked: checked)
-        DispatchQueue.global(qos: .utility).async { try? session.save(in: ManuscriptCheckModel.sessionsFolder) }
+        let pasted = manuscript == nil
+        ManuscriptCheckModel.saveQueue.async {
+            let folder = ManuscriptCheckModel.sessionsFolder
+            // Pasted passages add to what earlier ones found; a manuscript's session is its own.
+            let session = pasted
+                ? (ManuscriptSession.load(for: name, in: folder) ?? ManuscriptSession(manuscript: name, checked: [])).merging(checked)
+                : ManuscriptSession(manuscript: name, checked: checked)
+            try? session.save(in: folder)
+        }
     }
 
     /// Checks every quotation again, the earlier results set aside.
@@ -550,13 +574,71 @@ struct ManuscriptCheckView: View {
                 }
             }
             Text(model.status).font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
-            if !model.rows.isEmpty { Text(model.summary).font(.caption).foregroundColor(.secondary) }
-            List(model.rows, selection: $model.selection) { row in
-                rowView(row)
+            if !model.rows.isEmpty {
+                HStack {
+                    Text(model.summary).font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Picker("", selection: $model.byBook) {
+                        Text("按稿中顺序").tag(false)
+                        Text("按书").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("按书分组：看出稿子主要引了哪几本书，哪本书目不全、哪条没用常用本")
+                }
+            }
+            List(selection: $model.selection) {
+                if model.byBook {
+                    ForEach(Array(model.bookGroups.enumerated()), id: \.offset) { _, group in
+                        Section(header: bookHeader(group)) {
+                            ForEach(group.items) { row in rowView(row) }
+                        }
+                    }
+                    let waiting = model.rows.filter { $0.state != .done }
+                    if !waiting.isEmpty {
+                        Section(header: Text("待核对（\(waiting.count) 条）").font(.callout.weight(.semibold))) {
+                            ForEach(waiting) { row in rowView(row) }
+                        }
+                    }
+                } else {
+                    ForEach(model.rows) { row in rowView(row) }
+                }
             }
         }
         .padding(16)
         .frame(minWidth: 860, minHeight: 560)
+    }
+
+    /// A book's heading when grouped by book (0.33): how often it is quoted, whether it is
+    /// the 常用本 or another edition is, and what its reference still lacks.
+    @ViewBuilder
+    private func bookHeader(_ group: BookGroups.Group<ManuscriptCheckModel.Row>) -> some View {
+        if let path = group.path, let best = group.items.first?.best {
+            let missing = best.book.map { Citation.make(Preferences.citationStyle, name: $0, fallbackTitle: $0.title).missing } ?? []
+            let preferred = Records.editions.preferred(forBookOf: path)
+            HStack(spacing: 8) {
+                Text("《\(best.book?.title ?? best.title)》").font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+                Text("\(group.items.count) 条").font(.caption).foregroundColor(.secondary)
+                if preferred == path {
+                    Text("常用本").font(.caption2.weight(.semibold)).foregroundColor(.accentColor)
+                } else if let other = preferred {
+                    Text("常用本是另一版本：\((other as NSString).lastPathComponent)").font(.caption).foregroundColor(.orange)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                if !missing.isEmpty {
+                    Text("书目缺" + missing.joined(separator: "、")).font(.caption).foregroundColor(.orange)
+                }
+                Spacer()
+                if !missing.isEmpty {
+                    Button("补全书目信息…") { BookLookupWindowController.shared.present(path: path) }.controlSize(.small)
+                }
+                Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) } label: { Image(systemName: "folder") }
+                    .buttonStyle(.borderless).help(SearchWindowController.displayLocation(of: path))
+            }
+        } else {
+            Text("未找到出处（\(group.items.count) 条）").font(.callout.weight(.semibold))
+        }
     }
 
     private func color(_ row: ManuscriptCheckModel.Row) -> Color {

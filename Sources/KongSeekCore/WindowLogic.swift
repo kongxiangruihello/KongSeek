@@ -95,3 +95,33 @@ public enum ReferenceList {
         return sorted.enumerated().map { "[\($0.offset + 1)] \($0.element.text)" }
     }
 }
+
+/// 稿件核对结果按书分组 (0.33): the quotations under the book each was found in, the
+/// book quoted most first (ties in the order the manuscript first quotes them), and the
+/// quotations without a source last.
+public enum BookGroups {
+    public struct Group<Item> {
+        /// Nil for the quotations without a source.
+        public var path: String?
+        public var items: [Item]
+    }
+
+    public static func make<Item>(_ items: [Item], path: (Item) -> String?) -> [Group<Item>] {
+        var order: [String] = []
+        var byPath: [String: [Item]] = [:]
+        var unsourced: [Item] = []
+        for item in items {
+            guard let key = path(item) else { unsourced.append(item); continue }
+            if byPath[key] == nil { order.append(key) }
+            byPath[key, default: []].append(item)
+        }
+        let firstSeen = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
+        let ranked = order.sorted { a, b in
+            let countA = byPath[a]?.count ?? 0, countB = byPath[b]?.count ?? 0
+            return countA != countB ? countA > countB : (firstSeen[a] ?? 0) < (firstSeen[b] ?? 0)
+        }
+        var groups: [Group<Item>] = ranked.map { Group(path: $0, items: byPath[$0] ?? []) }
+        if !unsourced.isEmpty { groups.append(Group(path: nil, items: unsourced)) }
+        return groups
+    }
+}
