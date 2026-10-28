@@ -26,8 +26,11 @@ public struct TextCache: Sendable {
         public var firstPage: Int
         public var isPaged: Bool
         public var unit: String
+        /// The PDF's own page numbers (0.27); nil in entries written before.
+        public var labels: [String]?
 
-        public init(path: String, stamp: Stamp, pages: [String], totalPages: Int, firstPage: Int, isPaged: Bool, unit: String) {
+        public init(path: String, stamp: Stamp, pages: [String], totalPages: Int, firstPage: Int, isPaged: Bool, unit: String, labels: [String]? = nil) {
+            self.labels = labels
             self.path = path
             self.stamp = stamp
             self.pages = pages

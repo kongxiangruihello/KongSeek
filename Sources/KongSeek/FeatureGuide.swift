@@ -7,7 +7,7 @@ import KongSeekCore
 enum FeatureGuide {
     enum Action: Equatable {
         case openSearch, search(String), clipboard, quoteFinder, manuscriptCheck, compare, fileList,
-             batchRename, duplicates, space, libraryCheck, scannedPDFs, status, settings, trashLog
+             batchRename, duplicates, space, libraryCheck, scannedPDFs, status, settings, trashLog, concordance
     }
 
     struct Entry: Identifiable {
@@ -50,6 +50,12 @@ enum FeatureGuide {
               how: "菜单栏图标 › 写作与引文 › 引文查证；任何应用中选中文字按 ⌃⌥Q 直接查证", action: .quoteFinder, keywords: "出处 引用 核对 页码"),
         Entry(category: "阅读与引文", title: "稿件引文核对", detail: "选一篇稿件（Word、文本、PDF），把其中引号内的引文逐条到书库查证，列成表，可导出 Excel。",
               how: "菜单栏图标 › 写作与引文 › 稿件引文核对", action: .manuscriptCheck, keywords: "论文 稿子 引号 批量 核对"),
+        Entry(category: "阅读与引文", title: "出处汇编", detail: "输入一个词（如 天理、格物），把书库中每一处出现逐条列出：书名、书上页码、前后文；可导出 Word 或 Excel，作资料长编用。",
+              how: "菜单栏图标 › 写作与引文 › 出处汇编；全文搜索时 ⌘K › 出处汇编", action: .concordance, keywords: "汇编 长编 资料 索引 关键词 出现 语料"),
+        Entry(category: "阅读与引文", title: "书上页码", detail: "引文出处、参考文献用书上印的页码：PDF 自带页码时直接用；扫描书设一次“PDF 第 N 页 = 书上第 M 页”，整本书自动换算。",
+              how: "引文查证、稿件核对结果旁“页码…”；全文搜索 ⌘K › 书上页码", action: .quoteFinder, keywords: "页码 印刷 页数 偏移 对应 注释"),
+        Entry(category: "阅读与引文", title: "稿件批注", detail: "稿件引文核对后，另存一份 Word：有异文、找不到出处的引文旁加批注，写明原文、出处和改正；原稿不动。",
+              how: "稿件引文核对 › 生成带批注的 Word", action: .manuscriptCheck, keywords: "批注 word docx 审稿 修订"),
         Entry(category: "阅读与引文", title: "逐字异文", detail: "引文查证和稿件核对中“近似”的结果逐字对照原文：错字划掉标红、原文用字标绿，脱字用〔〕补出，衍字划掉；可一键拷贝按原文改正的引文。",
               how: "引文查证、稿件引文核对的结果中", action: .quoteFinder, keywords: "异文 错字 脱字 衍字 校勘 改正 对照"),
         Entry(category: "阅读与引文", title: "拷贝引文", detail: "全文命中后拷贝命中的整句和出处（电子书带页码的 GB/T 7714 参考文献）。",

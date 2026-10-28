@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var manuscriptCheck: ManuscriptCheckWindowController?
     private var featureGuide: FeatureGuideWindowController?
     private var trashLog: TrashLogWindowController?
+    private var concordance: ConcordanceWindowController?
     /// Checks every few seconds whether background work is running, for the menu bar icon (0.24).
     private var busyTimer: Timer?
     private var shownBusy = false
@@ -58,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         searchWindow = SearchWindowController(service: service, ocr: ocr)
         searchWindow.onBatchRename = { [weak self] urls in self?.showBatchRename(adding: urls) }
         searchWindow.onFileList = { [weak self] source in self?.openFileList(source) }
+        searchWindow.onConcordance = { [weak self] text in self?.openConcordance(query: text) }
         archives = ArchiveService(cacheURL: support.appendingPathComponent("KongSeek/archive-index.json"))
         updater = Updater(supportDirectory: support.appendingPathComponent("KongSeek", isDirectory: true))
         updater.onChange = { [weak self] in
@@ -185,6 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             tasks.append(RunningTask(title: "引文查证", detail: checked.total > 0 ? "已核对 \(checked.done) / \(checked.total) 个文件" : "正在查找",
                                      stop: { window.model.stop() }, show: { window.present() }))
         }
+        if let window = concordance, window.model.running {
+            let checked = window.model.checked
+            tasks.append(RunningTask(title: "出处汇编", detail: "\(checked.done) / \(checked.total) 个文件，\(window.model.hitCount) 处", stop: { window.model.stop() },
+                                     show: { window.present() }))
+        }
         if let window = libraryCheck, window.model.running {
             let progress = window.model.progress
             tasks.append(RunningTask(title: "书库体检", detail: "\(progress.done) / \(progress.total) 个文件", stop: { window.model.stop() }, show: { window.present() }))
@@ -269,6 +276,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return parent
     }
 
+    @objc func openConcordanceWindow() { openConcordance(query: nil) }
+
+    func openConcordance(query: String?) {
+        if concordance == nil { concordance = ConcordanceWindowController(ocr: ocr.store) }
+        concordance?.present(query: query)
+    }
+
     @objc func openTrashLog() {
         if trashLog == nil { trashLog = TrashLogWindowController() }
         trashLog?.present()
@@ -340,6 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var writing = [
             item(quoteTitle, #selector(openQuoteFinder)),
             item("稿件引文核对…", #selector(openManuscriptCheck)),
+            item("出处汇编…", #selector(openConcordanceWindow)),
             item("两版讲义对比…", #selector(openCompare)),
             item("文件清单（书单与参考文献）…", #selector(chooseFileListFolder)),
         ]
@@ -755,6 +770,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .status: openStatus()
         case .settings: openSettings()
         case .trashLog: openTrashLog()
+        case .concordance: openConcordance(query: nil)
         }
     }
 

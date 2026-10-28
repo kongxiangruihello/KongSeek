@@ -45,6 +45,16 @@ public enum DocumentText {
         public var recognizedPages: [Int] = []
         /// What a page is called in headers: 页, or 张幻灯片 for presentations.
         public var unit = "页"
+        /// The page numbers the PDF itself gives its pages ("iii", "15"), one per entry of
+        /// `pages`; empty when the PDF gives none (0.27).
+        public var pageLabels: [String] = []
+
+        /// The PDF's own number for `page` (1-based, in the document), if it gives one.
+        public func label(ofPage page: Int) -> String? {
+            let index = page - firstPage
+            guard pageLabels.indices.contains(index), !pageLabels[index].isEmpty else { return nil }
+            return pageLabels[index]
+        }
 
         public init(pages: [String], totalPages: Int, firstPage: Int, isPaged: Bool, recognizedPages: [Int] = [], unit: String = "页") {
             self.pages = pages
@@ -86,10 +96,13 @@ public enum DocumentText {
             let last = min(total, first + max(1, maximumPages) - 1)
             var pages: [String] = []
             var recognized: [Int] = []
+            var labels: [String] = []
             var anyText = false
             if total > 0 {
                 for number in first...last {
-                    var text = document.page(at: number - 1)?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let page = document.page(at: number - 1)
+                    labels.append(page?.label ?? "")
+                    var text = page?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     if text.isEmpty, let record, number - 1 < record.pages.count {
                         text = record.pages[number - 1]
                         if !text.isEmpty { recognized.append(number) }
@@ -99,7 +112,11 @@ public enum DocumentText {
                 }
             }
             if !anyText && total > 0 && record == nil && !documentHasText(document) { throw Failure.noText(pages: total) }
-            return Pages(pages: pages, totalPages: total, firstPage: first, isPaged: true, recognizedPages: recognized)
+            var read = Pages(pages: pages, totalPages: total, firstPage: first, isPaged: true, recognizedPages: recognized)
+            // Only when the PDF numbers its pages itself (front matter in roman numerals, the
+            // body from 1); PDFKit otherwise reports the page's position, which says nothing.
+            if labels.enumerated().contains(where: { !$0.element.isEmpty && $0.element != String(first + $0.offset) }) { read.pageLabels = labels }
+            return read
         }
 
         if ext == "pptx" {

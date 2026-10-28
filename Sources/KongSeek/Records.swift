@@ -53,12 +53,41 @@ enum Records {
         }
     }
 
-    /// Saved lists follow files renamed by 批量重命名.
+    /// Saved lists and page numbers follow files renamed by 批量重命名.
     static func followMoves(_ moves: [(from: String, to: String)]) {
         var updated = lists
         let before = updated
         for move in moves { updated.move(from: move.from, to: move.to) }
         if updated != before { lists = updated }
+        var numbers = pageNumbers
+        let numbersBefore = numbers
+        for move in moves { numbers.move(from: move.from, to: move.to) }
+        if numbers != numbersBefore { pageNumbers = numbers }
+    }
+
+    // MARK: Printed page numbers (0.27)
+
+    private static var pageNumbersURL: URL { folder.appendingPathComponent("page-numbers.json") }
+    private static let pageNumbersLock = NSLock()
+    private static var cachedPageNumbers: PageNumbers?
+
+    /// "PDF 第 N 页 = 书上第 M 页" per book. Read from background work too, hence the lock.
+    static var pageNumbers: PageNumbers {
+        get {
+            pageNumbersLock.lock()
+            defer { pageNumbersLock.unlock() }
+            if let cachedPageNumbers { return cachedPageNumbers }
+            let loaded = PageNumbers.load(from: pageNumbersURL)
+            cachedPageNumbers = loaded
+            return loaded
+        }
+        set {
+            pageNumbersLock.lock()
+            cachedPageNumbers = newValue
+            pageNumbersLock.unlock()
+            try? newValue.save(to: pageNumbersURL)
+            NotificationCenter.default.post(name: changed, object: nil)
+        }
     }
 
     // MARK: Trash log

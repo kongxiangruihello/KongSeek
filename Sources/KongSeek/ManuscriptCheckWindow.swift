@@ -172,11 +172,64 @@ final class ManuscriptCheckModel: ObservableObject {
 
     func reference(_ row: Row) -> String {
         guard let best = row.best else { return "" }
-        if let book = best.book { return Citation.make(Preferences.citationStyle, name: book, fallbackTitle: book.title, page: best.page).text }
-        return "《\(((best.path as NSString).lastPathComponent as NSString).deletingPathExtension)》" + (best.page.map { "第 \($0) \(best.unit)" } ?? "")
+        if let book = best.book {
+            return Citation.make(Preferences.citationStyle, name: book, fallbackTitle: book.title, page: best.page, pageLabel: best.printed?.text).text
+        }
+        let place = best.printed.map { "第 \($0.text) 页" } ?? best.page.map { "第 \($0) \(best.unit)" }
+        return "《\(((best.path as NSString).lastPathComponent as NSString).deletingPathExtension)》" + (place ?? "")
     }
 
     /// The quotation as the source writes it (0.26).
+    /// Asks which printed page this PDF page is (0.27); the book's other rows follow.
+    func setPrintedPage(_ row: Row) {
+        guard let best = row.best, let page = best.page, best.unit == "页" else { return }
+        if PageNumberPrompt.ask(path: best.path, pdfPage: page, current: best.printed) { objectWillChange.send() }
+    }
+
+    /// A copy of the Word manuscript with a comment on each quotation that differs from its
+    /// source or was not found (0.27). The manuscript itself is not changed.
+    func writeComments() {
+        guard let manuscript, manuscript.pathExtension.lowercased() == "docx" else { return }
+        let flagged = rows.filter { $0.state == .done && ($0.best == nil || $0.best?.exact == false) && !$0.quote.context.hasPrefix("〔注〕") }
+        guard !flagged.isEmpty else {
+            status = "已核对的引文都与原文一致，不需要批注。"
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "docx") ?? .data]
+        panel.directoryURL = manuscript.deletingLastPathComponent()
+        panel.nameFieldStringValue = manuscript.deletingPathExtension().lastPathComponent + "（引文核对）.docx"
+        panel.message = "原稿不动，另存一份在页边加了批注的副本"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard url.standardizedFileURL != manuscript.standardizedFileURL else {
+            status = "请换一个文件名：原稿不会被覆盖。"
+            return
+        }
+        let comments = flagged.map { row -> WordComments.Comment in
+            var lines: [String] = []
+            if let best = row.best {
+                var head = "引文核对：\(row.verdict)"
+                if let differences = row.differences { head += "，" + QuoteDiff.summary(differences) }
+                lines.append(head)
+                if row.differences != nil { lines.append("按原文改正：" + QuoteDiff.corrected(quote: row.quote.text, source: best.excerpt)) }
+                lines.append("原文：" + best.excerpt)
+                lines.append("出处：" + reference(row))
+            } else {
+                lines.append("引文核对：未在书库中找到出处（可能出自未建立内容索引的文件、未识别的扫描件，或与原文出入较大）。")
+            }
+            return WordComments.Comment(anchor: row.quote.text, text: lines.joined(separator: "\n"))
+        }
+        do {
+            let placed = try WordComments.write(source: manuscript, destination: url, comments: comments)
+            let count = placed.filter { $0 }.count
+            status = "已在 \(count) 处加批注，存为“\(url.lastPathComponent)”" + (count < comments.count ? "；\(comments.count - count) 条在稿中没能定位到段落，未加。" : "。")
+                + (rows.contains { $0.quote.context.hasPrefix("〔注〕") } ? "脚注中的引文不加批注，请看 Excel 核对表。" : "")
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            status = "生成批注副本失败：\(error.localizedDescription)"
+        }
+    }
+
     func copyCorrected(_ row: Row) {
         guard let best = row.best else { return }
         let corrected = QuoteDiff.corrected(quote: row.quote.text, source: best.excerpt)
@@ -199,8 +252,11 @@ final class ManuscriptCheckModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         var cells: [[XLSXWriter.Cell]] = [["序号", "引文", "稿中上文", "结果", "异文", "按原文改正", "出处", "页码", "原文", "文件"].map { .text($0) }]
         for row in rows {
+            // The page printed in the book when known (0.27), else the PDF page.
             let page: XLSXWriter.Cell
-            if let number = row.best?.page { page = .number(Double(number)) } else { page = .text("") }
+            if let printed = row.best?.printed {
+                if let number = Int(printed.text) { page = .number(Double(number)) } else { page = .text(printed.text) }
+            } else if let number = row.best?.page { page = .number(Double(number)) } else { page = .text("") }
             let differences = row.differences
             let corrected = differences == nil ? "" : QuoteDiff.corrected(quote: row.quote.text, source: row.best?.excerpt ?? "")
             let line: [XLSXWriter.Cell] = [.number(Double(row.number)), .text(row.quote.text), .text(row.quote.context), .text(row.verdict),
@@ -235,6 +291,11 @@ struct ManuscriptCheckView: View {
                     Button("开始核对") { model.start() }.keyboardShortcut(.defaultAction).disabled(model.rows.isEmpty)
                 }
                 Button("导出 Excel…") { model.export() }.disabled(model.rows.isEmpty || model.running)
+                if model.manuscript?.pathExtension.lowercased() == "docx" {
+                    Button("生成带批注的 Word…") { model.writeComments() }
+                        .disabled(model.running || !model.rows.contains { $0.state == .done })
+                        .help("另存一份稿件，在有异文、找不到出处的引文旁加 Word 批注；原稿不动")
+                }
             }
             Text(model.status).font(.callout).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             if !model.rows.isEmpty { Text(model.summary).font(.caption).foregroundColor(.secondary) }
@@ -261,6 +322,10 @@ struct ManuscriptCheckView: View {
                 Spacer()
                 if row.best != nil {
                     Button("打开到此处") { model.open(row) }.controlSize(.small)
+                    if row.best?.unit == "页", row.best?.page != nil {
+                        Button("页码…") { model.setPrintedPage(row) }.controlSize(.small)
+                            .help("这一页在书上印的是第几页？设一次，这本书以后的出处都按书上的页码")
+                    }
                     Button("拷贝出处") { model.copyReference(row) }.controlSize(.small)
                 }
                 if row.state == .done { Button("重查") { model.recheck(row) }.controlSize(.small) }

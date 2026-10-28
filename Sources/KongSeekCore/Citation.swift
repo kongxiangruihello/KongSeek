@@ -39,15 +39,17 @@ public enum Citation {
         }
     }
 
-    /// A reference in `style`, with the page cited when given.
-    public static func make(_ style: Style, name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil, page: Int? = nil) -> Result {
+    /// A reference in `style`, with the page cited when given. `pageLabel` (the page
+    /// number printed in the book, 0.27, e.g. "15" or "iii") is used instead of `page`.
+    public static func make(_ style: Style, name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil,
+                            page: Int? = nil, pageLabel: String? = nil) -> Result {
         switch style {
         case .gbt7714:
             var result = book(name, fallbackTitle: fallbackTitle, epub: epub)
-            if let page { result.text = withPage(result.text, page: page) }
+            if let cited = pageLabel ?? page.map(String.init) { result.text = withPage(result.text, label: cited) }
             return result
         case .footnote:
-            return footnote(name, fallbackTitle: fallbackTitle, epub: epub, page: page)
+            return footnote(name, fallbackTitle: fallbackTitle, epub: epub, page: page, pageLabel: pageLabel)
         }
     }
 
@@ -71,7 +73,7 @@ public enum Citation {
     }
 
     /// 成积春、宋立林主编：《孔子与〈论语〉》，北京：高等教育出版社，2018年，第23页。
-    public static func footnote(_ name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil, page: Int? = nil) -> Result {
+    public static func footnote(_ name: EbookName?, fallbackTitle: String, epub: EpubMetadata? = nil, page: Int? = nil, pageLabel: String? = nil) -> Result {
         let book = merged(name, fallbackTitle: fallbackTitle, epub: epub)
         var missing: [String] = []
         var notes: [String] = []
@@ -101,7 +103,7 @@ public enum Citation {
         else if let publisher = book.publisher { parts.append(publisher) }
         else if let place { parts.append(place) }
         if let year = book.year { parts.append(year + "年") }
-        if let page { parts.append("第\(page)页") }
+        if let cited = pageLabel ?? page.map(String.init) { parts.append("第\(cited)页") }
         let text = (responsibility.isEmpty ? "" : responsibility + "：") + parts.joined(separator: "，") + "。"
         return Result(text: text, missing: missing, notes: notes)
     }
@@ -148,9 +150,13 @@ public enum Citation {
 
     /// The reference with the page cited: "…, 2018." → "…, 2018: 23." (GB/T 7714: 出版年: 引文页码).
     public static func withPage(_ reference: String, page: Int) -> String {
+        withPage(reference, label: String(page))
+    }
+
+    public static func withPage(_ reference: String, label: String) -> String {
         var text = reference
         if text.hasSuffix(".") { text.removeLast() }
-        return text + ": \(page)."
+        return text + ": \(label)."
     }
 
     /// Names and the role word at the end: "孙雪霞、陈桐生译注" → ([孙雪霞, 陈桐生], "译注").

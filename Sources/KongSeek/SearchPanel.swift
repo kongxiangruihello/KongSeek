@@ -88,6 +88,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// Opens the file list window for a search (0.19).
     var onFileList: ((FileListSource) -> Void)?
     var onBatchRename: (([URL]) -> Void)?
+    /// 出处汇编 of the words searched (0.27).
+    var onConcordance: ((String) -> Void)?
     /// Files taken out of archives for the preview, by "archive\0inner".
     private var archivePreviews: [String: URL] = [:]
     private var archivePreviewToken = 0
@@ -1307,9 +1309,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             let url = URL(fileURLWithPath: item.path)
             let ext = url.pathExtension.lowercased()
             var source = ""
+            var label: String?
             if let pages = try? DocumentText.read(url, firstPage: page ?? 1, maximumPages: page == nil ? 3_000 : 1, ocr: store) {
                 source = pages.pages.joined(separator: "\n")
+                label = page.flatMap { pages.label(ofPage: $0) }
             }
+            // The page as printed in the book (0.27).
+            let printed = ext == "pdf" ? page.map { Records.pageNumbers.printed(path: item.path, pdfPage: $0, label: label) } : nil
             let sentence = Quotation.sentence(in: source, needles: needles)
             let stem = EbookName.splitMark(url.deletingPathExtension().lastPathComponent).stem
             let origin: String
@@ -1317,9 +1323,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             if DuplicateFinder.bookExtensions.contains(ext) {
                 let info = BookInfo.read(url)
                 book = info.name
-                origin = Citation.make(Preferences.citationStyle, name: info.name, fallbackTitle: info.name.title, page: page).text
+                origin = Citation.make(Preferences.citationStyle, name: info.name, fallbackTitle: info.name.title, page: page, pageLabel: printed?.text).text
             } else {
-                origin = "《\(stem)》" + (page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" } ?? "")
+                origin = "《\(stem)》" + (printed.map { "第 \($0.text) 页" } ?? page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" } ?? "")
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1328,7 +1334,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                     return
                 }
                 if toKongReview {
-                    let place = page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" }
+                    let place = printed.map { "第 \($0.text) 页" } ?? page.map { ext == "pptx" ? "第 \($0) 张幻灯片" : "第 \($0) 页" }
                     KongReviewLink.send(text: sentence, title: book?.title ?? stem, author: book?.authors, location: place, note: origin)
                     self.hide()
                     return
@@ -1405,6 +1411,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         if !item.isFolder && ext == "pdf" {
             let reader = KongFolio.isReader ? "在 KongFolio 中" : "在阅读窗口中"
             add(hitPage.map { "\(reader)打开到第 \($0) 页" } ?? (KongFolio.isReader ? "在 KongFolio 中打开（接着上次读）" : "在阅读窗口中打开（含目录）"), "\r", [.option]) { [weak self] in self?.openAtHit(item) }
+            if let hitPage {
+                let printed = PageNumberPrompt.printed(path: item.path, pdfPage: hitPage)
+                add("书上页码：\(printed.text)" + (printed.text == String(hitPage) ? "" : "（PDF 第 \(hitPage) 页）") + "，设置…", "") { [weak self] in
+                    self?.hide()
+                    PageNumberPrompt.ask(path: item.path, pdfPage: hitPage, current: printed)
+                }
+            }
         } else if !item.isFolder && ext == "pptx", let hitPage {
             add("在 PowerPoint 中打开到第 \(hitPage) 张", "\r", [.option]) { [weak self] in self?.openAtHit(item) }
         }
@@ -1457,6 +1470,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             add("生成可搜索的 PDF（另存一份）") { [weak self] in
                 self?.hide()
                 SearchablePDFWindowController.shared.start(URL(fileURLWithPath: item.path))
+            }
+        }
+        if contentMode {
+            add("出处汇编：逐处列出这些词在各书中的位置…") { [weak self] in
+                guard let self else { return }
+                let text = self.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.hide()
+                self.onConcordance?(text)
             }
         }
         add("把全部结果放入文件清单（书单、参考文献、批量操作）") { [weak self] in

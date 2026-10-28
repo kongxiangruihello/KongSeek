@@ -16,7 +16,22 @@ final class QuoteFinderModel: ObservableObject {
         var score: Double
         var excerpt: String
         var book: EbookName?
+        /// The PDF's own number for the page, if it gives one (0.27).
+        var label: String? = nil
         var exact: Bool { score >= 1 }
+
+        /// The page as printed in the book (0.27): the reader's "PDF 第 N 页 = 书上第 M 页",
+        /// else the PDF's own page label, else the PDF page.
+        var printed: PageNumbers.Printed? {
+            guard let page, unit == "页" else { return nil }
+            return Records.pageNumbers.printed(path: path, pdfPage: page, label: label)
+        }
+
+        /// "第 15 页（PDF 第 29 页）" or "第 3 张".
+        var placeDescription: String? {
+            if let printed { return printed.description }
+            return page.map { "第 \($0) \(unit)" }
+        }
     }
 
     @Published var quote = ""
@@ -81,10 +96,17 @@ final class QuoteFinderModel: ObservableObject {
     /// The source in the chosen citation style, with the page.
     func reference(_ result: Result) -> String {
         if let book = result.book {
-            return Citation.make(Preferences.citationStyle, name: book, fallbackTitle: book.title, page: result.page).text
+            return Citation.make(Preferences.citationStyle, name: book, fallbackTitle: book.title, page: result.page, pageLabel: result.printed?.text).text
         }
         let stem = (result.path as NSString).lastPathComponent
-        return "《\((stem as NSString).deletingPathExtension)》" + (result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" } ?? "")
+        let place = result.printed.map { "第 \($0.text) 页" } ?? result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" }
+        return "《\((stem as NSString).deletingPathExtension)》" + (place ?? "")
+    }
+
+    /// Asks which printed page this PDF page is (0.27).
+    func setPrintedPage(_ result: Result) {
+        guard let page = result.page, result.unit == "页" else { return }
+        if PageNumberPrompt.ask(path: result.path, pdfPage: page, current: result.printed) { objectWillChange.send() }
     }
 
     func copy(_ result: Result, withQuote: Bool) {
@@ -97,7 +119,7 @@ final class QuoteFinderModel: ObservableObject {
     /// Opens KongReview's capture window with the passage and its source (0.22).
     func sendToKongReview(_ result: Result) {
         KongReviewLink.send(text: result.excerpt, title: result.title, author: result.book?.authors,
-                            location: result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" }, note: reference(result))
+                            location: result.printed.map { "第 \($0.text) 页" } ?? result.page.map { "第 \($0) \(result.unit == "张" ? "张幻灯片" : "页")" }, note: reference(result))
     }
 
     /// 逐字异文 of a near match (0.26); nil when only punctuation or character forms differ.
@@ -156,9 +178,13 @@ struct QuoteFinderView: View {
                             .background(RoundedRectangle(cornerRadius: 4).fill((result.exact ? Color.green : Color.orange).opacity(0.18)))
                             .foregroundColor(result.exact ? .green : .orange)
                         Text(result.title).lineLimit(1).truncationMode(.middle)
-                        if let page = result.page { Text("第 \(page) \(result.unit)").foregroundColor(.accentColor) }
+                        if let place = result.placeDescription { Text(place).foregroundColor(.accentColor) }
                         Spacer()
                         Button("打开到此处") { model.open(result) }.controlSize(.small)
+                        if result.unit == "页", result.page != nil {
+                            Button("页码…") { model.setPrintedPage(result) }.controlSize(.small)
+                                .help("这一页在书上印的是第几页？设一次，这本书以后的出处都按书上的页码")
+                        }
                         Button("拷贝出处") { model.copy(result, withQuote: false) }.controlSize(.small)
                         Button("拷贝原文和出处") { model.copy(result, withQuote: true) }.controlSize(.small)
                         if KongReviewLink.isInstalled {
@@ -277,16 +303,18 @@ final class QuoteLookup {
         }
         let recognized = ocr.record(for: url.path)?.pages.filter { !$0.isEmpty }.count ?? 0
         let stamp = TextCache.Stamp(size: Int64(size), modified: modified, recognized: recognized)
-        if let entry = diskCache.load(path: url.path, stamp: stamp) {
+        // Entries from before 0.27 have no page labels: read those PDFs once more.
+        if let entry = diskCache.load(path: url.path, stamp: stamp), entry.labels != nil || !entry.isPaged {
             var pages = DocumentText.Pages(pages: entry.pages, totalPages: entry.totalPages, firstPage: entry.firstPage, isPaged: entry.isPaged)
             pages.unit = entry.unit
+            pages.pageLabels = entry.labels ?? []
             return pages
         }
         guard let read = try? DocumentText.read(url, maximumPages: 5_000, ocr: ocr) else { return nil }
         // Worth keeping only when there is text (and the whole document was read).
         if read.pages.contains(where: { !$0.isEmpty }), read.pages.count >= read.totalPages || !read.isPaged {
             diskCache.store(TextCache.Entry(path: url.path, stamp: stamp, pages: read.pages, totalPages: read.totalPages,
-                                            firstPage: read.firstPage, isPaged: read.isPaged, unit: read.unit))
+                                            firstPage: read.firstPage, isPaged: read.isPaged, unit: read.unit, labels: read.pageLabels))
         }
         return read
     }
@@ -322,7 +350,8 @@ final class QuoteLookup {
                     let book = isBook ? BookInfo.read(url).name : nil
                     found.append(Result(path: path, title: book?.title ?? url.lastPathComponent,
                                         page: pages.isPaged ? pages.firstPage + match.unit : nil,
-                                        unit: pages.unit == "页" ? "页" : "张", score: match.score, excerpt: match.excerpt, book: book))
+                                        unit: pages.unit == "页" ? "页" : "张", score: match.score, excerpt: match.excerpt, book: book,
+                                        label: pages.isPaged ? pages.label(ofPage: pages.firstPage + match.unit) : nil))
                 }
                 if number % 5 == 4, let progress {
                     let done = number + 1
