@@ -37,6 +37,7 @@ final class GeneralSettingsView: NSView {
     private let kongFolioLabel = NSTextField(wrappingLabelWithString: "")
     private let historyCheckbox = NSButton(checkboxWithTitle: "记录搜索历史（在空搜索框中按 ↑ 查看）", target: nil, action: nil)
     private let copiesCheckbox = NSButton(checkboxWithTitle: "搜索结果中合并内容相同的副本", target: nil, action: nil)
+    private let completionCheckbox = NSButton(checkboxWithTitle: "输入时自动补全（→ 接受）", target: nil, action: nil)
     private let bookTextCheckbox = NSButton(checkboxWithTitle: "为 EPUB、Kindle 电子书和 GB18030 文本建立正文索引", target: nil, action: nil)
     private let uncoveredCheckbox = NSButton(checkboxWithTitle: "也为 Spotlight 未收录的文件夹中的 PDF、Word、幻灯片建立正文索引", target: nil, action: nil)
     private let contentCheckbox = NSButton(checkboxWithTitle: "允许 Claude 按内容搜索并读取文件正文（只读，仅限已索引的文件夹）", target: nil, action: nil)
@@ -134,7 +135,10 @@ final class GeneralSettingsView: NSView {
         let filterButton = NSButton(title: "筛选按钮…", target: self, action: #selector(editFilterButtons))
         filterButton.controlSize = .small
         filterButton.toolTip = "搜索框下的按钮，如 PDF = ext:pdf；点一下加入搜索，再点去掉"
-        let copiesRow = NSStackView(views: [copiesCheckbox, filterButton])
+        completionCheckbox.target = self
+        completionCheckbox.action = #selector(completionChanged)
+        completionCheckbox.toolTip = "按搜索历史、收藏的搜索和最近打开的文件名，在输入框中以选中的灰色文字给出补全；继续输入即替换，按 → 接受"
+        let copiesRow = NSStackView(views: [copiesCheckbox, completionCheckbox, filterButton])
         copiesRow.spacing = 10
         bookTextCheckbox.target = self
         bookTextCheckbox.action = #selector(bookTextChanged)
@@ -289,6 +293,7 @@ final class GeneralSettingsView: NSView {
         contentCheckbox.state = Preferences.mcpReadContent ? .on : .off
         historyCheckbox.state = Preferences.keepSearchHistory ? .on : .off
         copiesCheckbox.state = Preferences.mergeCopies ? .on : .off
+        completionCheckbox.state = Preferences.autocomplete ? .on : .off
         bookTextCheckbox.state = Preferences.bookTextIndex ? .on : .off
         uncoveredCheckbox.state = Preferences.indexUncoveredFolders ? .on : .off
         uncoveredCheckbox.isEnabled = Preferences.bookTextIndex
@@ -363,6 +368,10 @@ final class GeneralSettingsView: NSView {
         Preferences.indexUncoveredFolders = uncoveredCheckbox.state == .on
         uncoveredCheckbox.isEnabled = Preferences.bookTextIndex
         NotificationCenter.default.post(name: BookTextService.settingChanged, object: nil)
+    }
+
+    @objc private func completionChanged() {
+        Preferences.autocomplete = completionCheckbox.state == .on
     }
 
     @objc private func copiesChanged() {

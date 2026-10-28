@@ -206,3 +206,64 @@ public enum BookLookup {
                           isbn: (json["isbn_13"] as? [String])?.first, source: "Open Library")]
     }
 }
+
+// MARK: Batch lookup (0.41)
+
+extension BookLookup {
+    /// The ISBN in a file name, if it gives one.
+    public static func isbn(inName name: String) -> String? {
+        guard let range = name.range(of: #"97[89][0-9]{10}"#, options: .regularExpression) else { return nil }
+        return String(name[range])
+    }
+
+    /// The candidate to propose without asking, or nil when none is safe enough: one
+    /// with the same ISBN, else one whose title is the book's (繁简 and punctuation aside).
+    public static func confidentMatch(_ candidates: [Candidate], title: String, isbn: String?) -> Candidate? {
+        if let isbn, let match = candidates.first(where: { $0.isbn == isbn }) { return match }
+        let wanted = key(title)
+        guard wanted.count >= 2 else { return nil }
+        if let exact = candidates.first(where: { key($0.title) == wanted }) { return exact }
+        // "论语译注（简体字本）" for "论语译注", but not a longer title for a short one.
+        return wanted.count >= 4 ? candidates.first { key($0.title).hasPrefix(wanted) } : nil
+    }
+
+    static func key(_ title: String) -> String {
+        String(SearchText.fold(title).unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map { Character($0) })
+    }
+
+    /// The book's details completed by a candidate: what the book lacks is filled in, and
+    /// Chinese values replace romanized ones (as the single lookup's “填入” does).
+    public static func completed(_ name: EbookName, with candidate: Candidate) -> EbookName {
+        var result = name
+        func better(_ current: String?, _ found: String?) -> String? {
+            guard let found, !found.isEmpty else { return current }
+            guard let current, !current.isEmpty else { return found }
+            return !EbookName.containsHan(current) && EbookName.containsHan(found) ? found : current
+        }
+        result.authors = better(name.authors, candidate.authors)
+        result.place = better(name.place, candidate.place)
+        result.publisher = better(name.publisher, candidate.publisher)
+        result.year = name.year ?? candidate.year
+        result.isbn = name.isbn ?? candidate.isbn
+        if !EbookName.containsHan(name.title) && EbookName.containsHan(candidate.title) { result.title = candidate.title }
+        return result
+    }
+}
+
+/// 输入时自动补全 (0.41): the completion of what is typed — a search used before, a
+/// saved search, a file opened lately — that starts with it.
+public enum Autocomplete {
+    /// The first candidate that starts with `typed` (case and 繁简 aside) and is longer.
+    public static func completion(for typed: String, candidates: [String]) -> String? {
+        let prefix = SearchText.fold(typed)
+        guard !typed.isEmpty, typed.count >= (SearchText.containsCJK(typed) ? 1 : 2), !typed.hasSuffix(" ") else { return nil }
+        for candidate in candidates where candidate.count > typed.count {
+            let folded = SearchText.fold(candidate)
+            guard folded.hasPrefix(prefix) else { continue }
+            // Keep what was typed, then the rest of the candidate.
+            let rest = candidate.dropFirst(typed.count)
+            if SearchText.fold(String(candidate.prefix(typed.count))) == prefix { return typed + rest }
+        }
+        return nil
+    }
+}

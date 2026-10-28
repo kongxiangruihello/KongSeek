@@ -25,6 +25,8 @@ struct ResultItem: Equatable {
     var bookLine: String? = nil
     /// The reader's note on the file (0.40).
     var note: String? = nil
+    /// How often the words occur in it (0.41), when ordering full text by hits.
+    var hitCount: Int? = nil
     /// Found in KongSeek's own text index of e-books (0.37), not by Spotlight.
     var ownText = false
 
@@ -529,7 +531,8 @@ final class IndexService {
                 return outcome
             }
         }
-        var outcome = order == .relevance || query.advanced.dupe
+        // 命中次数 is for full text; names are ordered by relevance then.
+        var outcome = order == .relevance || order == .hits || query.advanced.dupe
             ? rank(hits, query: query, index: index, limit: limit, counts: counts, chosen: chosen)
             : ordered(hits, by: order, query: query, index: index, limit: limit)
         outcome.highlightWords += extraWords
@@ -561,7 +564,7 @@ final class IndexService {
         case .modified: sorted = keyed.sorted { $0.modified != $1.modified ? $0.modified > $1.modified : $0.hit.id < $1.hit.id }
         case .size: sorted = keyed.sorted { $0.size != $1.size ? $0.size > $1.size : $0.hit.id < $1.hit.id }
         case .name: sorted = keyed.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        case .relevance: sorted = keyed
+        case .relevance, .hits: sorted = keyed
         }
         var items: [ResultItem] = []
         var examined = 0
@@ -889,7 +892,7 @@ final class EpubDetailsCache {
 
 /// How results are ordered (0.38): by how well they match, or by date, size or name.
 enum ResultOrder: String, CaseIterable {
-    case relevance, modified, size, name
+    case relevance, modified, size, name, hits
 
     var title: String {
         switch self {
@@ -897,6 +900,7 @@ enum ResultOrder: String, CaseIterable {
         case .modified: return "修改时间"
         case .size: return "大小"
         case .name: return "名称"
+        case .hits: return "命中次数（全文）"
         }
     }
 }

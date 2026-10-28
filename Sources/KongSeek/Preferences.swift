@@ -86,6 +86,12 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "indexUncoveredFolders") }
     }
 
+    /// 输入时自动补全 (0.41); on unless turned off.
+    static var autocomplete: Bool {
+        get { defaults.object(forKey: "autocomplete") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "autocomplete") }
+    }
+
     /// How search results are ordered (0.38): 相关度 unless changed.
     static var resultOrder: ResultOrder {
         get { ResultOrder(rawValue: defaults.string(forKey: "resultOrder") ?? "") ?? .relevance }

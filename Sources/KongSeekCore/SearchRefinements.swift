@@ -268,3 +268,32 @@ public enum RelatedFiles {
         return groups
     }
 }
+
+/// 按命中次数排序 (0.41): how often the words of a full-text search occur in a document,
+/// each by its 繁简 forms, so the books that dwell on a concept come before those that
+/// mention it once.
+public enum HitCount {
+    public static func count(_ words: [String], in pages: [String], limit: Int = 10_000) -> Int {
+        let needles = words.flatMap { word -> [String] in
+            var forms: [String] = []
+            for variant in SearchText.scriptVariants(word).map(SearchText.fold) where !variant.isEmpty && !forms.contains(variant) {
+                forms.append(variant)
+            }
+            return forms
+        }
+        guard !needles.isEmpty else { return 0 }
+        var total = 0
+        for page in pages {
+            let text = SearchText.fold(page)
+            for needle in needles {
+                var searchRange = text.startIndex..<text.endIndex
+                while let found = text.range(of: needle, range: searchRange) {
+                    total += 1
+                    if total >= limit { return total }
+                    searchRange = found.upperBound..<text.endIndex
+                }
+            }
+        }
+        return total
+    }
+}

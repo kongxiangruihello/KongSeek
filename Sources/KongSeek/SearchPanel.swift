@@ -78,8 +78,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     /// 邻近搜索 (0.36): which full-text results have the words close together.
     private var proximityChecked: [String: Bool] = [:]
     private var proximityStarted = false
+    /// 按命中次数 (0.41): how often the words occur in each full-text result.
+    private var hitCounts: [String: Int] = [:]
+    private var hitCountStarted = false
     /// Showing 相关文件 of one result (0.39); ⎋ goes back to the search.
     private var showingRelated = false
+    /// A completion on offer (0.41): what was typed, and the field as shown.
+    private var completion: (typed: String, full: String)?
+    private var lastTypedLength = 0
     private var ebookPreviewToken = 0
 
     struct HitPlace {
@@ -171,6 +177,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         }
         updateStatus()
         rebuildFilterBar()
+        lastTypedLength = 0
+        completion = nil
         shownAt = Date()
         focusReclaims = 0
         panel.makeKeyAndOrderFront(nil)
@@ -527,6 +535,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     func controlTextDidChange(_ obj: Notification) {
         // Wait while a Chinese input method is still composing.
         if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
+        applyCompletion()
         if contentMode && browsedFolder == nil {
             // Spotlight queries cost more than the name index: wait for a pause in typing.
             pendingContentSearch?.cancel()
@@ -536,6 +545,36 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             return
         }
         runSearch()
+    }
+
+    // MARK: - Completion (0.41)
+
+    /// What is typed, without a completion still on offer.
+    private var queryText: String {
+        if let completion, field.stringValue == completion.full { return completion.typed }
+        return field.stringValue
+    }
+
+    /// Offers the rest of a search used before, a saved search or a file opened lately,
+    /// selected, so typing on replaces it and → takes it. Only while typing forward.
+    private func applyCompletion() {
+        let value = field.stringValue
+        let length = (value as NSString).length
+        let grew = length > lastTypedLength
+        lastTypedLength = length
+        completion = nil
+        guard Preferences.autocomplete, grew, browsedFolder == nil, let editor = field.currentEditor() else { return }
+        let selection = editor.selectedRange
+        guard selection.length == 0, selection.location == length else { return }
+        guard let full = Autocomplete.completion(for: value, candidates: completionCandidates()) else { return }
+        field.stringValue = full
+        editor.selectedRange = NSRange(location: length, length: (full as NSString).length - length)
+        completion = (value, full)
+    }
+
+    private func completionCandidates() -> [String] {
+        let opened = Preferences.lastOpened.sorted { $0.value > $1.value }.prefix(300).map { (($0.key as NSString).lastPathComponent as NSString).deletingPathExtension }
+        return Preferences.searchHistory + Preferences.savedSearches + opened
     }
 
     /// "cd 仁": the definition from the Dictionary app's dictionaries, plus 汉典.
@@ -573,7 +612,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func runContentSearch() {
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         let query = SearchQuery(text)
         let aliases = Preferences.searchAliases
         guard let queryString = SpotlightQuery.content(for: query, aliases: aliases) else {
@@ -597,6 +636,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         ocrItems = []
         proximityChecked = [:]
         proximityStarted = false
+        hitCounts = [:]
+        hitCountStarted = false
 
         // Recognized text of scans, searched in memory off the main thread.
         let store = ocr.store
@@ -714,6 +755,24 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             case .size: merged.sort { (keys[$0.path]?.1 ?? 0) > (keys[$1.path]?.1 ?? 0) }
             case .name: merged.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             case .relevance: break
+            case .hits:
+                // 按命中次数 (0.41): each file's text is read and the words counted.
+                let candidates = Array(merged.prefix(Self.proximityLimit))
+                if spotlightFinished && !hitCountStarted {
+                    hitCountStarted = true
+                    countHits(candidates.map(\.path), words: query.highlightWords + contentAliasWords, token: contentToken)
+                }
+                let counted = candidates.filter { hitCounts[$0.path] != nil }.count
+                if spotlightFinished && counted < candidates.count {
+                    outcome.gathering = true
+                    outcome.notes.append("正在统计命中次数：\(counted) / \(candidates.count)")
+                }
+                let position = Dictionary(merged.enumerated().map { ($0.element.path, $0.offset) }, uniquingKeysWith: { first, _ in first })
+                merged.sort { a, b in
+                    let x = hitCounts[a.path] ?? -1, y = hitCounts[b.path] ?? -1
+                    return x != y ? x > y : (position[a.path] ?? 0) < (position[b.path] ?? 0)
+                }
+                for index in merged.indices { merged[index].hitCount = hitCounts[merged[index].path] }
             }
             outcome.notes.append("按\(order.title)排序")
         }
@@ -724,6 +783,35 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     static let proximityLimit = 300
+
+    /// Counts the words in each file's text (0.41), in the background, a few at a time.
+    private func countHits(_ paths: [String], words: [String], token: Int) {
+        let store = ocr.store
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var batch: [String: Int] = [:]
+            func flush() {
+                let done = batch
+                batch = [:]
+                DispatchQueue.main.async {
+                    guard let self, token == self.contentToken else { return }
+                    self.hitCounts.merge(done) { _, new in new }
+                    self.publishContent()
+                }
+            }
+            for (number, path) in paths.enumerated() {
+                guard let current = self, token == current.contentToken else { return }
+                let url = URL(fileURLWithPath: path)
+                var count = 0
+                if (try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))?.ubiquitousItemDownloadingStatus != .notDownloaded,
+                   let pages = QuoteLookup.readCached(url, ocr: store) {
+                    count = HitCount.count(words, in: pages.pages)
+                }
+                batch[path] = count
+                if number % 5 == 4 { flush() }
+            }
+            flush()
+        }
+    }
 
     /// Reads each file's text (from the text cache when it is there) and keeps those
     /// where the words stand within `near:` characters, or on one page.
@@ -771,7 +859,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     func runSearch() {
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         showingRelated = false
         refreshFilterButtons()
         webRows = []
@@ -804,7 +892,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             }
             return
         }
-        service.search(field.stringValue, precision: Preferences.precision) { [weak self] outcome in
+        service.search(queryText, precision: Preferences.precision) { [weak self] outcome in
             self?.show(outcome)
         }
     }
@@ -930,6 +1018,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         case #selector(NSResponder.insertNewline(_:)):
             if let item = selectedItem, item.isFolder { enterFolder(item) } else { openSelected() }
         case #selector(NSResponder.moveRight(_:)):
+            // → takes the completion shown in grey (0.41).
+            if let completion, field.stringValue == completion.full {
+                textView.selectedRange = NSRange(location: (textView.string as NSString).length, length: 0)
+                self.completion = nil
+                lastTypedLength = (textView.string as NSString).length
+                runSearch()
+                return true
+            }
             // → at the end of the text enters the selected folder.
             let selection = textView.selectedRange()
             guard let item = selectedItem, item.isFolder, selection.length == 0, selection.location == (textView.string as NSString).length else { return false }
@@ -1371,7 +1467,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     /// Which file was opened after this name search (0.35), so the same query puts it first.
     private func rememberChoice(_ item: ResultItem) {
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !contentMode, browsedFolder == nil, item.isFile, !item.isInArchive, !text.isEmpty, text != "?", text != "？",
               DictionaryLookup.word(in: text) == nil else { return }
         Records.recordChoice(query: text, path: item.path)
@@ -1422,7 +1518,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
 
     /// Searches that led somewhere: remembered when a result is opened or revealed.
     private func rememberSearch() {
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Preferences.keepSearchHistory, browsedFolder == nil, !text.isEmpty, text != "?", text != "？" else { return }
         var history = Preferences.searchHistory
         history.removeAll { $0 == text }
@@ -1510,7 +1606,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func saveCurrentSearch() {
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, text != "?", text != "？" else {
             statusLabel.stringValue = "先输入要收藏的搜索，再按 ⌘S"
             return
@@ -1807,6 +1903,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 self?.hide()
                 BookLookupWindowController.shared.present(path: item.path)
             }
+            let books = results.filter { $0.isFile && !$0.isInArchive && DuplicateFinder.bookExtensions.contains(($0.path as NSString).pathExtension.lowercased()) }.map(\.path)
+            if books.count > 1 {
+                add("批量补全这次搜索中 \(books.count) 本书的书目信息…") { [weak self] in
+                    self?.hide()
+                    BatchBookLookupWindowController.shared.present(paths: books)
+                }
+            }
             let preferred = Records.editions.isPreferred(item.path)
             add(preferred ? "取消常用本" : "设为常用本（同书多个版本时，查证与汇编中排在最前）") { [weak self] in
                 Records.togglePreferred(item.path)
@@ -1905,6 +2008,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             location = (leading.isEmpty ? "" : leading.joined(separator: "  ") + "  —  ")
                 + Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "") + (item.ownText ? " · KongSeek 正文索引" : "")
                 + (item.copies.isEmpty ? "" : " · 另有 \(item.copies.count) 个副本（⌘K 查看）")
+                + (item.hitCount.map { " · 命中 \($0) 处" } ?? "")
             image = icon(for: item.path)
         }
         cell.configure(
