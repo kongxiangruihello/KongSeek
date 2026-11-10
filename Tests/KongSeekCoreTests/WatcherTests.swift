@@ -65,6 +65,31 @@ final class WatcherTests: XCTestCase {
         }
     }
 
+    /// 0.46: FSEvents itself leaves out the excluded folders.
+    func testExcludedFoldersAreNotReported() throws {
+        try makeTree(root, ["Library/Caches/old.db"])
+        let excluded = Paths.canonical(root + "/Library")
+        let target = root + "/已有/可见.txt"
+        var reported: [String] = []
+        let seen = expectation(description: "visible change reported")
+        seen.assertForOverFulfill = false
+        let watcher = FileChangeWatcher(paths: [Paths.canonical(root)], excluding: [excluded], latency: 0.1, queue: queue) { batch in
+            reported += batch.changes.map(\.path)
+            if batch.changes.contains(where: { $0.path.hasSuffix("可见.txt") }) { seen.fulfill() }
+        }
+        XCTAssertTrue(watcher.start())
+        Thread.sleep(forTimeInterval: 0.3)
+        try makeTree(root, ["Library/Caches/new.db", "Library/Caches/more/x.db"])
+        Thread.sleep(forTimeInterval: 0.3)
+        try makeTree(root, ["已有/可见.txt"])
+        wait(for: [seen], timeout: 10)
+        watcher.stop()
+        queue.sync {
+            XCTAssertFalse(reported.contains { $0.contains("/Library/") }, "\(reported)")
+            XCTAssertTrue(reported.contains { $0.hasSuffix(target.components(separatedBy: "/").last!) })
+        }
+    }
+
     func testEventDatabaseIdentityIsAvailable() {
         XCTAssertNotNil(FileChangeWatcher.eventDatabaseUUID(forPath: root))
     }

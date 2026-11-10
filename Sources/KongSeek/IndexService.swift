@@ -96,6 +96,8 @@ final class IndexService {
     private var session: SearchSession?
     private var watcher: FileChangeWatcher?
     private var saveItem: DispatchWorkItem?
+    /// When the index was last saved (on `queue`).
+    private var lastSave: CFAbsoluteTime = 0
     private var buildCancel: CancelFlag?
     private var roots: [String]
     private var rules: ExclusionRules
@@ -200,7 +202,8 @@ final class IndexService {
         index = newIndex
         session = SearchSession(index: newIndex)
         watcher?.stop()
-        let watcher = FileChangeWatcher(paths: newIndex.roots, since: eventID, latency: 0.5, queue: queue) { [weak self] batch in
+        let watcher = FileChangeWatcher(paths: newIndex.roots, excluding: newIndex.watchExclusions(), since: eventID, latency: 0.5,
+                                        queue: queue) { [weak self] batch in
             self?.handle(batch)
         }
         watcher.start()
@@ -210,22 +213,35 @@ final class IndexService {
 
     private func handle(_ batch: FileChangeWatcher.Batch) {
         guard let index else { return }
-        // Tags (在读…) shown in result rows are read again where files changed (0.45).
-        if batch.requiresFullRebuild || batch.changes.contains(where: \.rescanSubtree) {
-            FinderTags.forgetAllStates()
-        } else {
-            FinderTags.forgetStates(batch.changes.map(\.path))
-        }
         if batch.requiresFullRebuild {
+            FinderTags.forgetAllStates()
             startBuild()
             return
         }
         let summary = index.apply(batch.changes, eventID: batch.lastEventID > 0 ? batch.lastEventID : nil)
-        if summary.added > 0 || summary.removed > 0 { publishReady() }
-        let paths = batch.changes.map(\.path)
-        if !paths.isEmpty {
-            DispatchQueue.main.async { [weak self] in self?.onFilesChanged?(paths) }
+        // Only changes the index looks at go further (0.46). Activity in ~/Library or hidden
+        // folders used to wake the e-book text index and re-save the name index every 20
+        // seconds — and the save, itself in ~/Library, reported a change that started it again.
+        let paths = summary.relevantPaths
+        guard !paths.isEmpty else {
+            saveEventIDLater()
+            return
         }
+        // Tags (在读…) shown in result rows are read again where files changed (0.45).
+        if summary.foldersRescanned > 0 {
+            FinderTags.forgetAllStates()
+        } else {
+            FinderTags.forgetStates(paths)
+        }
+        if summary.added > 0 || summary.removed > 0 { publishReady() }
+        DispatchQueue.main.async { [weak self] in self?.onFilesChanged?(paths) }
+        scheduleSave()
+    }
+
+    /// Ignored changes still move `lastEventID` on; save it now and then so the next
+    /// launch does not replay them, but not after every one.
+    private func saveEventIDLater() {
+        guard saveItem == nil, CFAbsoluteTimeGetCurrent() - lastSave > 600 else { return }
         scheduleSave()
     }
 
@@ -240,6 +256,7 @@ final class IndexService {
         saveItem?.cancel()
         saveItem = nil
         guard let index else { return }
+        lastSave = CFAbsoluteTimeGetCurrent()
         // Only the encoding holds up searches; the disk write runs on its own queue (0.45).
         let start = CFAbsoluteTimeGetCurrent()
         guard let data = try? index.encoded() else { return }

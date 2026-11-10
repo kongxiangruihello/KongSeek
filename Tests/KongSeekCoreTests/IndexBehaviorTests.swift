@@ -130,6 +130,81 @@ final class IndexBehaviorTests: XCTestCase {
         XCTAssertEqual(index.generation, generation)
     }
 
+    /// 0.46: a rescan reported inside a hidden or excluded-name folder used to re-read
+    /// the nearest indexed folder above it — for ~/.codex, the whole home folder.
+    func testChangesInsideSkippedPlacesAreIgnored() throws {
+        try makeTree(root, [".codex/sessions/log.jsonl", "项目/.build/debug/a.o", "项目/node_modules/pkg/index.js", "项目/源码.swift"])
+        let index = NameIndex.build(roots: [root], rules: .standard(home: root))
+        let generation = index.generation
+        try makeTree(root, [".codex/sessions/log2.jsonl", "项目/.build/debug/b.o", "项目/node_modules/pkg/new.js", ".DS_Store"])
+        let summary = index.apply([
+            IndexChange(path: root + "/.codex/sessions", rescanSubtree: true),
+            IndexChange(path: root + "/项目/.build", rescanSubtree: true),
+            IndexChange(path: root + "/项目/node_modules/pkg/new.js"),
+            IndexChange(path: root + "/.DS_Store"),
+        ])
+        XCTAssertEqual(summary.foldersRescanned, 0)
+        XCTAssertEqual(summary.foldersResynced, 0)
+        XCTAssertTrue(summary.relevantPaths.isEmpty)
+        XCTAssertEqual(index.generation, generation)
+
+        try makeTree(root, ["项目/说明.md"])
+        let real = index.apply([IndexChange(path: root + "/项目/说明.md")])
+        XCTAssertEqual(real.added, 1)
+        XCTAssertEqual(real.relevantPaths, [Paths.canonical(root + "/项目/说明.md")])
+    }
+
+    /// 0.46: a rescan keeps the entries that did not change (same ids, search keys not
+    /// computed again) and still ends up equal to a fresh build.
+    func testRescanKeepsUnchangedEntries() throws {
+        try makeTree(root, ["论语/《论语》讲义.pdf", "论语/学而/一.txt", "孟子/梁惠王.docx", "孟子/旧稿.txt"])
+        let rules = ExclusionRules.standard(home: root)
+        let index = NameIndex.build(roots: [root], rules: rules)
+        let kept = try XCTUnwrap(index.id(forPath: root + "/论语/《论语》讲义.pdf"))
+        let keptDeep = try XCTUnwrap(index.id(forPath: root + "/论语/学而/一.txt"))
+        let entriesBefore = index.names.count
+        try makeTree(root, ["论语/学而/二.txt", "孟子/新目录/尽心.md"])
+        try FileManager.default.removeItem(atPath: root + "/孟子/旧稿.txt")
+        let summary = index.apply([IndexChange(path: root, rescanSubtree: true)])
+        XCTAssertEqual(summary.foldersRescanned, 1)
+        XCTAssertEqual(index.id(forPath: root + "/论语/《论语》讲义.pdf"), kept)
+        XCTAssertEqual(index.id(forPath: root + "/论语/学而/一.txt"), keptDeep)
+        XCTAssertEqual(index.names.count, entriesBefore + 3, "only the new folder and two new files are appended")
+        assertSameEntries(index.allEntries(), NameIndex.build(roots: [root], rules: rules).allEntries())
+        XCTAssertTrue(index.search(["lunyu"]).map { index.name(of: $0.id) }.contains("《论语》讲义.pdf"))
+        XCTAssertFalse(index.search(["尽心"]).isEmpty)
+    }
+
+    /// 0.46: dropped events may name a folder above the roots (even "/"); the roots inside it are checked again.
+    func testRescanAboveRootsChecksTheRoots() throws {
+        try makeTree(root, ["a/b.txt"])
+        let rules = ExclusionRules.standard(home: root)
+        let index = NameIndex.build(roots: [root], rules: rules)
+        try makeTree(root, ["a/c.txt", "新/d.txt"])
+        let summary = index.apply([IndexChange(path: "/", rescanSubtree: true)])
+        XCTAssertEqual(summary.foldersRescanned, 1)
+        assertSameEntries(index.allEntries(), NameIndex.build(roots: [root], rules: rules).allEntries())
+    }
+
+    func testWatchExclusions() throws {
+        try makeTree(root, ["Library/Caches/x.db", ".cache/y", "node_modules/z.js", "文稿/a.txt", ".zshrc",
+                            "Library/Mobile Documents/com~apple~CloudDocs/云.pdf"])
+        let cloud = root + "/Library/Mobile Documents/com~apple~CloudDocs"
+        let index = NameIndex.build(roots: [root, cloud], rules: .standard(home: root))
+        let home = Paths.canonical(root)
+        let exclusions = index.watchExclusions()
+        XCTAssertEqual(exclusions.first, home + "/Library")
+        XCTAssertEqual(Set(exclusions), [home + "/Library", home + "/.cache", home + "/node_modules"])
+        #if canImport(CoreServices)
+        // The home stream leaves out ~/Library; iCloud Drive has its own stream with nothing left out.
+        let roots = index.roots
+        XCTAssertEqual(FileChangeWatcher.exclusions(for: roots[0], watching: roots, from: exclusions).first, home + "/Library")
+        XCTAssertEqual(FileChangeWatcher.exclusions(for: roots[1], watching: roots, from: exclusions), [])
+        let many = (0..<12).map { home + "/.h\($0)" }
+        XCTAssertEqual(FileChangeWatcher.exclusions(for: home, watching: [home], from: many).count, FileChangeWatcher.maximumExclusions)
+        #endif
+    }
+
     /// 200 random edits, each followed by `apply`; the index must always equal a fresh build.
     func testRandomEditsKeepIndexEqualToFreshBuild() throws {
         try SyntheticTree.create(at: root, files: 400, seed: 3)

@@ -43,6 +43,8 @@ public struct UpdateSummary: Equatable, Sendable {
     public var removed = 0
     public var foldersResynced = 0
     public var foldersRescanned = 0
+    /// The changed paths that concern the index (inside a root, not in a skipped place), canonical.
+    public var relevantPaths: [String] = []
 }
 
 public struct BuildTimings: Equatable, Sendable {
