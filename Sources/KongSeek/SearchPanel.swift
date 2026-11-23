@@ -974,7 +974,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             return
         }
         service.search(queryText, precision: Preferences.precision) { [weak self] outcome in
-            self?.show(outcome)
+            guard let self, !self.showingHistory else { return }
+            self.show(outcome)
         }
     }
 
@@ -1632,6 +1633,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     private func showHistory() {
+        showingHistory = true
+        pendingContentSearch?.cancel()
+        contentToken += 1
+        contentSearch.stop()
+        webRows = []
         let rows = Preferences.searchHistory.map { text in
             ResultItem(path: "history:" + text, name: text, isFolder: false, score: 0,
                        fill: QueryFill(text: text, replace: true, select: nil, explanation: "搜索历史", isHistory: true))
@@ -1639,7 +1645,6 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         var history = SearchOutcome(items: rows)
         history.matchCount = rows.count
         show(history)
-        showingHistory = true
         statusLabel.stringValue = "搜索历史：↑↓ 选择，↩ 再次搜索，⌘⌫ 删除一条"
     }
 
