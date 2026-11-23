@@ -24,9 +24,11 @@ public struct BuildLogProgress: Equatable, Sendable {
     public private(set) var executedTests: Int?
     /// Tests expected (the previous run's count) until the real count is printed.
     public var expectedTests: Int
+    private let includesTests: Bool
 
-    public init(expectedTests: Int = 120) {
+    public init(expectedTests: Int = 120, includesTests: Bool = true) {
         self.expectedTests = max(1, expectedTests)
+        self.includesTests = includesTests
     }
 
     /// Progress over the whole build, 0…1 (stages weighted by how long they take).
@@ -36,7 +38,9 @@ public struct BuildLogProgress: Equatable, Sendable {
             .compiling: (0.55, 0.92), .packaging: (0.92, 1), .finished: (1, 1),
         ]
         let (start, end) = spans[stage]!
-        return start + (end - start) * min(1, max(0, fraction))
+        let progress = start + (end - start) * min(1, max(0, fraction))
+        guard !includesTests, let (compileStart, _) = spans[.compiling] else { return progress }
+        return max(0, (progress - compileStart) / (1 - compileStart))
     }
 
     /// swift build may separate its "[3/20]" updates with carriage returns; pass

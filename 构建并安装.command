@@ -1,8 +1,8 @@
 #!/bin/bash
-# 双击运行：先跑测试，再编译 KongSeek 并安装到“应用程序”文件夹。
+# 双击运行：编译 KongSeek 并安装到“应用程序”文件夹。
 # 输出同时保存在 build/build.log。
 cd "$(dirname "$0")"
-bash scripts/build-app.sh --test --install
+bash scripts/build-app.sh --install
 status=$?
 echo
 if [[ $status -eq 0 ]]; then

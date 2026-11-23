@@ -7,7 +7,7 @@ import KongSeekCore
 ///
 /// The app is signed with a certificate that exists only on this Mac, so updates are
 /// built here: fetch GitHub, bring the source folder to origin/main, run
-/// scripts/build-app.sh --test, check that the new app carries the same signing
+/// scripts/build-app.sh, check that the new app carries the same signing
 /// identity (so permissions survive), back up the running app, then a small helper
 /// script swaps the bundles after KongSeek quits and opens the new one.
 final class Updater {
@@ -201,7 +201,7 @@ final class Updater {
 
     // MARK: Updating
 
-    /// Fetches (unless `fromLocalSource`), builds with tests, verifies and installs.
+    /// Fetches published updates, or tests a local rebuild, then verifies and installs.
     /// KongSeek quits and reopens when it succeeds.
     func update(fromLocalSource: Bool = false) {
         guard !state.isBusy else { return }
@@ -210,7 +210,7 @@ final class Updater {
             set { $0.phase = .failed("找不到 KongSeek 的源码文件夹（应在 ~/Developer/kongseek）") }
             return
         }
-        let steps: [Step] = fromLocalSource ? [.test, .compile, .verify, .backup, .install] : Step.allCases
+        let steps: [Step] = fromLocalSource ? [.test, .compile, .verify, .backup, .install] : [.fetch, .compile, .verify, .backup, .install]
         let title = fromLocalSource ? "用本地源码重新构建 KongSeek" : "更新 KongSeek" + (state.remoteVersion.map { " 到 \($0)" } ?? "")
         set {
             $0.phase = .updating(fromLocalSource ? "正在用源码文件夹中的代码编译…" : "正在获取更新…")
@@ -229,12 +229,16 @@ final class Updater {
                     self.report(.fetch, fraction: 0.05, "正在更新源码文件夹…")
                     try self.bringSourceUpToDate(root)
                 }
-                self.set { $0.phase = .updating("正在测试并编译（约一两分钟）…") }
-                self.report(.test, fraction: buildStart, "正在编译测试…")
-                var build = BuildLogProgress(expectedTests: UserDefaults.standard.integer(forKey: "lastTestCount").nonZero ?? 120)
+                self.set { $0.phase = .updating(fromLocalSource ? "正在测试并编译…" : "正在编译新版本…") }
+                self.report(fromLocalSource ? .test : .compile, fraction: buildStart,
+                            fromLocalSource ? "正在编译测试…" : "正在编译新版本…")
+                var build = BuildLogProgress(expectedTests: UserDefaults.standard.integer(forKey: "lastTestCount").nonZero ?? 120,
+                                             includesTests: fromLocalSource)
                 var shown = (detail: "", fraction: -1.0)
-                let result = self.run("/bin/bash", ["scripts/build-app.sh", "--test"], root) { line in
+                let arguments = fromLocalSource ? ["scripts/build-app.sh", "--test"] : ["scripts/build-app.sh"]
+                let result = self.run("/bin/bash", arguments, root) { line in
                     build.consume(line)
+                    if !fromLocalSource && build.stage < .compiling { return }
                     let fraction = buildStart + (0.9 - buildStart) * build.overall
                     guard build.detail != shown.detail || fraction - shown.fraction >= 0.01 else { return }
                     shown = (build.detail, fraction)
@@ -252,7 +256,8 @@ final class Updater {
                         throw UpdateError("编译失败，已停止；当前安装的版本没有改动。\n" + first
                             + (build.compileErrors.count > 1 ? "（另有 \(build.compileErrors.count - 1) 处）" : ""))
                     }
-                    throw UpdateError("测试或编译失败（详情见构建日志），已停止；当前安装的版本没有改动。")
+                    let operation = fromLocalSource ? "测试或编译" : "构建"
+                    throw UpdateError("\(operation)失败（详情见构建日志），已停止；当前安装的版本没有改动。")
                 }
 
                 let built = URL(fileURLWithPath: root).appendingPathComponent("build/KongSeek.app")

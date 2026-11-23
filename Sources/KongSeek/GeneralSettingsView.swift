@@ -291,7 +291,7 @@ final class GeneralSettingsView: NSView {
         case .failed(let message): status = "⚠︎ " + message
         case .idle:
             if let remote = state.remoteVersion {
-                status = "有新版本 \(remote)。点“安装更新”会在本机测试、编译并安装（约一两分钟），之后 KongSeek 自动重新打开。"
+                status = "有新版本 \(remote)。点“安装更新”会在本机编译并安装，之后 KongSeek 自动重新打开。"
             } else if !state.pending.isEmpty {
                 status = "GitHub 上有 \(state.pending.count) 个新提交。"
             } else if state.lastCheck != nil {
@@ -568,7 +568,7 @@ final class GeneralSettingsView: NSView {
     @objc private func buildLocal() {
         let alert = NSAlert()
         alert.messageText = "用源码文件夹中的代码重新构建？"
-        alert.informativeText = "不连 GitHub，直接用 \((updater.state.sourceRoot ?? "") as NSString) 中现有的代码测试、编译并安装（约一两分钟），之后 KongSeek 自动重新打开。"
+        alert.informativeText = "不连 GitHub，直接用 \((updater.state.sourceRoot ?? "") as NSString) 中现有的代码测试、编译并安装，之后 KongSeek 自动重新打开。"
         alert.addButton(withTitle: "构建")
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }

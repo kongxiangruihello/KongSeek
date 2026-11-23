@@ -69,6 +69,11 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "savedSearchNames") }
     }
 
+    static var savedSearchFiles: [String: String] {
+        get { defaults.dictionary(forKey: "savedSearchFiles") as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: "savedSearchFiles") }
+    }
+
     /// 通假字、古今字 counted as the same in 逐字异文 (0.29), as "说=悦" lines; the
     /// common examples until the reader edits them.
     static var quoteEquivalentLines: [String] {

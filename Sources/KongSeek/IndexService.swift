@@ -285,6 +285,28 @@ final class IndexService {
 
     // MARK: - Search
 
+    /// Resolves saved-search labels as whole file names without disturbing the active search.
+    func filesNamed(_ names: Set<String>, completion: @escaping ([String: String]) -> Void) {
+        queue.async { [weak self] in
+            var paths: [String: String] = [:]
+            if let index = self?.index {
+                for name in names {
+                    var matches: [String] = []
+                    for hit in index.search([name], precision: .exactName) {
+                        guard !index.flags(of: hit.id).contains(.directory) else { continue }
+                        let path = index.path(of: hit.id)
+                        guard FileManager.default.fileExists(atPath: path) else { continue }
+                        matches.append(path)
+                        if matches.count == 2 { break }
+                    }
+                    if matches.count == 1 { paths[name] = matches[0] }
+                }
+            }
+            let resolved = paths
+            DispatchQueue.main.async { completion(resolved) }
+        }
+    }
+
     /// Searches on the index queue and calls `completion` on main, unless a newer
     /// search has started meanwhile.
     func search(_ text: String, precision: MatchPrecision, limit: Int = 200, completion: @escaping (SearchOutcome) -> Void) {
