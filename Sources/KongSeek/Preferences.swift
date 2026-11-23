@@ -74,6 +74,11 @@ enum Preferences {
         set { defaults.set(newValue, forKey: "savedSearchFiles") }
     }
 
+    static var favoriteFilePaths: [String] {
+        get { defaults.stringArray(forKey: "favoriteFilePaths") ?? [] }
+        set { defaults.set(newValue, forKey: "favoriteFilePaths") }
+    }
+
     /// 通假字、古今字 counted as the same in 逐字异文 (0.29), as "说=悦" lines; the
     /// common examples until the reader edits them.
     static var quoteEquivalentLines: [String] {

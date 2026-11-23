@@ -986,9 +986,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         savedSearchLookup += 1
         savedSearchFiles = [:]
         results = webRows + newOutcome.items
-        // An empty field lists saved searches above recently opened items.
+        // An empty field shows file favorites, saved searches, and recent items.
         if newOutcome.isRecentList && browsedFolder == nil {
-            results = savedSearchRows + results
+            let favorites = favoriteFileRows
+            let favoritePaths = Set(favorites.map(\.path))
+            results = favorites + savedSearchRows + results.filter { !favoritePaths.contains($0.path) }
             resolveSavedSearchFiles()
         }
         // Nothing found: offer the web searches marked as fallbacks.
@@ -1079,7 +1081,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         } else if let folder = browsedFolder {
             parts = ["📁 " + (folder as NSString).abbreviatingWithTildeInPath, "\(outcome.matchCount.formatted()) 项", "← 返回  ⎋ 回到搜索结果"]
         } else if outcome.isRecentList {
-            if !results.isEmpty { parts.append("最近打开 \(results.count) 项 · ⌘⌫ 从列表移除") }
+            if !results.isEmpty { parts.append("收藏与最近打开 · ⌘⌫ 从列表移除") }
         } else if !field.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
             let shown = results.count < outcome.matchCount ? "显示前 \(results.count) 项" : "\(results.count) 项"
             parts.append("匹配 \(outcome.matchCount.formatted()) 项，\(shown)")
@@ -1195,8 +1197,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                     return true
                 }
                 if outcome.isRecentList {
-                    Preferences.forget(item.path)
-                    runSearch()
+                    if Preferences.favoriteFilePaths.contains(item.path) {
+                        setFileFavorite(item, favorite: false)
+                    } else {
+                        Preferences.forget(item.path)
+                        runSearch()
+                    }
                 } else {
                     trash(item)
                 }
@@ -1637,6 +1643,27 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         statusLabel.stringValue = "搜索历史：↑↓ 选择，↩ 再次搜索，⌘⌫ 删除一条"
     }
 
+    private var favoriteFileRows: [ResultItem] {
+        var paths = Set<String>()
+        return Preferences.favoriteFilePaths.compactMap { path in
+            var directory: ObjCBool = false
+            guard paths.insert(path).inserted,
+                  FileManager.default.fileExists(atPath: path, isDirectory: &directory), !directory.boolValue else { return nil }
+            return ResultItem(path: path, name: (path as NSString).lastPathComponent, isFolder: false, score: 0)
+        }
+    }
+
+    private func setFileFavorite(_ item: ResultItem, favorite: Bool) {
+        var paths = Preferences.favoriteFilePaths
+        paths.removeAll { $0 == item.path }
+        if favorite { paths.insert(item.path, at: 0) }
+        Preferences.favoriteFilePaths = paths
+        if outcome.isRecentList { show(outcome) }
+        statusLabel.stringValue = favorite
+            ? "已收藏：\(item.name)。清空搜索框即可找到。"
+            : "已取消收藏：\(item.name)"
+    }
+
     private var savedSearchRows: [ResultItem] {
         let names = Preferences.savedSearchNames
         let saved = Preferences.savedSearches
@@ -1961,6 +1988,12 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             add("进入文件夹", rightArrow, []) { [weak self] in self?.enterFolder(item) }
         }
         add(item.isFolder ? "在访达中打开" : "打开", "o") { [weak self] in self?.hide(); self?.actions.open(item) }
+        let favorite = !item.isFolder && Preferences.favoriteFilePaths.contains(item.path)
+        if !item.isFolder {
+            add(favorite ? "取消收藏文件" : "收藏文件", favorite && outcome.isRecentList ? "\u{8}" : "") { [weak self] in
+                self?.setFileFavorite(item, favorite: !favorite)
+            }
+        }
         let apps = actions.applications(for: item)
         if !apps.isEmpty && !item.isFolder {
             let submenu = NSMenu()
@@ -2104,11 +2137,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         add("在“终端”中打开") { [weak self] in
             if let message = self?.actions.openInTerminal(item) { self?.statusLabel.stringValue = message } else { self?.hide() }
         }
-        if outcome.isRecentList {
+        if outcome.isRecentList && !favorite {
             add("从“最近打开”中移除", "\u{8}") { [weak self] in Preferences.forget(item.path); self?.runSearch() }
         }
         menu.addItem(.separator())
-        add("移到废纸篓", "\u{8}") { [weak self] in self?.trash(item) }
+        add("移到废纸篓", outcome.isRecentList ? "" : "\u{8}") { [weak self] in self?.trash(item) }
 
         let rect = table.rect(ofRow: table.selectedRow)
         menu.popUp(positioning: nil, at: point ?? NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
@@ -2158,7 +2191,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             image = icon(forExtension: (item.name as NSString).pathExtension)
         } else {
             // A book's details and the reader's note first (0.40), then where it is.
-            let leading = [item.bookLine, item.note.map { "📝 " + $0 }].compactMap { $0 }
+            let favorite = outcome.isRecentList && Preferences.favoriteFilePaths.contains(item.path) ? "已收藏" : nil
+            let leading = [favorite, item.bookLine, item.note.map { "📝 " + $0 }].compactMap { $0 }
             location = (leading.isEmpty ? "" : leading.joined(separator: "  ") + "  —  ")
                 + Self.displayLocation(of: item.path) + (item.recognized ? " · 识别文字" : "") + (item.ownText ? " · KongSeek 正文索引" : "")
                 + (item.copies.isEmpty ? "" : " · 另有 \(item.copies.count) 个副本（⌘K 查看）")
