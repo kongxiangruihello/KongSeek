@@ -10,7 +10,7 @@
 # so macOS keeps folder-access permissions across updates. Otherwise signs ad hoc.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$root"
 mkdir -p build
 log="$root/build/build.log"
@@ -30,15 +30,28 @@ echo "== KongSeek build $(date '+%Y-%m-%d %H:%M:%S') =="
 sw_vers -productVersion | sed 's/^/macOS /'
 xcrun swift --version 2>&1 | head -1
 
+cache_dir="$HOME/Library/Caches/com.kongxiangrui.KongSeek"
+swiftpm_options=(-c release)
+# SwiftPM creates many short-lived files. Keep them out of cloud-synced checkouts.
+case "$root" in
+  "$HOME/Library/Mobile Documents/"*|"$HOME/Library/CloudStorage/"*)
+    checkout_key="$(printf '%s' "$root" | git hash-object --stdin)"
+    swiftpm_options+=(--scratch-path "$cache_dir/SwiftPM/$checkout_key")
+    ;;
+esac
+
 if [[ $test -eq 1 ]]; then
   echo "== tests =="
-  xcrun swift test -c release
+  xcrun swift test "${swiftpm_options[@]}"
 fi
 
 echo "== compile =="
-xcrun swift build -c release --product KongSeek
-xcrun swift build -c release --product ks
-bin_dir="$(xcrun swift build -c release --show-bin-path)"
+compile_started=$SECONDS
+xcrun swift build "${swiftpm_options[@]}" --product KongSeek
+xcrun swift build "${swiftpm_options[@]}" --product ks
+bin_dir="$(xcrun swift build "${swiftpm_options[@]}" --show-bin-path)"
+echo "Compile: $((SECONDS - compile_started)) s"
+package_started=$SECONDS
 
 # Assemble outside the project folder: files in iCloud-synced folders pick up
 # extended attributes that codesign rejects.
@@ -66,14 +79,28 @@ else
 fi
 
 echo "== icon =="
-iconset="$staging/AppIcon.iconset"
-mkdir -p "$iconset"
-for size in 16 32 128 256 512; do
-  sips -z $size $size "$root/Resources/AppIcon.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
-  double=$((size * 2))
-  sips -z $double $double "$root/Resources/AppIcon.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
+icon_source="$root/Resources/AppIcon.png"
+icon_output="$app/Contents/Resources/AppIcon.icns"
+icon_cache="$cache_dir/Icons"
+icon_key="$(git hash-object -- "$icon_source")"
+cached_icon="$icon_cache/$icon_key.icns"
+if [[ -s "$cached_icon" ]] && cp "$cached_icon" "$icon_output"; then
+  echo "Reused app icon"
+else
+  iconset="$staging/AppIcon.iconset"
+  mkdir -p "$iconset"
+  for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" "$icon_source" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    double=$((size * 2))
+    sips -z "$double" "$double" "$icon_source" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$iconset" -o "$icon_output"
+  if mkdir -p "$icon_cache" && cache_temp="$(mktemp "$icon_cache/.icon.XXXXXX")"; then
+    if ! cp "$icon_output" "$cache_temp" || ! mv -f "$cache_temp" "$cached_icon"; then
+      rm -f "$cache_temp"
+    fi
+  fi
+fi
 
 xattr -cr "$app"
 
@@ -101,6 +128,7 @@ codesign --verify --strict "$app" || echo "NOTE: codesign --verify reported a tr
 
 rm -rf "$root/build/KongSeek.app"
 ditto "$app" "$root/build/KongSeek.app"
+echo "Package: $((SECONDS - package_started)) s"
 echo "Built: $root/build/KongSeek.app"
 "$app/Contents/MacOS/ks" --version || echo "NOTE: ks did not run"
 

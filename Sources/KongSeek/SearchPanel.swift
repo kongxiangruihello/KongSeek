@@ -2203,7 +2203,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             name: item.isFile ? highlighted(item.name) : NSAttributedString(string: item.name, attributes: [.font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.labelColor]),
             location: location,
             icon: image,
-            shortcut: { let n = (selectableRows.firstIndex(of: row) ?? 99) + 1; return n <= 9 ? "⌘\(n)" : "" }()
+            shortcut: { let n = (selectableRows.firstIndex(of: row) ?? 99) + 1; return n <= 9 ? "⌘\(n)" : "" }(),
+            filePath: item.displaysFileDetails ? item.path : nil
         )
         return cell
     }
@@ -2233,7 +2234,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        results.indices.contains(row) && results[row].isHeader ? 22 : tableView.rowHeight
+        guard results.indices.contains(row) else { return tableView.rowHeight }
+        let item = results[row]
+        if item.isHeader { return 22 }
+        return item.displaysFileDetails ? tableView.rowHeight + 13 : tableView.rowHeight
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -2647,12 +2651,21 @@ final class ClosureMenuItem: NSMenuItem {
     }
 }
 
-/// One row: icon, name, folder, and the ⌘-number shortcut.
+/// One row: icon, name, folder, file details, and the ⌘-number shortcut.
 final class ResultCellView: NSTableCellView {
     private let iconView = NSImageView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let locationLabel = NSTextField(labelWithString: "")
+    private let detailsLabel = NSTextField(labelWithString: "")
     private let shortcutLabel = NSTextField(labelWithString: "")
+    private var detailsRequest = 0
+
+    private static let creationDateFormat: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -2661,14 +2674,18 @@ final class ResultCellView: NSTableCellView {
         locationLabel.font = .systemFont(ofSize: 11)
         locationLabel.textColor = .secondaryLabelColor
         locationLabel.lineBreakMode = .byTruncatingHead
+        detailsLabel.font = locationLabel.font
+        detailsLabel.textColor = .secondaryLabelColor
+        detailsLabel.lineBreakMode = .byTruncatingTail
         shortcutLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         shortcutLabel.textColor = .tertiaryLabelColor
-        for view in [iconView, nameLabel, locationLabel, shortcutLabel] as [NSView] {
+        for view in [iconView, nameLabel, locationLabel, detailsLabel, shortcutLabel] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         locationLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detailsLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         shortcutLabel.setContentHuggingPriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
@@ -2681,6 +2698,9 @@ final class ResultCellView: NSTableCellView {
             locationLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
             locationLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 1),
             locationLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -8),
+            detailsLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            detailsLabel.topAnchor.constraint(equalTo: locationLabel.bottomAnchor, constant: 1),
+            detailsLabel.trailingAnchor.constraint(lessThanOrEqualTo: shortcutLabel.leadingAnchor, constant: -8),
             shortcutLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             shortcutLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -2690,11 +2710,29 @@ final class ResultCellView: NSTableCellView {
         fatalError("init(coder:) is not used")
     }
 
-    func configure(name: NSAttributedString, location: String, icon: NSImage, shortcut: String) {
+    func configure(name: NSAttributedString, location: String, icon: NSImage, shortcut: String, filePath: String?) {
         nameLabel.attributedStringValue = name
         locationLabel.stringValue = location
         iconView.image = icon
         shortcutLabel.stringValue = shortcut
+        detailsRequest += 1
+        detailsLabel.stringValue = ""
+        detailsLabel.isHidden = filePath == nil
+        guard let filePath else { return }
+        let request = detailsRequest
+        // Read attributes for rendered rows only. A recycled cell may already show another file.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let url = URL(fileURLWithPath: filePath)
+            let values = try? url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey, .isDirectoryKey])
+            let created = values?.creationDate
+            let size = values?.isDirectory == false ? values?.fileSize : nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.detailsRequest == request else { return }
+                let dateText = created.map { Self.creationDateFormat.string(from: $0) } ?? "—"
+                let sizeText = size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "—"
+                self.detailsLabel.stringValue = "创建 \(dateText) · 大小 \(sizeText)"
+            }
+        }
     }
 }
 

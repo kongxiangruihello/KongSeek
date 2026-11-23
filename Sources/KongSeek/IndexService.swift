@@ -32,6 +32,7 @@ struct ResultItem: Equatable {
 
     var isFile: Bool { link == nil && definition == nil && fill == nil && !isHeader }
     var isInArchive: Bool { innerPath != nil }
+    var displaysFileDetails: Bool { isFile && !isFolder && !isInArchive }
 
     static func web(_ link: QuickLink, query: String) -> ResultItem? {
         guard let url = link.url(for: query) else { return nil }
