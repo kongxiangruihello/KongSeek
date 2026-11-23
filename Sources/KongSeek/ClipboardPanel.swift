@@ -72,8 +72,11 @@ final class ClipboardPanelController: NSObject, NSTableViewDataSource, NSTableVi
     func show() {
         field.stringValue = ""
         previewCleaned = false
-        if mode != .history { toggleMode() }
-        reload()
+        if mode == .history {
+            reload(selectLatest: true)
+        } else {
+            toggleMode()
+        }
         panel.present()
         panel.makeFirstResponder(field)
     }
@@ -219,7 +222,7 @@ final class ClipboardPanelController: NSObject, NSTableViewDataSource, NSTableVi
     private static let historyHint = "↩ 粘贴   ⇧↩ 纯文本   ⌘J 整理后粘贴   ⌘E 预览整理   ⌘K 更多   ⇥ 片段"
     private static let snippetHint = "↩ 粘贴片段   ⇥ 剪贴板历史   ⌘, 编辑片段"
 
-    private func reload() {
+    private func reload(selectLatest: Bool = false) {
         if mode == .snippets { reloadSnippets(); return }
         hintLabel.stringValue = Self.historyHint
         let enabled = Preferences.clipboardEnabled
@@ -237,10 +240,14 @@ final class ClipboardPanelController: NSObject, NSTableViewDataSource, NSTableVi
             .filter { needle.isEmpty || SearchText.fold($0.searchText).contains(needle) }
             .sorted { $0.pinned != $1.pinned ? $0.pinned : $0.lastUsed > $1.lastUsed }
         table.reloadData()
-        let index = selectedID.flatMap { id in rows.firstIndex { $0.id == id } } ?? 0
-        if rows.indices.contains(index) {
+        let index = selectLatest
+            ? rows.indices.max { rows[$0].lastUsed < rows[$1].lastUsed }
+            : selectedID.flatMap { id in rows.firstIndex { $0.id == id } } ?? rows.indices.first
+        if let index {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             table.scrollRowToVisible(index)
+        } else {
+            table.deselectAll(nil)
         }
         updatePreview()
         updateStatus()
@@ -328,7 +335,7 @@ final class ClipboardPanelController: NSObject, NSTableViewDataSource, NSTableVi
         mode = mode == .history ? .snippets : .history
         modeButton.title = mode == .history ? "历史" : "片段"
         field.placeholderString = mode == .history ? "搜索剪贴板历史" : "搜索片段（名称、关键词或内容）"
-        reload()
+        reload(selectLatest: mode == .history)
         panel.makeFirstResponder(field)
         field.currentEditor()?.selectedRange = NSRange(location: (field.stringValue as NSString).length, length: 0)
     }
