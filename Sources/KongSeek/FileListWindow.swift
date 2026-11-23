@@ -373,7 +373,7 @@ struct FileListView: View {
                     Text("正在读取 \(model.progress.done) / \(model.progress.total)").font(.caption)
                 }
             }
-            Table(model.shown, selection: $model.selection, sortOrder: $model.sortOrder) {
+            Table(of: FileRow.self, selection: $model.selection, sortOrder: $model.sortOrder) {
                 TableColumn("封面", value: \.name, comparator: .localizedStandard) { row in
                     ThumbnailView(path: row.path, size: 40)
                 }
@@ -400,6 +400,17 @@ struct FileListView: View {
                 .width(min: 80, ideal: 130, max: 170)
                 TableColumn("位置", value: \.location, comparator: .localizedStandard) { row in
                     Text(row.location).foregroundColor(.secondary).lineLimit(1).truncationMode(.head)
+                }
+            } rows: {
+                ForEach(model.shown) { row in
+                    TableRow(row)
+                        .itemProvider {
+                            var isDirectory: ObjCBool = false
+                            guard FileManager.default.fileExists(atPath: row.path, isDirectory: &isDirectory),
+                                  !isDirectory.boolValue else { return nil }
+                            let url = URL(fileURLWithPath: row.path)
+                            return NSItemProvider(item: url.dataRepresentation as NSData, typeIdentifier: UTType.fileURL.identifier)
+                        }
                 }
             }
             .contextMenu(forSelectionType: String.self) { ids in
