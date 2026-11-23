@@ -32,7 +32,7 @@ xcrun swift --version 2>&1 | head -1
 
 if [[ $test -eq 1 ]]; then
   echo "== tests =="
-  xcrun swift test
+  xcrun swift test -c release
 fi
 
 echo "== compile =="

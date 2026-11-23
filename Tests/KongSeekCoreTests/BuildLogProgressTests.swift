@@ -45,6 +45,17 @@ final class BuildLogProgressTests: XCTestCase {
         XCTAssertEqual(BuildLogProgress.testName("Test Case '-[KongSeekCoreTests.RelevanceTests testX]' failed (0.02 seconds)."), "RelevanceTests testX")
     }
 
+    func testInstallProgressStartsAtCompilationWhenTestsAreSkipped() {
+        var progress = BuildLogProgress(includesTests: false)
+        progress.consume("== compile ==")
+        XCTAssertEqual(progress.overall, 0, accuracy: 0.001)
+        progress.consume("[5/10] Compiling KongSeek SearchPanel.swift")
+        XCTAssertGreaterThan(progress.overall, 0)
+        XCTAssertLessThan(progress.overall, 0.5)
+        progress.consume("Built: /tmp/KongSeek.app")
+        XCTAssertEqual(progress.overall, 1, accuracy: 0.001)
+    }
+
     func testCompilerErrors() {
         // As swift build printed it on the Mac (colors and a documentation link).
         let line = "/Users/x/kongseek/Sources/KongSeek/Updater.swift:286:24: \u{1B}[1;31merror: \u{1B}[1;39moverlapping accesses to '$0.progress', but modification requires exclusive access; consider copying to a local variable\u{1B}[0;0m [#\u{1B}]8;;https://docs.swift.org/compiler/documentation/diagnostics/exclusivity-violation\u{1B}\\ExclusivityViolation\u{1B}]8;;\u{1B}\\]"

@@ -115,6 +115,8 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
     private let definitionScroll = NSTextView.scrollableTextView()
     private var definitionView: NSTextView { definitionScroll.documentView as! NSTextView }
     private var results: [ResultItem] = []
+    private var savedSearchFiles: [String: String] = [:]
+    private var savedSearchLookup = 0
     private var outcome = SearchOutcome()
     private var keyMonitor: Any?
     private let icons = NSCache<NSString, NSImage>()
@@ -981,9 +983,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let keepPath = newOutcome.isContent && outcome.isContent ? selectedItem?.path : nil
         let previousRow = table.selectedRow
         outcome = newOutcome
+        savedSearchLookup += 1
+        savedSearchFiles = [:]
         results = webRows + newOutcome.items
         // An empty field lists saved searches above recently opened items.
-        if newOutcome.isRecentList && browsedFolder == nil { results = savedSearchRows + results }
+        if newOutcome.isRecentList && browsedFolder == nil {
+            results = savedSearchRows + results
+            resolveSavedSearchFiles()
+        }
         // Nothing found: offer the web searches marked as fallbacks.
         let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if results.isEmpty && browsedFolder == nil && !query.isEmpty && !newOutcome.gathering && !newOutcome.isRecentList {
@@ -1010,7 +1017,10 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         updateStatus()
         updateEmptyLabel()
         // A finished build may answer a query typed while it was running.
-        if isVisible, case .ready = service.state, results.isEmpty, !field.stringValue.isEmpty { runSearch() }
+        if isVisible, case .ready = service.state {
+            if outcome.isRecentList && field.stringValue.isEmpty { resolveSavedSearchFiles() }
+            else if results.isEmpty && !field.stringValue.isEmpty { runSearch() }
+        }
     }
 
     private func updateEmptyLabel() {
@@ -1175,8 +1185,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
                 guard let item = selectedItem else { return false }
                 if let fill = item.fill {
                     if fill.isSaved {
-                        Preferences.savedSearches.removeAll { $0 == fill.text }
-                        Preferences.savedSearchNames[fill.text] = nil
+                        removeSavedSearch(fill.text)
                         statusLabel.stringValue = "已从收藏中移除“\(fill.text)”"
                         runSearch()
                     } else if fill.isHistory {
@@ -1576,18 +1585,14 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         for preset in SavedSearchPresets.all {
             let saved = Preferences.savedSearches.contains(preset.query)
             let item = ClosureMenuItem(title: preset.name + "　" + preset.query, key: "") { [weak self] in
-                var searches = Preferences.savedSearches
-                var names = Preferences.savedSearchNames
-                if searches.contains(preset.query) {
-                    searches.removeAll { $0 == preset.query }
-                    names[preset.query] = nil
+                guard let self else { return }
+                if Preferences.savedSearches.contains(preset.query) {
+                    self.removeSavedSearch(preset.query)
                 } else {
-                    searches.append(preset.query)
-                    names[preset.query] = preset.name
+                    Preferences.savedSearches.append(preset.query)
+                    Preferences.savedSearchNames[preset.query] = preset.name
                 }
-                Preferences.savedSearches = searches
-                Preferences.savedSearchNames = names
-                self?.runSearch()
+                self.runSearch()
             }
             item.state = saved ? .on : .off
             item.toolTip = preset.detail
@@ -1656,12 +1661,61 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         return rows
     }
 
+    private func resolveSavedSearchFiles() {
+        savedSearchLookup += 1
+        let lookup = savedSearchLookup
+        let favorites = results.compactMap { item -> (query: String, title: String)? in
+            guard let fill = item.fill, fill.isSaved else { return nil }
+            return (fill.text, item.name)
+        }
+        guard !favorites.isEmpty else { return }
+        let linked = Preferences.savedSearchFiles
+        let titles = Set(favorites.filter { linked[$0.query] == nil }.map(\.title))
+        service.filesNamed(titles) { [weak self] matches in
+            guard let self, self.savedSearchLookup == lookup else { return }
+            self.savedSearchFiles = [:]
+            for favorite in favorites {
+                self.savedSearchFiles[favorite.query] = linked[favorite.query] ?? matches[favorite.title]
+            }
+            let rows = IndexSet(self.results.indices.filter { self.results[$0].fill?.isSaved == true })
+            self.table.reloadData(forRowIndexes: rows, columnIndexes: IndexSet(integer: 0))
+            if self.selectedItem?.fill?.isSaved == true { self.updatePreview() }
+        }
+    }
+
+    private func removeSavedSearch(_ text: String) {
+        Preferences.savedSearches.removeAll { $0 == text }
+        Preferences.savedSearchNames[text] = nil
+        Preferences.savedSearchFiles[text] = nil
+    }
+
     /// ⌘K on a saved search: name it (a course, a project), or remove it (0.19).
     private func showSavedSearchMenu(_ text: String, at point: NSPoint? = nil) {
         let menu = NSMenu()
         menu.addItem(ClosureMenuItem(title: Preferences.savedSearchNames[text] == nil ? "命名…" : "重命名…", key: "") { [weak self] in
             self?.askName(for: text)
         })
+        let linkedFile = Preferences.savedSearchFiles[text]
+        menu.addItem(ClosureMenuItem(title: linkedFile == nil ? "指定要拖出的文件…" : "更换要拖出的文件…", key: "") { [weak self] in
+            guard let self else { return }
+            let picker = NSOpenPanel()
+            picker.canChooseDirectories = false
+            picker.message = "选择要从这条收藏拖出的文件"
+            if let path = self.savedSearchFiles[text] {
+                picker.directoryURL = URL(fileURLWithPath: path).deletingLastPathComponent()
+            }
+            picker.beginSheetModal(for: self.panel) { [weak self] response in
+                guard response == .OK, let path = picker.url?.path else { return }
+                Preferences.savedSearchFiles[text] = path
+                self?.resolveSavedSearchFiles()
+            }
+        })
+        if linkedFile != nil {
+            menu.addItem(ClosureMenuItem(title: "取消指定拖出文件", key: "") { [weak self] in
+                Preferences.savedSearchFiles[text] = nil
+                self?.resolveSavedSearchFiles()
+            })
+        }
         menu.addItem(ClosureMenuItem(title: "把结果放入文件清单", key: "") { [weak self] in
             self?.hide()
             self?.onFileList?(.query(text))
@@ -1677,9 +1731,9 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         })
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem(title: "从收藏中移除", key: "") { [weak self] in
-            Preferences.savedSearches.removeAll { $0 == text }
-            Preferences.savedSearchNames[text] = nil
-            self?.runSearch()
+            guard let self else { return }
+            self.removeSavedSearch(text)
+            self.runSearch()
         })
         let rect = table.rect(ofRow: max(0, table.selectedRow))
         menu.popUp(positioning: nil, at: point ?? NSPoint(x: rect.maxX - 180, y: rect.maxY), in: table)
@@ -2088,7 +2142,7 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         let image: NSImage
         if let fill = item.fill {
             location = fill.isSaved
-                ? (item.name == fill.text ? "" : fill.text + " · ") + "收藏的搜索 · ↩ 搜索 · ⌘K 命名"
+                ? (item.name == fill.text ? "" : fill.text + " · ") + "收藏的搜索 · ↩ 搜索" + (savedSearchFiles[fill.text] == nil ? " · ⌘K 更多操作" : " · 可拖出文件")
                 : (fill.isHistory ? "搜索历史 · ↩ 再次搜索 · ⌘⌫ 删除" : fill.explanation)
             let symbol = fill.isPresetPicker ? "plus.circle" : (fill.isSaved ? "star" : (fill.isHistory ? "clock.arrow.circlepath" : "text.magnifyingglass"))
             image = NSImage(systemSymbolName: symbol, accessibilityDescription: fill.explanation) ?? NSImage()
@@ -2126,6 +2180,11 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
         guard results.indices.contains(row) else { return nil }
         let item = results[row]
         if let link = item.link { return link as NSURL }
+        if let fill = item.fill, fill.isSaved, let path = savedSearchFiles[fill.text] {
+            var directory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &directory), !directory.boolValue else { return nil }
+            return URL(fileURLWithPath: path) as NSURL
+        }
         guard item.isFile, item.definition == nil else { return nil }
         if item.isInArchive { return archivePreviews[Self.archiveKey(item)].map { $0 as NSURL } }
         return URL(fileURLWithPath: item.path) as NSURL
@@ -2165,6 +2224,13 @@ final class SearchWindowController: NSObject, NSWindowDelegate, NSTextFieldDeleg
             definitionView.string = fill.isSaved || fill.isHistory
                 ? "↩ 搜索：\(fill.text)\n\n⌘⌫ " + (fill.isSaved ? "从收藏中移除。在任意搜索时按 ⌘S 可收藏当前搜索。" : "从搜索历史中删除。在 设置 › 搜索 可关闭或清除搜索历史。")
                 : "\(fill.text)\n\n\(fill.explanation)\n\n↩ 或单击：加入搜索框" + (fill.select.map { "，并选中“\($0)”方便直接改写" } ?? "") + "。"
+            if fill.isSaved {
+                if let path = savedSearchFiles[fill.text] {
+                    definitionView.string += "\n\n拖动收藏行可拖出：\((path as NSString).lastPathComponent)"
+                } else {
+                    definitionView.string += "\n\n⌘K › 指定要拖出的文件…"
+                }
+            }
             definitionView.scrollToBeginningOfDocument(nil)
         } else if let item = selected, !item.isFile {
             definitionView.string = item.definition.map { $0.isEmpty ? "系统词典中没有“\(item.name)”。\n可在“词典”App 的设置中启用更多词典（如现代汉语词典、牛津英汉汉英词典），或用汉典查询。" : $0 }
